@@ -238,6 +238,73 @@ async fn get_user_profile_dir() -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn get_home_dir() -> Result<String, String> {
+    match std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+        Ok(home) => Ok(home),
+        Err(_) => Err("Failed to get user home directory".to_string()),
+    }
+}
+
+#[tauri::command]
+async fn list_directory_names(path: String) -> Result<Vec<String>, String> {
+    let dir_path = PathBuf::from(&path);
+    
+    if !dir_path.exists() {
+        return Ok(Vec::new());
+    }
+    
+    let mut names = Vec::new();
+    
+    match std::fs::read_dir(&dir_path) {
+        Ok(entries) => {
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    let entry_path = entry.path();
+                    if entry_path.is_dir() {
+                        // Check for nested OpenVINO organization structure
+                        if let Some(dir_name) = entry.file_name().to_str() {
+                            if dir_name == "OpenVINO" {
+                                // List models inside OpenVINO directory
+                                if let Ok(org_entries) = std::fs::read_dir(&entry_path) {
+                                    for org_entry in org_entries {
+                                        if let Ok(org_entry) = org_entry {
+                                            if org_entry.path().is_dir() {
+                                                if let Some(model_name) = org_entry.file_name().to_str() {
+                                                    names.push(format!("OpenVINO/{}", model_name));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            return Err(format!("Failed to read directory: {}", e));
+        }
+    }
+    
+    Ok(names)
+}
+
+#[tauri::command]
+async fn delete_directory(path: String) -> Result<String, String> {
+    let dir_path = PathBuf::from(&path);
+    
+    if !dir_path.exists() {
+        return Err(format!("Directory does not exist: {}", path));
+    }
+    
+    match std::fs::remove_dir_all(&dir_path) {
+        Ok(_) => Ok(format!("Deleted directory: {}", path)),
+        Err(e) => Err(format!("Failed to delete directory: {}", e)),
+    }
+}
+
+#[tauri::command]
 async fn get_initialization_status() -> Result<InitializationStatus, String> {
     let status_mutex = INIT_STATUS.get_or_init(||
         Arc::new(
@@ -556,6 +623,9 @@ pub fn run() {
                 open_model_folder,
                 get_default_download_path,
                 get_user_profile_dir,
+                get_home_dir,
+                list_directory_names,
+                delete_directory,
                 get_initialization_status,
                 ovms::download_ovms,
                 ovms::check_ovms_present,
