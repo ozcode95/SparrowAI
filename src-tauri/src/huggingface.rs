@@ -1,8 +1,16 @@
 use serde::{ Deserialize, Serialize };
+use serde_json;
 use tracing::{ info, warn, error };
 use std::path::PathBuf;
 use tauri::Emitter;
 use tokio::io::AsyncWriteExt;
+use std::fs;
+use std::collections::HashMap;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModelSibling {
+    pub rfilename: String,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ModelInfo {
@@ -15,15 +23,27 @@ pub struct ModelInfo {
     pub likes: Option<u64>,
     pub created_at: Option<String>,
     pub last_modified: Option<String>,
+    pub collections: Option<Vec<String>>,
+    pub siblings: Vec<ModelSibling>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SearchResult {
-    pub models: Vec<ModelInfo>,
+    pub model_ids: Vec<String>,
     pub total_count: Option<u64>,
 }
 
 // Hugging Face API response structures
+#[derive(Debug, Deserialize)]
+struct HfCardData {
+    pub collections: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HfModelSibling {
+    pub rfilename: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct HfModelInfo {
     pub id: String,
@@ -31,6 +51,8 @@ struct HfModelInfo {
     pub sha: Option<String>,
     #[serde(rename = "pipeline-tag")]
     pub pipeline_tag: Option<String>,
+    #[serde(rename = "pipeline_tag")]
+    pub pipeline_tag_alt: Option<String>,  // Handle both formats
     pub tags: Option<Vec<String>>,
     pub downloads: Option<u64>,
     pub likes: Option<u64>,
@@ -39,6 +61,11 @@ struct HfModelInfo {
     pub created_at: Option<String>,
     #[serde(rename = "lastModified")]
     pub last_modified: Option<String>,
+    #[serde(rename = "last_modified")]
+    pub last_modified_alt: Option<String>,  // Handle snake_case format
+    #[serde(rename = "cardData")]
+    pub card_data: Option<HfCardData>,
+    pub siblings: Option<Vec<HfModelSibling>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -154,7 +181,7 @@ async fn download_single_file(
 #[tauri::command]
 pub async fn search_models(query: String, limit: Option<u32>) -> Result<SearchResult, String> {
     let client = reqwest::Client::new();
-    let search_limit = limit.unwrap_or(10).min(10);
+    let search_limit = limit.unwrap_or(20).min(100);
 
     // Search specifically under OpenVINO organization
     let search_query = if query.trim().is_empty() {
@@ -196,22 +223,10 @@ pub async fn search_models(query: String, limit: Option<u32>) -> Result<SearchRe
         .map(|hf_model| hf_model.id)
         .collect();
 
-    // Get detailed info for each model
-    let mut models: Vec<ModelInfo> = Vec::new();
-    for model_id in &model_ids {
-        match get_model_info(model_id.clone()).await {
-            Ok(model_info) => models.push(model_info),
-            Err(e) => {
-                warn!(model_id = %model_id, error = %e, "Failed to get info for model");
-                // Continue with other models instead of failing entirely
-            }
-        }
-    }
-
-    let total_count = models.len() as u64;
+    let total_count = model_ids.len() as u64;
 
     Ok(SearchResult {
-        models,
+        model_ids,
         total_count: Some(total_count),
     })
 }
@@ -227,9 +242,10 @@ pub async fn get_model_info(model_id: String) -> Result<ModelInfo, String> {
         format!("OpenVINO/{}", model_id)
     };
 
+    // Don't encode the model ID - HuggingFace API expects it as-is in the path
     let url = format!(
         "https://huggingface.co/api/models/{}",
-        urlencoding::encode(&normalized_model_id)
+        normalized_model_id
     );
 
     let response = client
@@ -256,17 +272,47 @@ pub async fn get_model_info(model_id: String) -> Result<ModelInfo, String> {
         return Err(format!("Model {} is not from OpenVINO organization", hf_model.id));
     }
 
-    Ok(ModelInfo {
+    // Extract collections from cardData
+    let collections = hf_model.card_data
+        .and_then(|card| card.collections);
+
+    // Extract siblings (files in the repository)
+    let siblings: Vec<ModelSibling> = hf_model.siblings
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| ModelSibling { rfilename: s.rfilename })
+        .collect();
+
+    // Handle both API formats for pipeline_tag
+    let pipeline_tag = hf_model.pipeline_tag.or(hf_model.pipeline_tag_alt);
+    
+    // Handle both API formats for last_modified
+    let last_modified = hf_model.last_modified.or(hf_model.last_modified_alt);
+
+    let model_info = ModelInfo {
         id: hf_model.id,
         author: hf_model.author,
         sha: hf_model.sha,
-        pipeline_tag: hf_model.pipeline_tag,
+        pipeline_tag,
         tags: hf_model.tags.unwrap_or_default(),
         downloads: hf_model.downloads,
         likes: hf_model.likes,
         created_at: hf_model.created_at,
-        last_modified: hf_model.last_modified,
-    })
+        last_modified,
+        collections,
+        siblings,
+    };
+
+    info!(
+        model_id = %model_info.id,
+        pipeline_tag = ?model_info.pipeline_tag,
+        collections = ?model_info.collections,
+        downloads = ?model_info.downloads,
+        siblings_count = %model_info.siblings.len(),
+        "Fetched model info"
+    );
+
+    Ok(model_info)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -276,6 +322,42 @@ pub struct ModelUpdateInfo {
     pub local_commit: Option<String>,
     pub remote_commit: Option<String>,
     pub needs_update: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GraphGenerationParams {
+    // Task type (text_generation, embeddings_ov, rerank_ov, etc.)
+    pub task_type: Option<String>,
+    
+    // Common parameters
+    pub target_device: Option<String>, // CPU, GPU, NPU, AUTO
+    
+    // Text generation specific
+    pub enable_prefix_caching: Option<bool>,
+    pub cache_size: Option<u32>,
+    pub max_num_seqs: Option<u32>,
+    pub kv_cache_precision: Option<String>,
+    pub max_num_batched_tokens: Option<u32>,
+    pub dynamic_split_fuse: Option<bool>,
+    pub pipeline_type: Option<String>,
+    
+    // Embeddings specific
+    pub normalize: Option<bool>,
+    pub pooling: Option<String>,
+    pub truncate: Option<bool>,
+    
+    // Common stream parameter
+    pub num_streams: Option<u32>,
+    
+    // Image generation specific
+    pub resolution: Option<String>,
+    pub guidance_scale: Option<String>,
+    pub num_images_per_prompt: Option<String>,
+    pub max_resolution: Option<String>,
+    pub default_resolution: Option<String>,
+    pub max_num_images_per_prompt: Option<u32>,
+    pub default_num_inference_steps: Option<u32>,
+    pub max_num_inference_steps: Option<u32>,
 }
 
 // Function to write commit SHA to .commit_id file
@@ -380,6 +462,7 @@ pub async fn check_model_update_status(
 pub async fn download_entire_model(
     model_id: String,
     download_path: Option<String>,
+    graph_params: Option<GraphGenerationParams>,
     app: tauri::AppHandle
 ) -> Result<String, String> {
     // Ensure we're downloading an OpenVINO model
@@ -413,89 +496,78 @@ pub async fn download_entire_model(
     // Create target directory
     std::fs::create_dir_all(&target_dir).map_err(|e| format!("Failed to create directory: {}", e))?;
 
-    // First, get the list of files in the repository
-    let files_url = format!(
-        "https://huggingface.co/api/models/{}/tree/main",
-        urlencoding::encode(&normalized_model_id)
-    );
+    // Use siblings from model_info instead of making a separate API call
+    let downloadable_files: Vec<&ModelSibling> = model_info.siblings
+        .iter()
+        .filter(|sibling| !sibling.rfilename.is_empty())
+        .collect();
 
-    let files_response = client
-        .get(&files_url)
-        .header("User-Agent", "SparrowAI/1.0")
-        .send().await
-        .map_err(|e| format!("Failed to fetch file list: {}", e))?;
-
-    if !files_response.status().is_success() {
-        return Err(
-            format!(
-                "Failed to fetch file list. Status: {}. The model might be private or not exist.",
-                files_response.status()
-            )
-        );
+    if downloadable_files.is_empty() {
+        return Err("No files found in model repository".to_string());
     }
 
-    let files: Vec<HfFileInfo> = files_response
-        .json().await
-        .map_err(|e| format!("Failed to parse file list: {}", e))?;
+    let total_files = downloadable_files.len();
+    
+    info!(
+        model_id = %normalized_model_id,
+        total_files = %total_files,
+        "Starting download of model files"
+    );
 
     let mut downloaded_files = Vec::new();
     let mut errors = Vec::new();
     let mut total_downloaded_size = 0u64;
 
-    // Filter to only download actual files (not directories)
-    let mut downloadable_files: Vec<&HfFileInfo> = files
-        .iter()
-        .filter(|file| file.file_type == "file")
-        .collect();
-
-    // Calculate total size and warn if very large
-    let total_estimated_size: u64 = downloadable_files
-        .iter()
-        .map(|f| f.size.unwrap_or(0))
-        .sum();
-
-    let total_size_gb = (total_estimated_size as f64) / (1024.0 * 1024.0 * 1024.0);
-
-    if total_size_gb > 10.0 {
-        eprintln!(
-            "Warning: Large model detected ({:.1} GB). This may take a while and use significant disk space.",
-            total_size_gb
-        );
-    }
-
-    // Sort files by size (smallest first) to get quick wins early
-    downloadable_files.sort_by_key(|f| f.size.unwrap_or(0));
-
-    let total_files = downloadable_files.len();
-
-    for (index, file_info) in downloadable_files.iter().enumerate() {
+    for (index, sibling) in downloadable_files.iter().enumerate() {
+        // Don't encode model ID or file path - they're part of the URL path
         let file_url = format!(
             "https://huggingface.co/{}/resolve/main/{}",
-            urlencoding::encode(&normalized_model_id),
-            urlencoding::encode(&file_info.path)
+            normalized_model_id,
+            sibling.rfilename
         );
 
-        // Add error recovery wrapper
+        // Create temporary HfFileInfo for compatibility with download_single_file
+        let file_info = HfFileInfo {
+            path: sibling.rfilename.clone(),
+            file_type: "file".to_string(),
+            size: None,  // We don't have size info from siblings
+        };
+
+        // Emit progress update
+        let current_progress = ((index as f64 / total_files as f64) * 100.0) as u32;
+        let _ = app.emit(
+            "download-progress",
+            serde_json::json!({
+                "modelId": normalized_model_id,
+                "progress": current_progress,
+                "currentFile": sibling.rfilename,
+                "fileIndex": index + 1,
+                "totalFiles": total_files,
+                "fileProgress": 0,
+            })
+        );
+
+        // Download the file
         let download_result = download_single_file(
             &client,
             &file_url,
             &target_dir,
-            file_info,
+            &file_info,
             &normalized_model_id,
             index + 1,
             total_files,
             total_downloaded_size,
-            total_estimated_size,
+            0,  // No total size estimate available
             &app
         ).await;
 
         match download_result {
             Ok(file_size) => {
-                downloaded_files.push(file_info.path.clone());
+                downloaded_files.push(sibling.rfilename.clone());
                 total_downloaded_size += file_size;
             }
             Err(e) => {
-                let error_msg = format!("Failed to download {}: {}", file_info.path, e);
+                let error_msg = format!("Failed to download {}: {}", sibling.rfilename, e);
                 error!(error = %error_msg, "Model download failed");
                 errors.push(error_msg);
 
@@ -540,10 +612,34 @@ pub async fn download_entire_model(
     );
 
     // Generate graph.pbtxt for OVMS compatibility
-    if let Err(e) = crate::ovms::generate_ovms_graph(&target_dir, &normalized_model_id) {
-        warn!(error = %e, "Failed to generate graph.pbtxt");
+    // Use user-selected task type from params if provided, otherwise detect from model info
+    let task_type = if let Some(params) = &graph_params {
+        params.task_type.clone().or_else(|| detect_task_type(&model_info))
     } else {
-        info!(model_id = %normalized_model_id, "graph.pbtxt generated for model");
+        detect_task_type(&model_info)
+    };
+    
+    if let Some(task_type) = task_type {
+        info!(
+            model_id = %normalized_model_id,
+            task_type = %task_type,
+            source = if graph_params.as_ref().and_then(|p| p.task_type.as_ref()).is_some() { "user_selected" } else { "auto_detected" },
+            "Using task type for graph generation"
+        );
+        
+        if let Err(e) = generate_graph_for_task(&task_type, &target_dir, graph_params.as_ref()) {
+            warn!(
+                error = %e,
+                task_type = %task_type,
+                "Failed to generate graph.pbtxt"
+            );
+        }
+    } else {
+        warn!(
+            model_id = %normalized_model_id,
+            pipeline_tag = ?model_info.pipeline_tag,
+            "Could not detect model task type, skipping graph.pbtxt generation"
+        );
     }
 
     if !errors.is_empty() {
@@ -558,4 +654,438 @@ pub async fn download_entire_model(
     } else {
         Ok(success_msg)
     }
+}
+
+/// Check if the required BGE models (embedding and reranker) are downloaded
+#[tauri::command]
+pub async fn check_bge_models_exist(download_path: Option<String>) -> Result<bool, String> {
+    let downloads_dir = if let Some(path) = download_path {
+        PathBuf::from(path)
+    } else {
+        // Use .sparrow/models as default
+        let home_dir = match std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+            Ok(home) => home,
+            Err(_) => {
+                return Err("Failed to get user home directory".to_string());
+            }
+        };
+        PathBuf::from(home_dir).join(".sparrow").join("models")
+    };
+
+    // Check for both BGE models
+    let embedding_model_path = downloads_dir.join("OpenVINO").join("bge-base-en-v1.5-int8-ov");
+    let reranker_model_path = downloads_dir.join("OpenVINO").join("bge-reranker-base-int8-ov");
+
+    let embedding_exists = embedding_model_path.exists() && embedding_model_path.is_dir();
+    let reranker_exists = reranker_model_path.exists() && reranker_model_path.is_dir();
+
+    Ok(embedding_exists && reranker_exists)
+}
+
+// Graph templates for different task types
+const TEXT_GENERATION_GRAPH_TEMPLATE: &str = r#"input_stream: "HTTP_REQUEST_PAYLOAD:input"
+output_stream: "HTTP_RESPONSE_PAYLOAD:output"
+
+node: {
+  name: "LLMExecutor"
+  calculator: "HttpLLMCalculator"
+  input_stream: "LOOPBACK:loopback"
+  input_stream: "HTTP_REQUEST_PAYLOAD:input"
+  input_side_packet: "LLM_NODE_RESOURCES:llm"
+  output_stream: "LOOPBACK:loopback"
+  output_stream: "HTTP_RESPONSE_PAYLOAD:output"
+
+  input_stream_info: {
+    tag_index: 'LOOPBACK:0',
+    back_edge: true
+  }
+  node_options: {
+      [type.googleapis.com / mediapipe.LLMCalculatorOptions]: {
+          {{pipeline_type}}models_path: "./",
+          plugin_config: '{{plugin_config}}',
+          enable_prefix_caching: {{enable_prefix_caching}},
+          cache_size: {{cache_size}},
+          {{max_num_batched_tokens}}{{dynamic_split_fuse}}max_num_seqs: {{max_num_seqs}},
+          device: "{{target_device}}",
+          {{draft_models_path}}{{reasoning_parser}}{{tool_parser}}{{enable_tool_guided_generation}}
+      }
+  }
+  input_stream_handler {
+    input_stream_handler: "SyncSetInputStreamHandler",
+    options {
+      [mediapipe.SyncSetInputStreamHandlerOptions.ext] {
+        sync_set {
+          tag_index: "LOOPBACK:0"
+        }
+      }
+    }
+  }
+}"#;
+
+const EMBEDDINGS_OV_GRAPH_TEMPLATE: &str = r#"input_stream: "REQUEST_PAYLOAD:input"
+output_stream: "RESPONSE_PAYLOAD:output"
+node {
+  name: "EmbeddingsExecutor"
+  input_side_packet: "EMBEDDINGS_NODE_RESOURCES:embeddings_servable"
+  calculator: "EmbeddingsCalculatorOV"
+  input_stream: "REQUEST_PAYLOAD:input"
+  output_stream: "RESPONSE_PAYLOAD:output"
+  node_options: {
+    [type.googleapis.com / mediapipe.EmbeddingsCalculatorOVOptions]: {
+      models_path: "./",
+      plugin_config: '{"NUM_STREAMS": "{{num_streams}}" }',
+      normalize_embeddings: {{normalize}},
+      {{pooling}}{{truncate}}target_device: "{{target_device}}"
+    }
+  }
+}"#;
+
+const RERANK_OV_GRAPH_TEMPLATE: &str = r#"input_stream: "REQUEST_PAYLOAD:input"
+output_stream: "RESPONSE_PAYLOAD:output"
+node {
+  name: "RerankExecutor"
+  input_side_packet: "RERANK_NODE_RESOURCES:rerank_servable"
+  calculator: "RerankCalculatorOV"
+  input_stream: "REQUEST_PAYLOAD:input"
+  output_stream: "RESPONSE_PAYLOAD:output"
+  node_options: {
+    [type.googleapis.com / mediapipe.RerankCalculatorOVOptions]: {
+      models_path: "./",
+      plugin_config: '{"NUM_STREAMS": "{{num_streams}}" }',
+      target_device: "{{target_device}}"
+    }
+  }
+}"#;
+
+const TEXT2SPEECH_GRAPH_TEMPLATE: &str = r#"input_stream: "HTTP_REQUEST_PAYLOAD:input"
+output_stream: "HTTP_RESPONSE_PAYLOAD:output"
+node {
+  name: "T2sExecutor"
+  input_side_packet: "TTS_NODE_RESOURCES:t2s_servable"
+  calculator: "T2sCalculator"
+  input_stream: "HTTP_REQUEST_PAYLOAD:input"
+  output_stream: "HTTP_RESPONSE_PAYLOAD:output"
+  node_options: {
+    [type.googleapis.com / mediapipe.T2sCalculatorOptions]: {
+      models_path: "./",
+      plugin_config: '{ "NUM_STREAMS": "{{num_streams}}" }',
+      target_device: "{{target_device}}"
+    }
+  }
+}"#;
+
+const SPEECH2TEXT_GRAPH_TEMPLATE: &str = r#"input_stream: "HTTP_REQUEST_PAYLOAD:input"
+output_stream: "HTTP_RESPONSE_PAYLOAD:output"
+node {
+  name: "S2tExecutor"
+  input_side_packet: "STT_NODE_RESOURCES:s2t_servable"
+  calculator: "S2tCalculator"
+  input_stream: "HTTP_REQUEST_PAYLOAD:input"
+  output_stream: "HTTP_RESPONSE_PAYLOAD:output"
+  node_options: {
+    [type.googleapis.com / mediapipe.S2tCalculatorOptions]: {
+      models_path: "./",
+      plugin_config: '{ "NUM_STREAMS": "{{num_streams}}" }',
+      target_device: "{{target_device}}"
+    }
+  }
+}"#;
+
+const IMAGE_GENERATION_GRAPH_TEMPLATE: &str = r#"input_stream: "HTTP_REQUEST_PAYLOAD:input"
+output_stream: "HTTP_RESPONSE_PAYLOAD:output"
+
+node: {
+  name: "ImageGenExecutor"
+  calculator: "ImageGenCalculator"
+  input_stream: "HTTP_REQUEST_PAYLOAD:input"
+  input_side_packet: "IMAGE_GEN_NODE_RESOURCES:pipes"
+  output_stream: "HTTP_RESPONSE_PAYLOAD:output"
+  node_options: {
+    [type.googleapis.com / mediapipe.ImageGenCalculatorOptions]: {
+      models_path: "./",
+      {{plugin_config_str}}device: "{{target_device}}",
+      {{resolution}}{{num_images_per_prompt}}{{guidance_scale}}{{max_resolution}}{{default_resolution}}{{max_num_images_per_prompt}}{{default_num_inference_steps}}{{max_num_inference_steps}}
+    }
+  }
+}"#;
+
+// Helper function to render template with placeholders
+fn render_template(template: &str, params: &HashMap<String, String>) -> String {
+    let mut result = template.to_string();
+    for (key, value) in params {
+        let placeholder = format!("{{{{{}}}}}", key);
+        result = result.replace(&placeholder, value);
+    }
+    result
+}
+
+// Helper function to detect task type from model info
+fn detect_task_type(model_info: &ModelInfo) -> Option<String> {
+    // Check pipeline_tag first
+    if let Some(pipeline_tag) = &model_info.pipeline_tag {
+        match pipeline_tag.as_str() {
+            "text-generation" => return Some("text_generation".to_string()),
+            "feature-extraction" | "sentence-similarity" => return Some("embeddings_ov".to_string()),
+            "text-classification" => {
+                // Check if it's a reranker by looking at tags or model name
+                if model_info.tags.iter().any(|t| t.contains("rerank")) ||
+                   model_info.id.to_lowercase().contains("rerank") {
+                    return Some("rerank_ov".to_string());
+                }
+            },
+            "text-to-speech" => return Some("text2speech".to_string()),
+            "automatic-speech-recognition" => return Some("speech2text".to_string()),
+            "text-to-image" => return Some("image_generation".to_string()),
+            _ => {}
+        }
+    }
+    
+    // Fallback to checking tags
+    for tag in &model_info.tags {
+        let tag_lower = tag.to_lowercase();
+        if tag_lower.contains("text-generation") || tag_lower.contains("causal-lm") {
+            return Some("text_generation".to_string());
+        } else if tag_lower.contains("embedding") || tag_lower.contains("feature-extraction") {
+            return Some("embeddings_ov".to_string());
+        } else if tag_lower.contains("rerank") {
+            return Some("rerank_ov".to_string());
+        } else if tag_lower.contains("text-to-speech") || tag_lower.contains("tts") {
+            return Some("text2speech".to_string());
+        } else if tag_lower.contains("speech-to-text") || tag_lower.contains("stt") || tag_lower.contains("asr") {
+            return Some("speech2text".to_string());
+        } else if tag_lower.contains("text-to-image") || tag_lower.contains("stable-diffusion") {
+            return Some("image_generation".to_string());
+        }
+    }
+    
+    None
+}
+
+// Helper function to generate graph.pbtxt for a given task type
+fn generate_graph_for_task(
+    task_type: &str,
+    model_path: &PathBuf,
+    params: Option<&GraphGenerationParams>,
+) -> Result<(), String> {
+    let mut template_params = HashMap::new();
+    
+    // Get target device from params or use CPU as default
+    let target_device = params
+        .and_then(|p| p.target_device.as_deref())
+        .unwrap_or("CPU");
+    template_params.insert("target_device".to_string(), target_device.to_string());
+    
+    let graph_content = match task_type {
+        "text_generation" => {
+            // Build plugin config for text generation
+            let mut plugin_config = HashMap::new();
+            
+            if let Some(params) = params {
+                if let Some(kv_precision) = &params.kv_cache_precision {
+                    plugin_config.insert("KV_CACHE_PRECISION".to_string(), kv_precision.clone());
+                }
+            }
+            
+            let plugin_config_str = if plugin_config.is_empty() {
+                "{}".to_string()
+            } else {
+                serde_json::to_string(&plugin_config).unwrap_or_else(|_| "{}".to_string())
+            };
+            
+            template_params.insert("plugin_config".to_string(), plugin_config_str);
+            template_params.insert(
+                "enable_prefix_caching".to_string(),
+                params.and_then(|p| p.enable_prefix_caching).unwrap_or(false).to_string()
+            );
+            template_params.insert(
+                "cache_size".to_string(),
+                params.and_then(|p| p.cache_size).unwrap_or(10).to_string()
+            );
+            template_params.insert(
+                "max_num_seqs".to_string(),
+                params.and_then(|p| p.max_num_seqs).unwrap_or(256).to_string()
+            );
+            
+            if let Some(params) = params {
+                if let Some(pipeline_type) = &params.pipeline_type {
+                    template_params.insert("pipeline_type".to_string(), format!("pipeline_type: {},\n          ", pipeline_type));
+                } else {
+                    template_params.insert("pipeline_type".to_string(), "".to_string());
+                }
+                
+                if let Some(max_batched) = params.max_num_batched_tokens {
+                    template_params.insert("max_num_batched_tokens".to_string(), 
+                        format!("max_num_batched_tokens: {},\n          ", max_batched));
+                } else {
+                    template_params.insert("max_num_batched_tokens".to_string(), "".to_string());
+                }
+                
+                if !params.dynamic_split_fuse.unwrap_or(true) {
+                    template_params.insert("dynamic_split_fuse".to_string(), "dynamic_split_fuse: false,\n          ".to_string());
+                } else {
+                    template_params.insert("dynamic_split_fuse".to_string(), "".to_string());
+                }
+            } else {
+                template_params.insert("pipeline_type".to_string(), "".to_string());
+                template_params.insert("max_num_batched_tokens".to_string(), "".to_string());
+                template_params.insert("dynamic_split_fuse".to_string(), "".to_string());
+            }
+            
+            template_params.insert("reasoning_parser".to_string(), "".to_string());
+            template_params.insert("tool_parser".to_string(), "".to_string());
+            template_params.insert("enable_tool_guided_generation".to_string(), "".to_string());
+            template_params.insert("draft_models_path".to_string(), "".to_string());
+            render_template(TEXT_GENERATION_GRAPH_TEMPLATE, &template_params)
+        },
+        "embeddings_ov" => {
+            template_params.insert(
+                "num_streams".to_string(),
+                params.and_then(|p| p.num_streams).unwrap_or(1).to_string()
+            );
+            template_params.insert(
+                "normalize".to_string(),
+                params.and_then(|p| p.normalize).unwrap_or(true).to_string()
+            );
+            
+            if let Some(params) = params {
+                if let Some(pooling) = &params.pooling {
+                    template_params.insert("pooling".to_string(), format!("pooling: {},\n      ", pooling));
+                } else {
+                    template_params.insert("pooling".to_string(), "".to_string());
+                }
+                
+                if params.truncate.unwrap_or(false) {
+                    template_params.insert("truncate".to_string(), "truncate: true,\n      ".to_string());
+                } else {
+                    template_params.insert("truncate".to_string(), "".to_string());
+                }
+            } else {
+                template_params.insert("pooling".to_string(), "".to_string());
+                template_params.insert("truncate".to_string(), "".to_string());
+            }
+            
+            render_template(EMBEDDINGS_OV_GRAPH_TEMPLATE, &template_params)
+        },
+        "rerank_ov" => {
+            template_params.insert(
+                "num_streams".to_string(),
+                params.and_then(|p| p.num_streams).unwrap_or(1).to_string()
+            );
+            render_template(RERANK_OV_GRAPH_TEMPLATE, &template_params)
+        },
+        "text2speech" => {
+            template_params.insert(
+                "num_streams".to_string(),
+                params.and_then(|p| p.num_streams).unwrap_or(1).to_string()
+            );
+            render_template(TEXT2SPEECH_GRAPH_TEMPLATE, &template_params)
+        },
+        "speech2text" => {
+            template_params.insert(
+                "num_streams".to_string(),
+                params.and_then(|p| p.num_streams).unwrap_or(1).to_string()
+            );
+            render_template(SPEECH2TEXT_GRAPH_TEMPLATE, &template_params)
+        },
+        "image_generation" => {
+            template_params.insert("plugin_config_str".to_string(), "".to_string());
+            
+            if let Some(params) = params {
+                if let Some(resolution) = &params.resolution {
+                    template_params.insert("resolution".to_string(), 
+                        format!("resolution: \"{}\",\n      ", resolution));
+                } else {
+                    template_params.insert("resolution".to_string(), "".to_string());
+                }
+                
+                if let Some(max_resolution) = &params.max_resolution {
+                    if !max_resolution.contains('x') {
+                        return Err("max_resolution should be in WxH format, e.g. 1024x768".to_string());
+                    }
+                    template_params.insert("max_resolution".to_string(), 
+                        format!("max_resolution: '{}',\n      ", max_resolution));
+                } else {
+                    template_params.insert("max_resolution".to_string(), "".to_string());
+                }
+                
+                if let Some(default_resolution) = &params.default_resolution {
+                    if !default_resolution.contains('x') {
+                        return Err("default_resolution should be in WxH format, e.g. 512x512".to_string());
+                    }
+                    template_params.insert("default_resolution".to_string(), 
+                        format!("default_resolution: '{}',\n      ", default_resolution));
+                } else {
+                    template_params.insert("default_resolution".to_string(), "".to_string());
+                }
+                
+                if let Some(num_images) = &params.num_images_per_prompt {
+                    template_params.insert("num_images_per_prompt".to_string(), 
+                        format!("num_images_per_prompt: {},\n      ", num_images));
+                } else {
+                    template_params.insert("num_images_per_prompt".to_string(), "".to_string());
+                }
+                
+                if let Some(guidance_scale) = &params.guidance_scale {
+                    template_params.insert("guidance_scale".to_string(), 
+                        format!("guidance_scale: {},\n      ", guidance_scale));
+                } else {
+                    template_params.insert("guidance_scale".to_string(), "".to_string());
+                }
+                
+                if let Some(max_num_images) = params.max_num_images_per_prompt {
+                    if max_num_images > 0 {
+                        template_params.insert("max_num_images_per_prompt".to_string(), 
+                            format!("max_num_images_per_prompt: {},\n      ", max_num_images));
+                    } else {
+                        template_params.insert("max_num_images_per_prompt".to_string(), "".to_string());
+                    }
+                } else {
+                    template_params.insert("max_num_images_per_prompt".to_string(), "".to_string());
+                }
+                
+                if let Some(default_steps) = params.default_num_inference_steps {
+                    if default_steps > 0 {
+                        template_params.insert("default_num_inference_steps".to_string(), 
+                            format!("default_num_inference_steps: {},\n      ", default_steps));
+                    } else {
+                        template_params.insert("default_num_inference_steps".to_string(), "".to_string());
+                    }
+                } else {
+                    template_params.insert("default_num_inference_steps".to_string(), "".to_string());
+                }
+                
+                if let Some(max_steps) = params.max_num_inference_steps {
+                    if max_steps > 0 {
+                        template_params.insert("max_num_inference_steps".to_string(), 
+                            format!("max_num_inference_steps: {},\n      ", max_steps));
+                    } else {
+                        template_params.insert("max_num_inference_steps".to_string(), "".to_string());
+                    }
+                } else {
+                    template_params.insert("max_num_inference_steps".to_string(), "".to_string());
+                }
+            } else {
+                template_params.insert("resolution".to_string(), "".to_string());
+                template_params.insert("num_images_per_prompt".to_string(), "".to_string());
+                template_params.insert("guidance_scale".to_string(), "".to_string());
+                template_params.insert("max_resolution".to_string(), "".to_string());
+                template_params.insert("default_resolution".to_string(), "".to_string());
+                template_params.insert("max_num_images_per_prompt".to_string(), "".to_string());
+                template_params.insert("default_num_inference_steps".to_string(), "".to_string());
+                template_params.insert("max_num_inference_steps".to_string(), "".to_string());
+            }
+            
+            render_template(IMAGE_GENERATION_GRAPH_TEMPLATE, &template_params)
+        },
+        _ => {
+            return Err(format!("Unknown task type: {}", task_type));
+        }
+    };
+    
+    let graph_path = model_path.join("graph.pbtxt");
+    fs::write(&graph_path, graph_content)
+        .map_err(|e| format!("Failed to write graph.pbtxt: {}", e))?;
+    
+    info!(task_type = %task_type, "Generated graph.pbtxt for model");
+    Ok(())
 }

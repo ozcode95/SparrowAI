@@ -137,6 +137,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   useEffect(() => {
     loadChatSessions();
+
+    // Listen for new chat session creation
+    const handleSessionCreated = () => {
+      loadChatSessions();
+    };
+
+    window.addEventListener("chat-session-created", handleSessionCreated);
+
+    return () => {
+      window.removeEventListener("chat-session-created", handleSessionCreated);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

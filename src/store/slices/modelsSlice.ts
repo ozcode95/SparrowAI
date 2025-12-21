@@ -39,6 +39,7 @@ export const createModelsSlice: StateCreator<AppState, [], [], ModelsSlice> = (
     }),
 
   isModelDownloading: (modelId) => get().downloadingModels.has(modelId),
+  hasAnyDownloading: () => get().downloadingModels.size > 0,
   isModelDownloaded: (modelId) => get().downloadedModels.has(modelId),
 
   setDownloadProgress: (modelId, progress) =>

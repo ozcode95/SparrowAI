@@ -22,19 +22,33 @@ export const ChatPage = () => {
     setCurrentChatMessages,
     temporarySession,
     setTemporarySession,
+    setActiveChatSessionId,
   } = useAppStore();
   const { settings } = useAppStore();
-  const { loadedModel } = useAppStore();
+  const { loadedModel, setLoadedModel, downloadedModels } = useAppStore();
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [currentStreamingMessage, setCurrentStreamingMessage] = useState("");
   const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
+  const [isLoadingModel, setIsLoadingModel] = useState(false);
+
+  // Local LLM configuration (optional overrides)
+  const [localTemperature, setLocalTemperature] = useState<number | null>(null);
+  const [localTopP, setLocalTopP] = useState<number | null>(null);
+  const [localMaxTokens, setLocalMaxTokens] = useState<number | null>(null);
+  const [showConfigPanel, setShowConfigPanel] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [currentChatMessages, currentStreamingMessage]);
+
+  // Clear input when session changes (new chat)
+  useEffect(() => {
+    setInput("");
+  }, [activeChatSessionId, temporarySession]);
 
   // Load messages for active session
   useEffect(() => {
@@ -110,8 +124,17 @@ export const ChatPage = () => {
             }
           );
           const [updatedSession] = result;
-          setTemporarySession(updatedSession);
+
+          // Persist the temporary session after first response
+          await invoke("persist_temporary_session", {
+            session: updatedSession,
+          });
+          setActiveChatSessionId(updatedSession.id);
+          setTemporarySession(null);
           addMessageToCurrentChat(assistantMessage);
+
+          // Trigger sidebar refresh by emitting event
+          window.dispatchEvent(new CustomEvent("chat-session-created"));
         } else if (activeChatSessionId) {
           await invoke("add_message_to_session", {
             sessionId: activeChatSessionId,
@@ -161,8 +184,10 @@ export const ChatPage = () => {
 
   const handleSend = async () => {
     if (!input.trim() || isStreaming) return;
+
+    // Check if model is loaded
     if (!loadedModel) {
-      alert("Please load a model first in Settings");
+      alert("Please select a model first");
       return;
     }
 
@@ -176,62 +201,77 @@ export const ChatPage = () => {
     // Add user message to UI immediately
     addMessageToCurrentChat(userMessage);
 
-    // Add to temporary session or active session
+    const messageContent = input.trim();
+    setInput("");
+    setIsStreaming(true);
+    setToolCalls([]);
+
     try {
-      if (temporarySession) {
+      let sessionToUse = activeChatSessionId;
+
+      // Create new session if this is the first message (no active session)
+      if (!activeChatSessionId && !temporarySession) {
+        const newSession = await invoke<any>("create_chat_session", {
+          title: null,
+        });
+        sessionToUse = newSession.id;
+        setActiveChatSessionId(newSession.id);
+
+        // Add user message to the new session
+        await invoke("add_message_to_session", {
+          sessionId: newSession.id,
+          role: "user",
+          content: messageContent,
+          tokensPerSecond: null,
+          isError: false,
+        });
+
+        // Trigger sidebar refresh
+        window.dispatchEvent(new CustomEvent("chat-session-created"));
+      } else if (temporarySession) {
+        // Handle temporary session
         const result = await invoke<[any, ChatMessageType]>(
           "add_message_to_temporary_session",
           {
             session: temporarySession,
             role: "user",
-            content: input.trim(),
+            content: messageContent,
             tokensPerSecond: null,
             isError: false,
           }
         );
         const [updatedSession] = result;
         setTemporarySession(updatedSession);
+        sessionToUse = updatedSession.id;
       } else if (activeChatSessionId) {
+        // Add to existing active session
         await invoke("add_message_to_session", {
           sessionId: activeChatSessionId,
           role: "user",
-          content: input.trim(),
+          content: messageContent,
           tokensPerSecond: null,
           isError: false,
         });
-      } else {
-        // Create a new temporary session
-        const newSession = await invoke<any>("create_chat_session", {
-          title: null,
-        });
-        setTemporarySession(newSession);
-        await invoke<[any, ChatMessageType]>(
-          "add_message_to_temporary_session",
-          {
-            session: newSession,
-            role: "user",
-            content: input.trim(),
-            tokensPerSecond: null,
-            isError: false,
-          }
-        );
       }
 
-      setInput("");
-      setIsStreaming(true);
-      setToolCalls([]);
+      // Prepare LLM configuration (use local overrides if set, otherwise global settings)
+      const effectiveTemperature =
+        localTemperature !== null ? localTemperature : settings.temperature;
+      const effectiveTopP = localTopP !== null ? localTopP : settings.topP;
+      const effectiveMaxTokens =
+        localMaxTokens !== null ? localMaxTokens : settings.maxTokens;
 
-      // Start streaming chat
-      await invoke("stream_chat_completion", {
-        sessionId: temporarySession?.id || activeChatSessionId,
-        message: input.trim(),
+      // Start streaming chat with all configuration
+      await invoke("chat_with_loaded_model_streaming", {
+        sessionId: sessionToUse,
+        message: messageContent,
         modelName: loadedModel,
         includeHistory: settings.includeConversationHistory,
         systemPrompt: settings.systemPrompt || null,
-        temperature: settings.temperature,
-        topP: settings.topP,
+        temperature: effectiveTemperature,
+        topP: effectiveTopP,
         seed: settings.seed,
-        maxTokens: settings.maxTokens,
+        maxTokens: effectiveMaxTokens,
         maxCompletionTokens: settings.maxCompletionTokens,
       });
     } catch (error) {
@@ -247,8 +287,42 @@ export const ChatPage = () => {
     }
   };
 
+  const handleLoadModel = async (modelId: string) => {
+    setIsLoadingModel(true);
+    try {
+      await invoke("load_model", { modelId });
+      setLoadedModel(modelId);
+    } catch (error) {
+      console.error("Failed to load model:", error);
+      alert(`Failed to load model: ${error}`);
+    } finally {
+      setIsLoadingModel(false);
+    }
+  };
+
   return (
-    <PageContainer title="Chat" description="Conversation with AI assistant">
+    <PageContainer
+      title="Chat"
+      description="Conversation with AI assistant"
+      actions={
+        <div className="flex items-center gap-3">
+          <select
+            value={loadedModel || ""}
+            onChange={(e) => e.target.value && handleLoadModel(e.target.value)}
+            disabled={isLoadingModel || isStreaming}
+            className="px-3 py-1.5 border rounded-lg bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <option value="">Select a model...</option>
+            {Array.from(downloadedModels).map((modelId) => (
+              <option key={modelId} value={modelId}>
+                {modelId}
+              </option>
+            ))}
+          </select>
+          {isLoadingModel && <Loader2 className="w-4 h-4 animate-spin" />}
+        </div>
+      }
+    >
       <div className="flex flex-col h-full">
         {/* Messages Area */}
         <div className="flex-1 overflow-y-auto mb-4 space-y-4 px-2">
@@ -349,41 +423,142 @@ export const ChatPage = () => {
 
         {/* Input Area */}
         <Card className="p-4">
-          <div className="flex gap-3">
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyPress}
-              placeholder={
-                loadedModel
-                  ? "Type your message... (Shift+Enter for new line)"
-                  : "Load a model to start chatting"
-              }
-              disabled={isStreaming || !loadedModel}
-              className="flex-1 resize-none bg-transparent border-none outline-none min-h-[44px] max-h-[200px] text-gray-900 dark:text-white placeholder:text-gray-400 disabled:opacity-50"
-              rows={1}
-              style={{
-                height: "auto",
-                overflow: "auto",
-              }}
-              onInput={(e) => {
-                const target = e.target as HTMLTextAreaElement;
-                target.style.height = "auto";
-                target.style.height = target.scrollHeight + "px";
-              }}
-            />
-            <Button
-              onClick={handleSend}
-              disabled={!input.trim() || isStreaming || !loadedModel}
-              className="self-end"
-              size="icon"
-            >
-              {isStreaming ? (
-                <Loader2 className="w-5 h-5 animate-spin" />
-              ) : (
-                <Send className="w-5 h-5" />
-              )}
-            </Button>
+          <div className="flex flex-col gap-3">
+            {/* Optional: Local LLM Config Panel */}
+            {showConfigPanel && (
+              <div className="flex flex-wrap gap-3 pb-3 border-b border-gray-200 dark:border-gray-700">
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-gray-600 dark:text-gray-400">
+                    Temperature
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="2"
+                    step="0.1"
+                    value={
+                      localTemperature !== null
+                        ? localTemperature
+                        : settings.temperature
+                    }
+                    onChange={(e) =>
+                      setLocalTemperature(parseFloat(e.target.value))
+                    }
+                    disabled={isStreaming}
+                    className="px-2 py-1 border rounded text-sm w-20 bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-gray-600 dark:text-gray-400">
+                    Top P
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.1"
+                    value={localTopP !== null ? localTopP : settings.topP}
+                    onChange={(e) => setLocalTopP(parseFloat(e.target.value))}
+                    disabled={isStreaming}
+                    className="px-2 py-1 border rounded text-sm w-20 bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-gray-600 dark:text-gray-400">
+                    Max Tokens
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="8192"
+                    step="1"
+                    value={
+                      localMaxTokens !== null
+                        ? localMaxTokens
+                        : settings.maxTokens
+                    }
+                    onChange={(e) =>
+                      setLocalMaxTokens(parseInt(e.target.value))
+                    }
+                    disabled={isStreaming}
+                    className="px-2 py-1 border rounded text-sm w-20 bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600"
+                  />
+                </div>
+                <Button
+                  onClick={() => {
+                    setLocalTemperature(null);
+                    setLocalTopP(null);
+                    setLocalMaxTokens(null);
+                  }}
+                  disabled={isStreaming}
+                  size="sm"
+                  variant="outline"
+                  className="self-end text-xs"
+                >
+                  Reset to Global
+                </Button>
+              </div>
+            )}
+
+            <div className="flex gap-3">
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyPress}
+                placeholder={
+                  loadedModel
+                    ? "Type your message... (Shift+Enter for new line)"
+                    : "Select a model to start chatting"
+                }
+                disabled={isStreaming || !loadedModel}
+                className="flex-1 resize-none bg-transparent border-none outline-none min-h-[44px] max-h-[200px] text-gray-900 dark:text-white placeholder:text-gray-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                rows={1}
+                style={{
+                  height: "auto",
+                  overflow: "auto",
+                }}
+                onInput={(e) => {
+                  const target = e.target as HTMLTextAreaElement;
+                  target.style.height = "auto";
+                  target.style.height = target.scrollHeight + "px";
+                }}
+              />
+              <div className="flex gap-2 self-end">
+                <Button
+                  onClick={() => setShowConfigPanel(!showConfigPanel)}
+                  disabled={isStreaming}
+                  size="icon"
+                  variant="outline"
+                  title="Toggle LLM Configuration"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="w-5 h-5"
+                  >
+                    <circle cx="12" cy="12" r="3"></circle>
+                    <path d="M12 1v6m0 6v6m-6-6H0m12 0h6"></path>
+                  </svg>
+                </Button>
+                <Button
+                  onClick={handleSend}
+                  disabled={!input.trim() || isStreaming || !loadedModel}
+                  className=""
+                  size="icon"
+                >
+                  {isStreaming ? (
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                  ) : (
+                    <Send className="w-5 h-5" />
+                  )}
+                </Button>
+              </div>
+            </div>
           </div>
         </Card>
       </div>

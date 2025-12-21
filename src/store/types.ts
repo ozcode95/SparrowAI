@@ -59,6 +59,7 @@ export interface ModelsSlice {
   clearSearch: () => void;
   setModelDownloading: (modelId: string, isDownloading: boolean) => void;
   isModelDownloading: (modelId: string) => boolean;
+  hasAnyDownloading: () => boolean;
   isModelDownloaded: (modelId: string) => boolean;
   setDownloadProgress: (modelId: string, progress: number) => void;
   getDownloadProgress: (modelId: string) => number;

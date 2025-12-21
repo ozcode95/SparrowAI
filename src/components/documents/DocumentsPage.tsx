@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { PageContainer } from "../layout";
 import { Card, Button } from "../ui";
+import { ModelDownloadDialog } from "./ModelDownloadDialog";
 import {
   Upload,
   File,
@@ -39,10 +40,46 @@ export const DocumentsPage = () => {
   const [fileChunks, setFileChunks] = useState<Record<string, Document[]>>({});
   const [isUploading, setIsUploading] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [showModelDownload, setShowModelDownload] = useState(false);
+  const [modelsChecked, setModelsChecked] = useState(false);
 
   useEffect(() => {
-    loadFiles();
+    checkBGEModels();
   }, []);
+
+  const checkBGEModels = async () => {
+    if (modelsChecked) return;
+
+    try {
+      const modelsExist = await invoke<boolean>("check_bge_models_exist", {
+        downloadPath: null,
+      });
+
+      if (!modelsExist) {
+        setShowModelDownload(true);
+      } else {
+        // Models exist, load files
+        loadFiles();
+      }
+      setModelsChecked(true);
+    } catch (error) {
+      console.error("Failed to check BGE models:", error);
+      // Continue anyway, user can still try to use the features
+      loadFiles();
+      setModelsChecked(true);
+    }
+  };
+
+  const handleModelsDownloaded = () => {
+    // Models have been downloaded, now load files
+    loadFiles();
+  };
+
+  useEffect(() => {
+    if (modelsChecked && !showModelDownload) {
+      loadFiles();
+    }
+  }, [modelsChecked, showModelDownload]);
 
   const loadFiles = async () => {
     setIsLoading(true);
@@ -334,6 +371,13 @@ export const DocumentsPage = () => {
           )}
         </div>
       </div>
+
+      {/* Model Download Dialog */}
+      <ModelDownloadDialog
+        isOpen={showModelDownload}
+        onClose={() => setShowModelDownload(false)}
+        onSuccess={handleModelsDownloaded}
+      />
     </PageContainer>
   );
 };

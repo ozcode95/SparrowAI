@@ -350,67 +350,8 @@ async fn initialize_ovms(app_handle: tauri::AppHandle) {
         )
     );
 
-    // Update status: Checking BGE models
-    {
-        let mut status = status_mutex.lock().unwrap();
-        status.step = "checking_bge_models".to_string();
-        status.message = "Checking BGE models...".to_string();
-        status.progress = 5;
-        app_handle
-            .emit("ovms-init-status", &*status)
-            .unwrap_or_else(|e| error!(error = %e, "Failed to emit status"));
-    }
-
-    // Download BGE models if they don't exist
-    let bge_models = vec![
-        "OpenVINO/bge-reranker-base-int8-ov",
-        "OpenVINO/bge-base-en-v1.5-int8-ov"
-    ];
-
-    let downloaded_models = match check_downloaded_models(None).await {
-        Ok(models) => models,
-        Err(e) => {
-            error!(error = %e, "Failed to check downloaded models");
-            Vec::new()
-        }
-    };
-
-    for bge_model in &bge_models {
-        if !downloaded_models.contains(&bge_model.to_string()) {
-            // Update status: Downloading BGE model
-            {
-                let mut status = status_mutex.lock().unwrap();
-                status.step = "downloading_bge".to_string();
-                status.message = format!(
-                    "Downloading required model: {}",
-                    bge_model.split('/').last().unwrap_or(bge_model)
-                );
-                status.progress = 7;
-                app_handle
-                    .emit("ovms-init-status", &*status)
-                    .unwrap_or_else(|e| error!(error = %e, "Failed to emit status"));
-            }
-
-            match
-                huggingface::download_entire_model(
-                    bge_model.to_string(),
-                    None, // Use default download path
-                    app_handle.clone()
-                ).await
-            {
-                Ok(msg) => {
-                    info!(message = %msg, "BGE model download");
-                }
-                Err(e) => {
-                    error!(model = %bge_model, error = %e, "Failed to download BGE model");
-                    // Continue with initialization even if BGE model download fails
-                    // RAG functionality will just not be available
-                }
-            }
-        } else {
-            info!(model = %bge_model, "BGE model already downloaded");
-        }
-    }
+    // BGE models check removed - models will be downloaded on-demand when user accesses RAG features
+    // See DocumentsPage.tsx for the on-demand download implementation
 
     // Update status: Starting OVMS check
     {
@@ -618,6 +559,7 @@ pub fn run() {
                 huggingface::get_model_info,
                 huggingface::download_entire_model,
                 huggingface::check_model_update_status,
+                huggingface::check_bge_models_exist,
                 check_downloaded_models,
                 delete_downloaded_model,
                 open_model_folder,

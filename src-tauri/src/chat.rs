@@ -354,7 +354,7 @@ pub async fn get_conversation_history(session_id: String) -> Result<Vec<ChatMess
     // Return all messages except any currently streaming ones
     let messages: Vec<ChatMessage> = session.messages
         .iter()
-        .filter(|msg| (msg.role == "user" || msg.role == "assistant"))
+        .filter(|msg| msg.role == "user" || msg.role == "assistant")
         .cloned()
         .collect();
 
@@ -378,7 +378,7 @@ pub async fn chat_with_loaded_model_streaming(
 ) -> Result<String, String> {
     let config = OpenAIConfig::new()
         .with_api_key("unused")
-        .with_api_base("http://localhost:1114/v3");
+        .with_api_base("http://localhost:1114/v1");
     let client = Client::with_config(config);
 
     // Get MCP tools info for system message

@@ -37,7 +37,7 @@ struct ModelInfo {
 }
 
 const OVMS_DOWNLOAD_URL: &str =
-    "https://github.com/openvinotoolkit/model_server/releases/download/v2025.3/ovms_windows_python_off.zip";
+    "https://github.com/openvinotoolkit/model_server/releases/download/v2025.4/ovms_windows_python_off.zip";
 const OVMS_ZIP_FILE: &str = "ovms_windows_python_off.zip";
 
 // Global OVMS process management
@@ -625,14 +625,14 @@ fn check_ovms_version(ovms_exe: &PathBuf) -> Result<bool, String> {
     let version_output = String::from_utf8_lossy(&output.stdout);
     info!(version_output = %version_output.trim(), "OVMS version output");
 
-    // Parse version from output like "OpenVINO Model Server 2025.3.0.6e2e910d"
-    let required_version = (2025, 3, 0);
+    // Parse version from output like "OpenVINO Model Server 2025.4"
+    let required_version = (2025, 4, 0);
 
     for line in version_output.lines() {
         if line.starts_with("OpenVINO Model Server") {
             // Extract version string after "OpenVINO Model Server "
             if let Some(version_str) = line.strip_prefix("OpenVINO Model Server ") {
-                // Parse version like "2025.3.0.6e2e910d" - take only the numeric part before any suffix
+                // Parse version like "2025.4" - take only the numeric part before any suffix
                 let version_parts: Vec<&str> = version_str.split('.').collect();
                 if version_parts.len() >= 3 {
                     // Parse major.minor.patch
