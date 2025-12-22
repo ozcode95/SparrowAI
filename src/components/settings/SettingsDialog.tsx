@@ -1,9 +1,5 @@
 import React, { useState } from "react";
-import {
-  Settings as SettingsIcon,
-  MessageSquare,
-  Sliders,
-} from "lucide-react";
+import { Settings as SettingsIcon, MessageSquare, Sliders } from "lucide-react";
 import { useUI, useSettings } from "@/store";
 import {
   Dialog,
@@ -43,7 +39,7 @@ export const SettingsDialog: React.FC = () => {
           </DialogTitle>
         </DialogHeader>
 
-        <div className="flex flex-1 gap-6 overflow-hidden">
+        <div className="flex flex-1 gap-6 overflow-hidden mt-7">
           {/* Tabs */}
           <div className="flex w-48 flex-col gap-1">
             {tabs.map((tab) => {
@@ -53,7 +49,7 @@ export const SettingsDialog: React.FC = () => {
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
                   className={cn(
-                    "flex items-center gap-3 rounded-lg px-4 py-2.5 text-sm font-medium transition-colors",
+                    "flex items-center gap-3 rounded-lg px-2 py-2.5 text-sm font-medium transition-colors",
                     activeTab === tab.id
                       ? "bg-accent-100 text-accent-900 dark:bg-accent-900/20 dark:text-accent-100"
                       : "text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"

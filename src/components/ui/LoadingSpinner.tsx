@@ -14,7 +14,7 @@ export const LoadingSpinner: React.FC<{
   return (
     <div
       className={cn(
-        "animate-spin rounded-full border-accent-600 border-t-transparent dark:border-accent-500",
+        "animate-spin rounded-full border-transparent border-t-accent-600 dark:border-t-accent-500",
         sizeClasses[size],
         className
       )}

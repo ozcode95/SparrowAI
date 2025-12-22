@@ -38,6 +38,21 @@ function App() {
 
   useDownloadedModels();
 
+  // Auto-connect MCP servers on app start
+  useEffect(() => {
+    const autoConnectMcpServers = async () => {
+      try {
+        const connected = await invoke<string[]>("auto_connect_mcp_servers");
+        if (connected.length > 0) {
+          console.log("Auto-connected MCP servers:", connected);
+        }
+      } catch (error) {
+        console.error("Failed to auto-connect MCP servers:", error);
+      }
+    };
+    autoConnectMcpServers();
+  }, []);
+
   // Apply theme mode to DOM on mount and when it changes
   useEffect(() => {
     if (themeMode === "dark") {
@@ -47,28 +62,11 @@ function App() {
     }
   }, [themeMode]);
 
-  // Create a new chat session on app startup
+  // Clear chat state on app startup (session will be created on first message)
   useEffect(() => {
-    const createNewChatOnStartup = async () => {
-      try {
-        clearTemporarySession();
-        clearCurrentChatMessages();
-
-        await new Promise((resolve) => setTimeout(resolve, 50));
-
-        const newSession: any = await invoke("create_temporary_chat_session", {
-          title: "New Chat",
-        });
-
-        setTemporarySession(newSession);
-        setActiveChatSessionId(newSession.id);
-        clearCurrentChatMessages();
-      } catch (error) {
-        console.error("Failed to create new chat session on startup:", error);
-      }
-    };
-
-    createNewChatOnStartup();
+    clearTemporarySession();
+    clearCurrentChatMessages();
+    setActiveChatSessionId(null);
   }, []);
 
   // Monitor OVMS initialization status
@@ -85,7 +83,7 @@ function App() {
         if (status.is_complete) {
           setIsOvmsRunning(true);
           setShowInitDialog(false);
-          
+
           // Only show notification once using ref
           if (!ovmsNotificationShownRef.current) {
             showNotification("OVMS initialized successfully", "success", 3000);
@@ -125,7 +123,7 @@ function App() {
       if (event.payload.is_complete && !event.payload.has_error) {
         setIsOvmsRunning(true);
         setShowInitDialog(false);
-        
+
         // Only show notification once using ref
         if (!ovmsNotificationShownRef.current) {
           showNotification("OVMS initialized successfully", "success", 3000);

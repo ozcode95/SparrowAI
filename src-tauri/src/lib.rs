@@ -618,8 +618,12 @@ pub fn run() {
                 mcp::disconnect_mcp_server,
                 mcp::get_mcp_server_info,
                 mcp::fetch_mcp_server_tools,
+                mcp::fetch_mcp_server_tools_details,
                 mcp::get_all_mcp_tools_for_chat,
-                mcp::call_mcp_tool
+                mcp::call_mcp_tool,
+                mcp::toggle_mcp_server_auto_connect,
+                mcp::enable_all_auto_connect,
+                mcp::auto_connect_mcp_servers
             ]
         )
         .setup(|app| {

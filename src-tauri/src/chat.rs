@@ -56,36 +56,62 @@ fn get_chat_sessions_path() -> Result<PathBuf, String> {
         .or_else(|_| std::env::var("HOME"))
         .map_err(|_| "Failed to get user home directory".to_string())?;
 
-    let sparrow_dir = PathBuf::from(home_dir).join(".sparrow");
+    let sparrow_dir = PathBuf::from(&home_dir).join(".sparrow");
 
     // Create .sparrow directory if it doesn't exist
     if !sparrow_dir.exists() {
+        info!(path = %sparrow_dir.display(), "Creating .sparrow directory");
         fs
             ::create_dir_all(&sparrow_dir)
             .map_err(|e| format!("Failed to create .sparrow directory: {}", e))?;
+        info!(path = %sparrow_dir.display(), "Directory created successfully");
     }
 
-    Ok(sparrow_dir.join("chat_sessions.json"))
+    let sessions_path = sparrow_dir.join("chat_sessions.json");
+    debug!(path = %sessions_path.display(), "Chat sessions path resolved");
+    
+    Ok(sessions_path)
 }
 
 fn load_chat_sessions() -> Result<ChatSessionsStorage, String> {
     debug!("Loading chat sessions");
     let path = get_chat_sessions_path()?;
+    
+    info!(path = %path.display(), exists = path.exists(), "Checking chat sessions file");
 
     if !path.exists() {
+        info!("Chat sessions file does not exist, returning empty storage");
         return Ok(ChatSessionsStorage::default());
     }
 
     let contents = fs
         ::read_to_string(&path)
-        .map_err(|e| format!("Failed to read chat sessions file: {}", e))?;
+        .map_err(|e| {
+            error!(path = %path.display(), error = %e, "Failed to read chat sessions file");
+            format!("Failed to read chat sessions file: {}", e)
+        })?;
+
+    info!(path = %path.display(), size = contents.len(), "Chat sessions file read successfully");
 
     let result = serde_json
         ::from_str::<ChatSessionsStorage>(&contents)
-        .map_err(|e| format!("Failed to parse chat sessions: {}", e));
+        .map_err(|e| {
+            error!(error = %e, content_preview = %&contents[..contents.len().min(200)], "Failed to parse chat sessions");
+            format!("Failed to parse chat sessions: {}", e)
+        });
+    
     match &result {
-        Ok(sessions) =>
-            debug!(session_count = sessions.sessions.len(), "Chat sessions loaded successfully"),
+        Ok(sessions) => {
+            info!(
+                session_count = sessions.sessions.len(),
+                active_session = ?sessions.active_session_id,
+                "Chat sessions loaded successfully"
+            );
+            // Log all session IDs for debugging
+            for (id, session) in &sessions.sessions {
+                debug!(session_id = %id, title = %session.title, message_count = session.messages.len(), "Loaded session");
+            }
+        }
         Err(e) => error!(error = %e, "Failed to load chat sessions"),
     }
     result
@@ -95,11 +121,29 @@ fn save_chat_sessions(storage: &ChatSessionsStorage) -> Result<(), String> {
     debug!(session_count = storage.sessions.len(), "Saving chat sessions");
     let path = get_chat_sessions_path()?;
 
+    info!(path = %path.display(), "Saving chat sessions to file");
+
     let contents = serde_json
         ::to_string_pretty(storage)
-        .map_err(|e| format!("Failed to serialize chat sessions: {}", e))?;
+        .map_err(|e| {
+            error!(error = %e, "Failed to serialize chat sessions");
+            format!("Failed to serialize chat sessions: {}", e)
+        })?;
 
-    fs::write(&path, contents).map_err(|e| format!("Failed to write chat sessions file: {}", e))
+    fs::write(&path, &contents).map_err(|e| {
+        error!(path = %path.display(), error = %e, "Failed to write chat sessions file");
+        format!("Failed to write chat sessions file: {}", e)
+    })?;
+
+    info!(
+        path = %path.display(),
+        session_count = storage.sessions.len(),
+        active_session = ?storage.active_session_id,
+        file_size = contents.len(),
+        "Chat sessions saved successfully"
+    );
+
+    Ok(())
 }
 
 fn generate_chat_title(content: &str) -> String {
@@ -146,6 +190,7 @@ pub async fn get_chat_sessions() -> Result<ChatSessionsStorage, String> {
 
 #[tauri::command]
 pub async fn create_chat_session(title: Option<String>) -> Result<ChatSession, String> {
+    info!("Creating new chat session");
     let mut storage = load_chat_sessions()?;
 
     let session_id = Uuid::new_v4().to_string();
@@ -160,10 +205,13 @@ pub async fn create_chat_session(title: Option<String>) -> Result<ChatSession, S
         messages: Vec::new(),
     };
 
+    info!(session_id = %session_id, title = %session.title, "New session created");
+    
     storage.sessions.insert(session_id.clone(), session.clone());
-    storage.active_session_id = Some(session_id);
+    storage.active_session_id = Some(session_id.clone());
 
     save_chat_sessions(&storage)?;
+    info!(session_id = %session_id, "Chat session saved to storage");
 
     Ok(session)
 }
@@ -256,18 +304,28 @@ pub async fn add_message_to_session(
     tokens_per_second: Option<f64>,
     is_error: Option<bool>
 ) -> Result<ChatMessage, String> {
+    info!(
+        session_id = %session_id,
+        role = %role,
+        content_length = content.len(),
+        "Adding message to session"
+    );
+    
     let mut storage = load_chat_sessions()?;
 
     let session = storage.sessions
         .get_mut(&session_id)
-        .ok_or_else(|| format!("Chat session not found: {}", session_id))?;
+        .ok_or_else(|| {
+            error!(session_id = %session_id, "Session not found");
+            format!("Chat session not found: {}", session_id)
+        })?;
 
     let message_id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp_millis();
 
     let message = ChatMessage {
-        id: message_id,
-        role,
+        id: message_id.clone(),
+        role: role.clone(),
         content: content.clone(),
         timestamp: now,
         tokens_per_second,
@@ -278,12 +336,31 @@ pub async fn add_message_to_session(
     session.updated_at = now;
 
     // Auto-generate title from first user message if still "New Chat"
-    if session.title == "New Chat" && message.role == "user" {
+    let auto_generated_title = if session.title == "New Chat" && role == "user" {
         let title = generate_chat_title(&content);
-        session.title = title;
-    }
+        info!(
+            session_id = %session_id,
+            old_title = "New Chat",
+            new_title = %title,
+            "Auto-generated session title"
+        );
+        session.title = title.clone();
+        Some(title)
+    } else {
+        None
+    };
+
+    let message_count = session.messages.len();
 
     save_chat_sessions(&storage)?;
+    info!(
+        session_id = %session_id,
+        message_id = %message_id,
+        role = %role,
+        message_count = message_count,
+        auto_title = ?auto_generated_title,
+        "Message added and session saved"
+    );
 
     Ok(message)
 }
@@ -378,13 +455,18 @@ pub async fn chat_with_loaded_model_streaming(
 ) -> Result<String, String> {
     let config = OpenAIConfig::new()
         .with_api_key("unused")
-        .with_api_base("http://localhost:1114/v1");
+        .with_api_base("http://localhost:1114/v3");
     let client = Client::with_config(config);
 
     // Get MCP tools info for system message
     let mcp_tools = match mcp::get_all_mcp_tools_for_chat(app.clone()).await {
         Ok(tools) => {
-            debug!("Successfully loaded {} MCP tools for system message", tools.len());
+            info!("Successfully loaded {} MCP tools for system message", tools.len());
+            if tools.is_empty() {
+                warn!("MCP tools list is empty - no tools will be available to LLM");
+            } else {
+                debug!("Available MCP tools: {:?}", tools.iter().map(|t| &t.function.name).collect::<Vec<_>>());
+            }
             tools
         }
         Err(e) => {
@@ -445,15 +527,25 @@ For each function call, return a json object with function name and arguments wi
         "You are a helpful AI assistant with access to various functions/tools. 
         You MUST use the available tools when they are relevant to answer the user's request.
 
-        IMPORTANT RULES:
-        1. NEVER make up or guess information that could be obtained from a function call
-        2. If you have a tool that can answer the question, USE IT
+        CRITICAL RULES FOR EVERY MESSAGE:
+        1. ALWAYS check if a tool can provide the answer - don't rely on previous responses
+        2. NEVER make up or guess information that could be obtained from a function call
+        3. If you have a tool that can answer the question, USE IT - even if you used it before
+        4. Each user message is a NEW request - previous tool calls don't apply to new questions
+        5. Call tools FRESH for each request, even if it's similar to a previous question
 
-        Available tools should be called whenever relevant to provide accurate, up-to-date information.".to_string()
+        The available tools should be called EVERY TIME they are relevant, regardless of conversation history.".to_string()
     });
 
     // Always append tools info to system message (whether custom or default)
     let system_message = format!("{}{}", base_system_message, tools_info);
+
+    info!(
+        system_message_length = system_message.len(),
+        has_tools = !tools_info.is_empty(),
+        tools_count = mcp_tools.len(),
+        "System message prepared with tools info"
+    );
 
     debug!("Message: {}", system_message);
     // Log what we're including
@@ -485,6 +577,12 @@ For each function call, return a json object with function name and arguments wi
                     }
                 }
 
+                info!(
+                    history_count = history.len(),
+                    session_id = session_id.clone().unwrap(),
+                    "Including conversation history"
+                );
+
                 for msg in history {
                     match msg.role.as_str() {
                         "user" => {
@@ -497,15 +595,22 @@ For each function call, return a json object with function name and arguments wi
                             );
                         }
                         "assistant" => {
-                            messages.push(
-                                ChatCompletionRequestAssistantMessageArgs::default()
-                                    .content(msg.content.clone())
-                                    .build()
-                                    .map_err(|e|
-                                        format!("Failed to build assistant message: {}", e)
-                                    )?
-                                    .into()
-                            );
+                            // Strip XML tags from assistant messages to prevent LLM from seeing
+                            // tool call patterns in history and hallucinating duplicate responses
+                            let cleaned_content = strip_tool_xml_tags(&msg.content);
+                            
+                            // Only include if there's actual content after stripping XML
+                            if !cleaned_content.is_empty() {
+                                messages.push(
+                                    ChatCompletionRequestAssistantMessageArgs::default()
+                                        .content(cleaned_content)
+                                        .build()
+                                        .map_err(|e|
+                                            format!("Failed to build assistant message: {}", e)
+                                        )?
+                                        .into()
+                                );
+                            }
                         }
                         _ => {
                             warn!(role = %msg.role, "Skipping unknown role");
@@ -519,6 +624,13 @@ For each function call, return a json object with function name and arguments wi
             }
         }
     }
+    
+    // Log total messages being sent
+    debug!(
+        total_messages = messages.len(),
+        has_tools = !tools_info.is_empty(),
+        "Preparing to send messages to LLM"
+    );
 
     // Always add the current user message
     messages.push(
@@ -886,7 +998,7 @@ For each function call, return a json object with function name and arguments wi
 async fn continue_conversation_after_tools(
     app: AppHandle,
     client: &Client<OpenAIConfig>,
-    system_message: &str,
+    _system_message: &str,
     previous_messages: &[async_openai::types::ChatCompletionRequestMessage],
     assistant_response_with_tools: String,
     model_name: &str,
@@ -898,24 +1010,51 @@ async fn continue_conversation_after_tools(
 ) -> Result<String, String> {
     debug!("Continuing conversation after tool execution");
 
-    // Build new message list with the assistant's response containing tool calls and results
+    // Create a clean system message for continuation - completely remove tool formatting
+    let continuation_system_message = 
+        "You are a helpful AI assistant. A tool has just been executed and returned results. \
+        Your task is to interpret the JSON results and provide a clear, natural language response to the user.\n\n\
+        CRITICAL: Respond ONLY with plain text. Do NOT use any XML tags like <tool_call> or <tool_response>. \
+        Do NOT wrap your response in any special formatting. Just provide a natural, conversational answer.".to_string();
+
+    debug!("Continuation system message (length: {})", continuation_system_message.len());
+
+    // Extract just the tool response content (the JSON data) without XML tags
+    // This prevents the LLM from seeing the XML format and copying it
+    let clean_tool_response = extract_tool_response_content(&assistant_response_with_tools);
+    
+    debug!("Clean tool response for continuation (length: {})", clean_tool_response.len());
+
+    // Build a minimal message list for continuation - ONLY system, user question, and tool result
+    // Do NOT include conversation history to avoid the LLM seeing XML patterns
     let mut continuation_messages = vec![
         ChatCompletionRequestSystemMessageArgs::default()
-            .content(system_message.to_string())
+            .content(continuation_system_message)
             .build()
             .map_err(|e| format!("Failed to build system message: {}", e))?
             .into()
     ];
 
-    // Add previous conversation messages (excluding system message)
-    for msg in previous_messages.iter().skip(1) {
-        continuation_messages.push(msg.clone());
+    // Find the last user message (the current question)
+    if let Some(last_user_msg) = previous_messages.iter().rev().find(|msg| {
+        // Check if this is a user message by inspecting the message structure
+        if let Ok(value) = serde_json::to_value(msg) {
+            if let Some(role) = value.get("role") {
+                return role.as_str() == Some("user");
+            }
+        }
+        false
+    }) {
+        // Add only the current user's question
+        continuation_messages.push(last_user_msg.clone());
+    } else {
+        warn!("Could not find user message in conversation history");
     }
 
-    // Add the assistant message with tool calls and responses
+    // Add a simplified assistant message showing the tool result without XML formatting
     continuation_messages.push(
         ChatCompletionRequestAssistantMessageArgs::default()
-            .content(assistant_response_with_tools)
+            .content(format!("I called a tool and received this result:\n{}", clean_tool_response))
             .build()
             .map_err(|e| format!("Failed to build assistant message with tools: {}", e))?
             .into()
@@ -1120,6 +1259,28 @@ fn extract_all_tool_calls_from_xml(text: &str) -> Vec<(String, String)> {
     tool_calls
 }
 
+fn extract_tool_response_content(text: &str) -> String {
+    // Extract content from <tool_response> tags without the XML formatting
+    if let Some(start) = text.find("<tool_response>") {
+        if let Some(end) = text[start..].find("</tool_response>") {
+            let content_start = start + 15; // Length of "<tool_response>"
+            let content_end = start + end;
+            let raw_content = text[content_start..content_end].trim();
+            
+            // Try to parse as JSON and pretty-print it for better LLM readability
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw_content) {
+                // Successfully parsed - return pretty-printed JSON
+                return serde_json::to_string_pretty(&parsed).unwrap_or_else(|_| raw_content.to_string());
+            }
+            
+            // If not valid JSON, return as-is
+            return raw_content.to_string();
+        }
+    }
+    // If no tool_response found, return the whole text
+    text.to_string()
+}
+
 fn has_incomplete_tool_call(text: &str) -> bool {
     if let Some(start) = text.rfind("<tool_call>") {
         if let Some(_end) = text[start..].find("</tool_call>") {
@@ -1147,4 +1308,53 @@ fn truncate_content(content: &str, max_length: usize) -> String {
             format!("{}...", truncated)
         }
     }
+}
+
+fn strip_tool_xml_tags(content: &str) -> String {
+    let mut result = String::new();
+    let mut current_pos = 0;
+    
+    while current_pos < content.len() {
+        // Look for tool_call start
+        if let Some(tool_call_start) = content[current_pos..].find("<tool_call>") {
+            let actual_start = current_pos + tool_call_start;
+            
+            // Add any text before the tool_call
+            result.push_str(&content[current_pos..actual_start]);
+            
+            // Find the end of tool_call
+            if let Some(tool_call_end_offset) = content[actual_start..].find("</tool_call>") {
+                let tool_call_end = actual_start + tool_call_end_offset + 12; // 12 = "</tool_call>".len()
+                current_pos = tool_call_end;
+                continue;
+            } else {
+                // Incomplete tool_call, skip to end
+                break;
+            }
+        }
+        // Look for tool_response start
+        else if let Some(tool_response_start) = content[current_pos..].find("<tool_response>") {
+            let actual_start = current_pos + tool_response_start;
+            
+            // Add any text before the tool_response
+            result.push_str(&content[current_pos..actual_start]);
+            
+            // Find the end of tool_response
+            if let Some(tool_response_end_offset) = content[actual_start..].find("</tool_response>") {
+                let tool_response_end = actual_start + tool_response_end_offset + 16; // 16 = "</tool_response>".len()
+                current_pos = tool_response_end;
+                continue;
+            } else {
+                // Incomplete tool_response, skip to end
+                break;
+            }
+        }
+        else {
+            // No more XML tags, add remaining content
+            result.push_str(&content[current_pos..]);
+            break;
+        }
+    }
+    
+    result.trim().to_string()
 }

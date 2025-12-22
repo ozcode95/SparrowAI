@@ -42,12 +42,16 @@ export const createModelsSlice: StateCreator<AppState, [], [], ModelsSlice> = (
   hasAnyDownloading: () => get().downloadingModels.size > 0,
   isModelDownloaded: (modelId) => get().downloadedModels.has(modelId),
 
-  setDownloadProgress: (modelId, progress) =>
+  setDownloadProgress: (modelId, progress, currentFile = "") =>
     set((state) => ({
-      downloadProgress: { ...state.downloadProgress, [modelId]: progress },
+      downloadProgress: {
+        ...state.downloadProgress,
+        [modelId]: { progress, currentFile },
+      },
     })),
 
-  getDownloadProgress: (modelId) => get().downloadProgress[modelId] || 0,
+  getDownloadProgress: (modelId) =>
+    get().downloadProgress[modelId] || { progress: 0, currentFile: "" },
 
   addDownloadedModel: (modelId) =>
     set((state) => {

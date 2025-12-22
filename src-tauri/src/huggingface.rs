@@ -627,7 +627,7 @@ pub async fn download_entire_model(
             "Using task type for graph generation"
         );
         
-        if let Err(e) = generate_graph_for_task(&task_type, &target_dir, graph_params.as_ref()) {
+        if let Err(e) = generate_graph_for_task(&task_type, &target_dir, &normalized_model_id, graph_params.as_ref()) {
             warn!(
                 error = %e,
                 task_type = %task_type,
@@ -819,6 +819,36 @@ fn render_template(template: &str, params: &HashMap<String, String>) -> String {
     result
 }
 
+// Helper function to detect tool and reasoning parsers from model_id
+fn detect_parsers(model_id: &str) -> (Option<String>, Option<String>) {
+    let model_id_lower = model_id.to_lowercase();
+    
+    // Check for gpt-oss first (sets both tool_parser and reasoning_parser)
+    if model_id_lower.contains("gpt-oss") {
+        return (Some("gptoss".to_string()), Some("gptoss".to_string()));
+    }
+    
+    // Check for qwen + coder combination before general qwen check
+    if model_id_lower.contains("qwen") && model_id_lower.contains("coder") {
+        return (Some("qwen3coder".to_string()), None);
+    }
+    
+    // Check for other model types
+    let tool_parser = if model_id_lower.contains("qwen") || model_id_lower.contains("hermes") {
+        Some("hermes3".to_string())
+    } else if model_id_lower.contains("llama") {
+        Some("llama3".to_string())
+    } else if model_id_lower.contains("mistral") {
+        Some("mistral".to_string())
+    } else if model_id_lower.contains("phi") {
+        Some("phi4".to_string())
+    } else {
+        None
+    };
+    
+    (tool_parser, None)
+}
+
 // Helper function to detect task type from model info
 fn detect_task_type(model_info: &ModelInfo) -> Option<String> {
     // Check pipeline_tag first
@@ -865,6 +895,7 @@ fn detect_task_type(model_info: &ModelInfo) -> Option<String> {
 fn generate_graph_for_task(
     task_type: &str,
     model_path: &PathBuf,
+    model_id: &str,
     params: Option<&GraphGenerationParams>,
 ) -> Result<(), String> {
     let mut template_params = HashMap::new();
@@ -899,7 +930,7 @@ fn generate_graph_for_task(
             );
             template_params.insert(
                 "cache_size".to_string(),
-                params.and_then(|p| p.cache_size).unwrap_or(10).to_string()
+                params.and_then(|p| p.cache_size).unwrap_or(2).to_string()
             );
             template_params.insert(
                 "max_num_seqs".to_string(),
@@ -913,12 +944,9 @@ fn generate_graph_for_task(
                     template_params.insert("pipeline_type".to_string(), "".to_string());
                 }
                 
-                if let Some(max_batched) = params.max_num_batched_tokens {
-                    template_params.insert("max_num_batched_tokens".to_string(), 
-                        format!("max_num_batched_tokens: {},\n          ", max_batched));
-                } else {
-                    template_params.insert("max_num_batched_tokens".to_string(), "".to_string());
-                }
+                let max_batched_tokens = params.max_num_batched_tokens.unwrap_or(8192);
+                template_params.insert("max_num_batched_tokens".to_string(), 
+                    format!("max_num_batched_tokens: {},\n          ", max_batched_tokens));
                 
                 if !params.dynamic_split_fuse.unwrap_or(true) {
                     template_params.insert("dynamic_split_fuse".to_string(), "dynamic_split_fuse: false,\n          ".to_string());
@@ -927,13 +955,31 @@ fn generate_graph_for_task(
                 }
             } else {
                 template_params.insert("pipeline_type".to_string(), "".to_string());
-                template_params.insert("max_num_batched_tokens".to_string(), "".to_string());
+                template_params.insert("max_num_batched_tokens".to_string(), 
+                    "max_num_batched_tokens: 8192,\n          ".to_string());
                 template_params.insert("dynamic_split_fuse".to_string(), "".to_string());
             }
             
-            template_params.insert("reasoning_parser".to_string(), "".to_string());
-            template_params.insert("tool_parser".to_string(), "".to_string());
-            template_params.insert("enable_tool_guided_generation".to_string(), "".to_string());
+            // Detect parsers from model_id
+            let (tool_parser, reasoning_parser) = detect_parsers(model_id);
+            
+            if let Some(tool_parser_value) = tool_parser {
+                template_params.insert("tool_parser".to_string(), 
+                    format!("tool_parser: \"{}\",\n          ", tool_parser_value));
+                template_params.insert("enable_tool_guided_generation".to_string(), 
+                    "enable_tool_guided_generation: false,\n          ".to_string());
+            } else {
+                template_params.insert("tool_parser".to_string(), "".to_string());
+                template_params.insert("enable_tool_guided_generation".to_string(), "".to_string());
+            }
+            
+            if let Some(reasoning_parser_value) = reasoning_parser {
+                template_params.insert("reasoning_parser".to_string(), 
+                    format!("reasoning_parser: \"{}\",\n          ", reasoning_parser_value));
+            } else {
+                template_params.insert("reasoning_parser".to_string(), "".to_string());
+            }
+            
             template_params.insert("draft_models_path".to_string(), "".to_string());
             render_template(TEXT_GENERATION_GRAPH_TEMPLATE, &template_params)
         },

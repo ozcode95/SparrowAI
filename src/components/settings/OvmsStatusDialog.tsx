@@ -57,16 +57,9 @@ export const OvmsStatusDialog: React.FC<OvmsStatusDialogProps> = ({
         modelName,
       });
       const metadataData = JSON.parse(response);
-      alert(
-        `Model Details for ${modelName}:\n\n${JSON.stringify(
-          metadataData,
-          null,
-          2
-        )}`
-      );
+      console.log(`Model Details for ${modelName}:`, metadataData);
     } catch (error) {
       console.error("OvmsStatusDialog: Failed to get model metadata:", error);
-      alert(`Failed to get details for ${modelName}:\n${error}`);
     }
   };
 

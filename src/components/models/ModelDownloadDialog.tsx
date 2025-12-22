@@ -40,7 +40,7 @@ export const ModelDownloadDialog = ({
     num_streams: 1,
     // Text generation defaults
     enable_prefix_caching: false,
-    cache_size: 10,
+    cache_size: 2,
     max_num_seqs: 256,
     // Embeddings defaults
     normalize: true,
@@ -58,7 +58,7 @@ export const ModelDownloadDialog = ({
     // Add task-specific defaults
     if (newType === "text_generation") {
       baseParams.enable_prefix_caching = false;
-      baseParams.cache_size = 10;
+      baseParams.cache_size = 2;
       baseParams.max_num_seqs = 256;
     } else if (newType === "embeddings_ov") {
       baseParams.normalize = true;
@@ -237,12 +237,9 @@ export const ModelDownloadDialog = ({
                     </label>
                     <Input
                       type="number"
-                      value={graphParams.cache_size || 10}
+                      value={graphParams.cache_size || 2}
                       onChange={(e) =>
-                        updateParam(
-                          "cache_size",
-                          parseInt(e.target.value) || 10
-                        )
+                        updateParam("cache_size", parseInt(e.target.value) || 2)
                       }
                       min="1"
                       className="text-sm"
@@ -294,7 +291,7 @@ export const ModelDownloadDialog = ({
                     </label>
                     <Input
                       type="number"
-                      value={graphParams.max_num_batched_tokens || ""}
+                      value={graphParams.max_num_batched_tokens || 8192}
                       onChange={(e) =>
                         updateParam(
                           "max_num_batched_tokens",

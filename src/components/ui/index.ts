@@ -11,6 +11,9 @@ export {
 } from "./Card";
 export type { CardProps } from "./Card";
 
+export { Accordion } from "./Accordion";
+export type { AccordionProps } from "./Accordion";
+
 export { Input, Textarea } from "./Input";
 export type { InputProps, TextareaProps } from "./Input";
 

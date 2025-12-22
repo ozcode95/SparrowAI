@@ -21,6 +21,14 @@ import {
   Package,
 } from "lucide-react";
 
+const RECOMMENDED_MODELS = [
+  "OpenVINO/Qwen3-8B-int4-ov",
+  "OpenVINO/Qwen3-4B-int8-ov",
+  "OpenVINO/Mistral-7B-Instruct-v0.3-int4-ov",
+  "OpenVINO/Phi-4-mini-instruct-int4-ov",
+  "OpenVINO/Qwen2.5-VL-7B-Instruct-int4-ov",
+];
+
 export const ModelsPage = () => {
   const {
     searchQuery,
@@ -93,8 +101,9 @@ export const ModelsPage = () => {
     const unlistenDownload = listen<DownloadProgress>(
       "download-progress",
       (event) => {
-        const { modelId, progress } = event.payload;
-        setDownloadProgress(modelId, progress);
+        const { modelId, progress, currentFile } = event.payload;
+        console.log("Download progress:", { modelId, progress, currentFile });
+        setDownloadProgress(modelId, progress, currentFile || "");
 
         // Check if download is complete (100%)
         if (progress >= 100) {
@@ -166,7 +175,6 @@ export const ModelsPage = () => {
       setSelectedModel(modelInfo);
     } catch (error) {
       console.error("Failed to fetch model info:", error);
-      alert(`Failed to fetch model info: ${error}`);
     } finally {
       setLoadingModelInfo(null);
     }
@@ -184,10 +192,6 @@ export const ModelsPage = () => {
   };
 
   const handleDelete = async (modelId: string) => {
-    if (!confirm(`Are you sure you want to delete ${modelId}?`)) {
-      return;
-    }
-
     try {
       const homeDir = await invoke<string>("get_home_dir");
       const modelPath = `${homeDir}\\.sparrow\\models\\${modelId}`;
@@ -197,7 +201,6 @@ export const ModelsPage = () => {
       await loadDownloadedModels();
     } catch (error) {
       console.error("Delete failed:", error);
-      alert(`Failed to delete model: ${error}`);
     }
   };
 
@@ -215,7 +218,6 @@ export const ModelsPage = () => {
       setLoadedModel(modelId);
     } catch (error) {
       console.error("Failed to load model:", error);
-      alert(`Failed to load model: ${error}`);
     }
   };
 
@@ -276,7 +278,7 @@ export const ModelsPage = () => {
           </Card>
 
           {/* Search Results */}
-          <div className="flex-1 overflow-y-auto space-y-3 min-h-0">
+          <div className="flex-1 overflow-y-auto space-y-3 min-h-0 px-2 py-1">
             {searchResults.length === 0 &&
               !isSearching &&
               debouncedSearch.trim() && (
@@ -289,18 +291,113 @@ export const ModelsPage = () => {
               )}
 
             {searchResults.length === 0 && !debouncedSearch.trim() && (
-              <Card className="p-8 text-center">
-                <Search className="w-12 h-12 mx-auto mb-3 text-gray-400" />
-                <p className="text-gray-600 dark:text-gray-400">
-                  Search for OpenVINO models to get started
-                </p>
-              </Card>
+              <>
+                <div className="mb-8">
+                  <h3 className="text-lg font-semibold mb-2">
+                    Recommended Models
+                  </h3>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">
+                    Popular OpenVINO models to get started
+                  </p>
+                </div>
+                {RECOMMENDED_MODELS.map((modelId) => {
+                  const downloading = isModelDownloading(modelId);
+                  const downloaded = isModelDownloaded(modelId);
+                  const progressData = getDownloadProgress(modelId);
+                  const progress = progressData.progress;
+                  const currentFile = progressData.currentFile;
+                  const modelInfo = modelInfoCache.get(modelId);
+                  const isLoadingInfo = loadingModelInfo === modelId;
+                  const isSelected = selectedModel?.id === modelId;
+
+                  return (
+                    <Card
+                      key={modelId}
+                      className={`p-3 cursor-pointer transition-all hover:shadow-md ${
+                        isSelected ? "ring-1 ring-primary" : ""
+                      }`}
+                      onClick={() => handleModelClick(modelId)}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <h3 className="font-semibold text-base truncate">
+                            {modelId}
+                          </h3>
+                          {modelInfo && modelInfo.pipeline_tag && (
+                            <span className="inline-block px-2 py-1 mt-1 text-xs rounded-full bg-primary/10 text-primary">
+                              {modelInfo.pipeline_tag}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex flex-col gap-1">
+                          {downloaded ? (
+                            <>
+                              <div className="flex items-center gap-1 text-xs text-green-600">
+                                <CheckCircle className="w-3 h-3" />
+                                <span>Downloaded</span>
+                              </div>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDelete(modelId);
+                                }}
+                              >
+                                <Trash2 className="w-3 h-3 mr-1" />
+                                Delete
+                              </Button>
+                            </>
+                          ) : downloading ? (
+                            <div className="space-y-2 min-w-[120px]">
+                              <div className="flex items-center gap-1 text-xs text-primary">
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                                <span>{progress}%</span>
+                              </div>
+                              <div className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                                <div
+                                  className="h-full bg-accent-600 dark:bg-accent-500 transition-all duration-300"
+                                  style={{ width: `${progress}%` }}
+                                />
+                              </div>
+                              {currentFile && (
+                                <p
+                                  className="text-xs text-gray-500 dark:text-gray-400 truncate max-w-[120px]"
+                                  title={currentFile}
+                                >
+                                  {currentFile.split("/").pop()}
+                                </p>
+                              )}
+                            </div>
+                          ) : (
+                            <Button
+                              variant="primary"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDownload(modelId);
+                              }}
+                              disabled={hasAnyDownloading()}
+                            >
+                              <Download className="w-3 h-3 mr-1" />
+                              Download
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    </Card>
+                  );
+                })}
+              </>
             )}
 
             {searchResults.map((modelId) => {
               const downloading = isModelDownloading(modelId);
               const downloaded = isModelDownloaded(modelId);
-              const progress = getDownloadProgress(modelId);
+              const progressData = getDownloadProgress(modelId);
+              const progress = progressData.progress;
+              const currentFile = progressData.currentFile;
               const modelInfo = modelInfoCache.get(modelId);
               const isLoadingInfo = loadingModelInfo === modelId;
               const isSelected = selectedModel?.id === modelId;
@@ -308,22 +405,16 @@ export const ModelsPage = () => {
               return (
                 <Card
                   key={modelId}
-                  className={`p-4 cursor-pointer transition-all hover:shadow-md ${
-                    isSelected ? "ring-2 ring-primary" : ""
+                  className={`p-3 cursor-pointer transition-all hover:shadow-md ${
+                    isSelected ? "ring-1 ring-primary" : ""
                   }`}
                   onClick={() => handleModelClick(modelId)}
                 >
-                  <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-start justify-between gap-2">
                     <div className="flex-1 min-w-0">
-                      <h3 className="font-semibold text-lg truncate">
+                      <h3 className="font-semibold text-base truncate">
                         {modelId}
                       </h3>
-                      {isLoadingInfo && (
-                        <div className="flex items-center gap-2 mt-2 text-sm text-gray-600">
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          <span>Loading info...</span>
-                        </div>
-                      )}
                       {modelInfo && modelInfo.pipeline_tag && (
                         <span className="inline-block px-2 py-1 mt-1 text-xs rounded-full bg-primary/10 text-primary">
                           {modelInfo.pipeline_tag}
@@ -331,11 +422,11 @@ export const ModelsPage = () => {
                       )}
                     </div>
 
-                    <div className="flex flex-col gap-2">
+                    <div className="flex flex-col gap-1">
                       {downloaded ? (
                         <>
-                          <div className="flex items-center gap-2 text-sm text-green-600">
-                            <CheckCircle className="w-4 h-4" />
+                          <div className="flex items-center gap-1 text-xs text-green-600">
+                            <CheckCircle className="w-3 h-3" />
                             <span>Downloaded</span>
                           </div>
                           <Button
@@ -346,22 +437,30 @@ export const ModelsPage = () => {
                               handleDelete(modelId);
                             }}
                           >
-                            <Trash2 className="w-4 h-4 mr-2" />
+                            <Trash2 className="w-3 h-3 mr-1" />
                             Delete
                           </Button>
                         </>
                       ) : downloading ? (
-                        <div className="space-y-2">
-                          <div className="flex items-center gap-2 text-sm text-primary">
-                            <Loader2 className="w-4 h-4 animate-spin" />
+                        <div className="space-y-1 min-w-[120px]">
+                          <div className="flex items-center gap-1 text-xs text-primary">
+                            <Loader2 className="w-3 h-3 animate-spin" />
                             <span>{progress}%</span>
                           </div>
-                          <div className="w-32 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                          <div className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
                             <div
-                              className="h-full bg-primary transition-all duration-300"
+                              className="h-full bg-accent-600 dark:bg-accent-500 transition-all duration-300"
                               style={{ width: `${progress}%` }}
                             />
                           </div>
+                          {currentFile && (
+                            <p
+                              className="text-xs text-gray-500 dark:text-gray-400 truncate max-w-[120px]"
+                              title={currentFile}
+                            >
+                              {currentFile.split("/").pop()}
+                            </p>
+                          )}
                         </div>
                       ) : (
                         <Button
@@ -373,7 +472,7 @@ export const ModelsPage = () => {
                           }}
                           disabled={hasAnyDownloading()}
                         >
-                          <Download className="w-4 h-4 mr-2" />
+                          <Download className="w-3 h-3 mr-1" />
                           Download
                         </Button>
                       )}

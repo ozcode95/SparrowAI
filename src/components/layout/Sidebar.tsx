@@ -51,6 +51,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     temporarySession,
     setTemporarySession,
     clearTemporarySession,
+    clearCurrentChatMessages,
   } = useChat();
 
   const [, setLoadingChatSessions] = useState(false);
@@ -93,21 +94,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const createNewChat = async () => {
     try {
-      const loadedModel = await getLoadedModel();
-
-      const newSession: any = await invoke("create_temporary_chat_session", {
-        title: "New Chat",
-      });
-
-      if (loadedModel) {
-        newSession.model_id = loadedModel;
-      }
-
+      // Clear current session - new one will be created on first message
       clearTemporarySession();
-      setTemporarySession(newSession);
-      setActiveChatSessionId(newSession.id);
+      setActiveChatSessionId(null);
+      clearCurrentChatMessages();
       onPageChange("chat");
-      showNotification("New chat created", "success", 3000);
+      // No notification needed when switching to new chat
     } catch (error) {
       console.error("Sidebar: Failed to create new chat:", error);
       showNotification("Failed to create new chat", "error", 3000);
@@ -120,13 +112,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
       const result: any = await invoke("get_chat_sessions");
       setChatSessions(result.sessions || {});
 
-      if (!temporarySession && !activeChatSessionId) {
-        setActiveChatSessionId(result.active_session_id);
-
-        if (!result.active_session_id) {
-          await createNewChat();
-        }
-      }
+      // Don't auto-load the last session - always start with a clean slate
+      // User can manually select a previous session from the sidebar if needed
     } catch (error) {
       console.error("Sidebar: Failed to load chat sessions:", error);
       showNotification("Failed to load chat sessions", "error");
@@ -189,7 +176,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     try {
       await invoke("delete_chat_session", { sessionId });
       removeChatSession(sessionId);
-      showNotification("Chat deleted", "success");
+      showNotification("Chat deleted", "success", 3000);
 
       if (activeChatSessionId === sessionId) {
         await createNewChat();
@@ -215,9 +202,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {/* Header */}
         <div className="flex h-16 items-center justify-between border-b border-gray-200 px-4 dark:border-gray-800">
           {!isCollapsed && (
-            <h1 className="text-xl font-bold text-gray-900 dark:text-white">
-              SparrowAI
-            </h1>
+            <img src="/white_logo_xbg.png" alt="SparrowAI" className="h-8" />
           )}
           <Button
             variant="ghost"
@@ -233,8 +218,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </Button>
         </div>
 
-        {/* Chat Section */}
+        {/* Main Content */}
         <div className="flex-1 overflow-y-auto">
+          {/* New Chat Button */}
           <div className="p-2">
             <Button
               variant="outline"
@@ -249,44 +235,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </Button>
           </div>
 
-          {/* Chat Sessions */}
-          {!isCollapsed && (
-            <div className="space-y-1 px-2">
-              {chatSessionsArray.map((session) => {
-                const isActive =
-                  session.id === activeChatSessionId ||
-                  session.id === temporarySession?.id;
-
-                return (
-                  <div
-                    key={session.id}
-                    className={cn(
-                      "group flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors cursor-pointer",
-                      isActive
-                        ? "bg-accent-100 text-accent-900 dark:bg-accent-900/20 dark:text-accent-100"
-                        : "hover:bg-gray-100 dark:hover:bg-gray-800"
-                    )}
-                    onClick={() => selectChatSession(session.id)}
-                  >
-                    <MessageSquare className="h-4 w-4 shrink-0" />
-                    <span className="flex-1 truncate">{session.title}</span>
-                    <button
-                      onClick={(e) => deleteChat(session.id, e)}
-                      className="opacity-0 group-hover:opacity-100 rounded p-1 hover:bg-gray-200 dark:hover:bg-gray-700"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Divider */}
-          <div className="my-4 border-t border-gray-200 dark:border-gray-800" />
-
           {/* Menu Items */}
-          <div className="space-y-1 px-2">
+          <div className="space-y-1 px-2 mb-3">
             {menuItems.map((item) => (
               <button
                 key={item.id}
@@ -304,6 +254,46 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </button>
             ))}
           </div>
+
+          {/* Divider */}
+          {!isCollapsed && chatSessionsArray.length > 0 && (
+            <div className="mx-2 mb-2 border-t border-gray-200 dark:border-gray-800" />
+          )}
+
+          {/* Chat Sessions */}
+          {!isCollapsed && (
+            <div className="space-y-0.5 px-2">
+              {chatSessionsArray.map((session) => {
+                const isActive =
+                  session.id === activeChatSessionId ||
+                  session.id === temporarySession?.id;
+
+                return (
+                  <div
+                    key={session.id}
+                    className={cn(
+                      "group flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs transition-colors cursor-pointer",
+                      isActive
+                        ? "bg-accent-100 text-accent-900 dark:bg-accent-900/20 dark:text-accent-100"
+                        : "hover:bg-gray-100 dark:hover:bg-gray-800"
+                    )}
+                    onClick={() => selectChatSession(session.id)}
+                  >
+                    <MessageSquare className="h-3.5 w-3.5 shrink-0" />
+                    <span className="flex-1 truncate pl-1">
+                      {session.title}
+                    </span>
+                    <button
+                      onClick={(e) => deleteChat(session.id, e)}
+                      className="opacity-0 group-hover:opacity-100 rounded p-0.5 hover:bg-gray-200 dark:hover:bg-gray-700"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Footer */}

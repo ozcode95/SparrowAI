@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { PageContainer } from "../layout";
 import { Card, Button } from "../ui";
+import { MessageContent } from "./MessageContent";
 import { useAppStore } from "@/store";
 import { Send, Bot, User, Loader2, Wrench } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -50,9 +51,28 @@ export const ChatPage = () => {
     setInput("");
   }, [activeChatSessionId, temporarySession]);
 
-  // Load messages for active session
+  // Load messages for active session (but only when switching sessions, not when creating new)
+  const previousSessionIdRef = useRef<string | null>(null);
+
   useEffect(() => {
+    // Only load messages if session changed AND it's not a new session we just created
     if (activeChatSessionId && !temporarySession) {
+      // Skip loading if this is the first time setting the session (new session)
+      if (
+        previousSessionIdRef.current === null &&
+        currentChatMessages.length > 0
+      ) {
+        previousSessionIdRef.current = activeChatSessionId;
+        return;
+      }
+
+      // Skip if session hasn't changed
+      if (previousSessionIdRef.current === activeChatSessionId) {
+        return;
+      }
+
+      previousSessionIdRef.current = activeChatSessionId;
+
       invoke<ChatMessageType[]>("get_session_messages", {
         sessionId: activeChatSessionId,
       })
@@ -62,18 +82,77 @@ export const ChatPage = () => {
         .catch((error) => {
           console.error("Failed to load session messages:", error);
         });
+    } else if (!activeChatSessionId) {
+      previousSessionIdRef.current = null;
     }
-  }, [activeChatSessionId, temporarySession, setCurrentChatMessages]);
+  }, [
+    activeChatSessionId,
+    temporarySession,
+    setCurrentChatMessages,
+    currentChatMessages.length,
+  ]);
 
   // Listen for streaming tokens
   useEffect(() => {
+    let accumulatedMessage = "";
+    let accumulatedToolCalls: ToolCall[] = [];
+
     const unlisten = listen<{ token: string; finished: boolean }>(
       "chat-token",
-      (event) => {
+      async (event) => {
         if (event.payload.finished) {
-          setIsStreaming(false);
+          console.log(
+            "Chat streaming finished, accumulated message length:",
+            accumulatedMessage.length
+          );
+
+          // Save the complete assistant message to chat session
+          if (accumulatedMessage.trim()) {
+            try {
+              // Save to backend
+              if (activeChatSessionId) {
+                console.log(
+                  "Saving assistant message to session:",
+                  activeChatSessionId
+                );
+                await invoke("add_message_to_session", {
+                  sessionId: activeChatSessionId,
+                  role: "assistant",
+                  content: accumulatedMessage,
+                  tokensPerSecond: null,
+                  isError: false,
+                });
+                console.log("Assistant message saved successfully");
+
+                // Add to UI
+                const assistantMessage: ChatMessageType = {
+                  id: crypto.randomUUID(),
+                  role: "assistant",
+                  content: accumulatedMessage,
+                  timestamp: Date.now(),
+                  toolCalls:
+                    accumulatedToolCalls.length > 0
+                      ? accumulatedToolCalls
+                      : undefined,
+                };
+                addMessageToCurrentChat(assistantMessage);
+              } else {
+                console.warn("No active session ID to save message");
+              }
+            } catch (error) {
+              console.error("Failed to save assistant message:", error);
+            }
+          }
+
+          // Clear streaming state
           setCurrentStreamingMessage("");
+          setToolCalls([]);
+          setIsStreaming(false);
+          accumulatedMessage = "";
+          accumulatedToolCalls = [];
         } else {
+          // Accumulate the token
+          accumulatedMessage += event.payload.token;
           setCurrentStreamingMessage((prev) => prev + event.payload.token);
         }
       }
@@ -82,7 +161,7 @@ export const ChatPage = () => {
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, []);
+  }, [activeChatSessionId, addMessageToCurrentChat]);
 
   // Listen for tool calls
   useEffect(() => {
@@ -94,72 +173,6 @@ export const ChatPage = () => {
       unlisten.then((fn) => fn());
     };
   }, []);
-
-  // Listen for chat completion
-  useEffect(() => {
-    const unlisten = listen<{ response: string; tokens_per_second?: number }>(
-      "chat-complete",
-      async (event) => {
-        setIsStreaming(false);
-        setCurrentStreamingMessage("");
-
-        const assistantMessage: ChatMessageType = {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: event.payload.response,
-          timestamp: Date.now(),
-          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-        };
-
-        // Add to temporary session or active session
-        if (temporarySession) {
-          const result = await invoke<[any, ChatMessageType]>(
-            "add_message_to_temporary_session",
-            {
-              session: temporarySession,
-              role: "assistant",
-              content: event.payload.response,
-              tokensPerSecond: event.payload.tokens_per_second,
-              isError: false,
-            }
-          );
-          const [updatedSession] = result;
-
-          // Persist the temporary session after first response
-          await invoke("persist_temporary_session", {
-            session: updatedSession,
-          });
-          setActiveChatSessionId(updatedSession.id);
-          setTemporarySession(null);
-          addMessageToCurrentChat(assistantMessage);
-
-          // Trigger sidebar refresh by emitting event
-          window.dispatchEvent(new CustomEvent("chat-session-created"));
-        } else if (activeChatSessionId) {
-          await invoke("add_message_to_session", {
-            sessionId: activeChatSessionId,
-            role: "assistant",
-            content: event.payload.response,
-            tokensPerSecond: event.payload.tokens_per_second,
-            isError: false,
-          });
-          addMessageToCurrentChat(assistantMessage);
-        }
-
-        setToolCalls([]);
-      }
-    );
-
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, [
-    temporarySession,
-    activeChatSessionId,
-    addMessageToCurrentChat,
-    setTemporarySession,
-    toolCalls,
-  ]);
 
   // Listen for chat errors
   useEffect(() => {
@@ -209,15 +222,21 @@ export const ChatPage = () => {
     try {
       let sessionToUse = activeChatSessionId;
 
+      console.log("handleSend - activeChatSessionId:", activeChatSessionId);
+      console.log("handleSend - temporarySession:", temporarySession);
+
       // Create new session if this is the first message (no active session)
       if (!activeChatSessionId && !temporarySession) {
+        console.log("Creating new chat session...");
         const newSession = await invoke<any>("create_chat_session", {
           title: null,
         });
+        console.log("New session created:", newSession);
         sessionToUse = newSession.id;
         setActiveChatSessionId(newSession.id);
 
         // Add user message to the new session
+        console.log("Adding user message to new session:", newSession.id);
         await invoke("add_message_to_session", {
           sessionId: newSession.id,
           role: "user",
@@ -225,34 +244,54 @@ export const ChatPage = () => {
           tokensPerSecond: null,
           isError: false,
         });
+        console.log("User message added to new session");
 
         // Trigger sidebar refresh
         window.dispatchEvent(new CustomEvent("chat-session-created"));
-      } else if (temporarySession) {
-        // Handle temporary session
-        const result = await invoke<[any, ChatMessageType]>(
-          "add_message_to_temporary_session",
-          {
-            session: temporarySession,
+      } else if (activeChatSessionId) {
+        // Verify the session exists in backend before adding message
+        console.log("Checking if session exists:", activeChatSessionId);
+        try {
+          await invoke("get_session_messages", {
+            sessionId: activeChatSessionId,
+          });
+          console.log("Session exists, adding message");
+
+          // Add to existing active session
+          await invoke("add_message_to_session", {
+            sessionId: activeChatSessionId,
             role: "user",
             content: messageContent,
             tokensPerSecond: null,
             isError: false,
-          }
-        );
-        const [updatedSession] = result;
-        setTemporarySession(updatedSession);
-        sessionToUse = updatedSession.id;
-      } else if (activeChatSessionId) {
-        // Add to existing active session
-        await invoke("add_message_to_session", {
-          sessionId: activeChatSessionId,
-          role: "user",
-          content: messageContent,
-          tokensPerSecond: null,
-          isError: false,
-        });
+          });
+          console.log("User message added to existing session");
+        } catch (error) {
+          console.error("Session not found in backend, creating new one");
+          // Session doesn't exist in backend, create a new one
+          const newSession = await invoke<any>("create_chat_session", {
+            title: null,
+          });
+          console.log("New session created:", newSession);
+          sessionToUse = newSession.id;
+          setActiveChatSessionId(newSession.id);
+
+          // Add user message to the new session
+          await invoke("add_message_to_session", {
+            sessionId: newSession.id,
+            role: "user",
+            content: messageContent,
+            tokensPerSecond: null,
+            isError: false,
+          });
+          console.log("User message added to new session");
+
+          // Trigger sidebar refresh
+          window.dispatchEvent(new CustomEvent("chat-session-created"));
+        }
       }
+
+      console.log("Using session for chat:", sessionToUse);
 
       // Prepare LLM configuration (use local overrides if set, otherwise global settings)
       const effectiveTemperature =
@@ -262,10 +301,15 @@ export const ChatPage = () => {
         localMaxTokens !== null ? localMaxTokens : settings.maxTokens;
 
       // Start streaming chat with all configuration
+      // Strip 'OpenVINO/' prefix from model name if present
+      const modelNameForChat = loadedModel.startsWith("OpenVINO/")
+        ? loadedModel.substring("OpenVINO/".length)
+        : loadedModel;
+
       await invoke("chat_with_loaded_model_streaming", {
         sessionId: sessionToUse,
         message: messageContent,
-        modelName: loadedModel,
+        modelName: modelNameForChat,
         includeHistory: settings.includeConversationHistory,
         systemPrompt: settings.systemPrompt || null,
         temperature: effectiveTemperature,
@@ -290,11 +334,18 @@ export const ChatPage = () => {
   const handleLoadModel = async (modelId: string) => {
     setIsLoadingModel(true);
     try {
+      // If a model is already loaded, unload it first
+      if (loadedModel) {
+        console.log(`Unloading current model: ${loadedModel}`);
+        await invoke("unload_model");
+        console.log("Model unloaded successfully");
+      }
+
+      // Load the new model
       await invoke("load_model", { modelId });
       setLoadedModel(modelId);
     } catch (error) {
       console.error("Failed to load model:", error);
-      alert(`Failed to load model: ${error}`);
     } finally {
       setIsLoadingModel(false);
     }
@@ -305,7 +356,7 @@ export const ChatPage = () => {
       title="Chat"
       description="Conversation with AI assistant"
       actions={
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 py-1 pr-2">
           <select
             value={loadedModel || ""}
             onChange={(e) => e.target.value && handleLoadModel(e.target.value)}
@@ -343,7 +394,7 @@ export const ChatPage = () => {
           {currentChatMessages.map((message) => (
             <div
               key={message.id}
-              className={`flex gap-3 ${
+              className={`flex gap-3 items-center ${
                 message.role === "user" ? "justify-end" : "justify-start"
               }`}
             >
@@ -354,13 +405,19 @@ export const ChatPage = () => {
               )}
 
               <Card
-                className={`max-w-[80%] p-4 ${
-                  message.role === "user" ? "bg-primary text-white" : ""
-                }`}
+                className={`${
+                  message.role === "user"
+                    ? "bg-primary text-white max-w-[85%]"
+                    : "flex-1"
+                } p-4`}
               >
-                <div className="prose prose-sm max-w-none dark:prose-invert">
-                  <ReactMarkdown>{message.content}</ReactMarkdown>
-                </div>
+                {message.role === "assistant" ? (
+                  <MessageContent content={message.content} />
+                ) : (
+                  <div className="prose prose-sm max-w-none dark:prose-invert">
+                    <ReactMarkdown>{message.content}</ReactMarkdown>
+                  </div>
+                )}
 
                 {message.toolCalls && message.toolCalls.length > 0 && (
                   <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700 space-y-2">
@@ -391,23 +448,22 @@ export const ChatPage = () => {
 
           {/* Streaming message */}
           {isStreaming && currentStreamingMessage && (
-            <div className="flex gap-3 justify-start">
+            <div className="flex gap-3 items-center justify-start">
               <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
                 <Bot className="w-5 h-5 text-primary" />
               </div>
-              <Card className="max-w-[80%] p-4">
-                <div className="prose prose-sm max-w-none dark:prose-invert">
-                  <ReactMarkdown>{currentStreamingMessage}</ReactMarkdown>
-                </div>
+              <Card className="flex-1 p-4">
+                <MessageContent content={currentStreamingMessage} />
               </Card>
             </div>
           )}
 
           {/* Loading indicator */}
           {isStreaming && !currentStreamingMessage && (
-            <div className="flex gap-3 justify-start">
-              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-                <Bot className="w-5 h-5 text-primary animate-pulse" />
+            <div className="flex gap-3 items-center justify-start">
+              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center relative">
+                <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-primary animate-spin"></div>
+                <Bot className="w-5 h-5 text-primary" />
               </div>
               <Card className="p-4">
                 <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400">

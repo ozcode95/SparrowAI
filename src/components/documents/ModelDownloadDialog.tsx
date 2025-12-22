@@ -36,7 +36,10 @@ export const ModelDownloadDialog = ({
   );
 
   const BGE_MODELS = [
-    { id: "OpenVINO/bge-base-en-v1.5-int8-ov", name: "BGE Embedding Model" },
+    {
+      id: "OpenVINO/Qwen3-Embedding-0.6B-int8-ov",
+      name: "Qwen3 Embedding Model",
+    },
     { id: "OpenVINO/bge-reranker-base-int8-ov", name: "BGE Reranker Model" },
   ];
 

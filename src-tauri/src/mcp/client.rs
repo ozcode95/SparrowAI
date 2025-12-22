@@ -15,6 +15,12 @@ use async_openai::types::{ ChatCompletionTool, ChatCompletionToolType, FunctionO
 use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolInfo {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerInfo {
     pub name: String,
     pub config: McpServerConfig,
@@ -157,6 +163,29 @@ impl McpManager {
 
         info!(server_name = %server_name, tool_count = tool_names.len(), tools = ?tool_names, "Found tools from MCP server");
         Ok(tool_names)
+    }
+
+    pub async fn fetch_tools_with_details(
+        &self,
+        server_name: &str
+    ) -> Result<Vec<ToolInfo>, Box<dyn std::error::Error>> {
+        let client = self.clients
+            .get(server_name)
+            .ok_or(format!("Server '{}' not connected", server_name))?;
+
+        debug!(server_name = %server_name, "Fetching tools with details from MCP server");
+        let tools_response = client.list_tools(Default::default()).await?;
+
+        let tools: Vec<ToolInfo> = tools_response.tools
+            .iter()
+            .map(|tool| ToolInfo {
+                name: tool.name.to_string(),
+                description: tool.description.as_ref().map(|d| d.to_string()),
+            })
+            .collect();
+
+        info!(server_name = %server_name, tool_count = tools.len(), "Found tools with details from MCP server");
+        Ok(tools)
     }
 
     pub fn add_server(&mut self, name: String, config: McpServerConfig) {

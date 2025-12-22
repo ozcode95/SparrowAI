@@ -141,7 +141,6 @@ export const DocumentsPage = () => {
           });
         } catch (error) {
           console.error(`Failed to process ${filePath}:`, error);
-          alert(`Failed to process file: ${error}`);
         }
       }
 

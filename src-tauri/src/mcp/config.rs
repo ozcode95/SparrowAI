@@ -16,6 +16,10 @@ pub struct McpServerConfig {
     // For SSE and HTTP transports
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    
+    // Auto-connect on startup
+    #[serde(default)]
+    pub auto_connect: bool,
 }
 
 impl McpServerConfig {

@@ -48,7 +48,7 @@ export interface ModelsSlice {
   selectedModel: any | null;
   isSearching: boolean;
   downloadingModels: Set<string>;
-  downloadProgress: Record<string, number>;
+  downloadProgress: Record<string, { progress: number; currentFile: string }>;
   downloadedModels: Set<string>;
   isOvmsRunning: boolean;
   loadedModel: string | null;
@@ -61,8 +61,15 @@ export interface ModelsSlice {
   isModelDownloading: (modelId: string) => boolean;
   hasAnyDownloading: () => boolean;
   isModelDownloaded: (modelId: string) => boolean;
-  setDownloadProgress: (modelId: string, progress: number) => void;
-  getDownloadProgress: (modelId: string) => number;
+  setDownloadProgress: (
+    modelId: string,
+    progress: number,
+    currentFile?: string
+  ) => void;
+  getDownloadProgress: (modelId: string) => {
+    progress: number;
+    currentFile: string;
+  };
   addDownloadedModel: (modelId: string) => void;
   removeDownloadedModel: (modelId: string) => void;
   setDownloadedModels: (modelIds: string[]) => void;
