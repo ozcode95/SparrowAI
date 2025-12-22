@@ -109,10 +109,15 @@ async fn download_single_file(
         .get(file_url)
         .header("User-Agent", constants::USER_AGENT)
         .send().await
-        .map_err(|e| format!("Request failed: {}", e))?;
+        .map_err(|e| {
+            log_operation_error!("File download", &e, file = %file_info.path, model_id = %model_id);
+            format!("Request failed: {}", e)
+        })?;
 
     if !response.status().is_success() {
-        return Err(format!("HTTP error {}", response.status()));
+        let status = response.status();
+        log_operation_error!("File download", &format!("HTTP {}", status), file = %file_info.path, model_id = %model_id);
+        return Err(format!("HTTP error {}", status));
     }
 
     // Get content length for progress tracking
@@ -121,7 +126,10 @@ async fn download_single_file(
     // Create the file
     let mut file = tokio::fs::File
         ::create(&target_file).await
-        .map_err(|e| format!("Failed to create file: {}", e))?;
+        .map_err(|e| {
+            log_operation_error!("File creation", &e, file = %file_info.path, model_id = %model_id);
+            format!("Failed to create file: {}", e)
+        })?;
 
     // Stream the response body in chunks to avoid loading entire file into memory
     let mut stream = response.bytes_stream();
@@ -177,13 +185,25 @@ async fn download_single_file(
     }
 
     // Ensure all data is written to disk
-    file.flush().await.map_err(|e| format!("Failed to flush file: {}", e))?;
+    file.flush().await.map_err(|e| {
+        log_operation_error!("File flush", &e, file = %file_info.path, model_id = %model_id);
+        format!("Failed to flush file: {}", e)
+    })?;
+
+    tracing::debug!(
+        file = %file_info.path,
+        bytes = downloaded,
+        model_id = %model_id,
+        "File downloaded successfully"
+    );
 
     Ok(downloaded)
 }
 
 #[tauri::command]
 pub async fn search_models(query: String, limit: Option<u32>) -> Result<SearchResult, String> {
+    log_operation_start!("Model search");
+    
     let client = reqwest::Client::new();
     let search_limit = limit.unwrap_or(constants::DEFAULT_MODEL_SEARCH_LIMIT).min(constants::MAX_MODEL_SEARCH_LIMIT);
 
@@ -193,6 +213,8 @@ pub async fn search_models(query: String, limit: Option<u32>) -> Result<SearchRe
     } else {
         format!("{}/{}", constants::OPENVINO_ORG, query)
     };
+
+    tracing::debug!(query = %search_query, limit = search_limit, org = constants::OPENVINO_ORG, "Searching HuggingFace models");
 
     let url = format!(
         "{}/models?search={}&limit={}&author={}",
@@ -206,15 +228,23 @@ pub async fn search_models(query: String, limit: Option<u32>) -> Result<SearchRe
         .get(&url)
         .header("User-Agent", "SparrowAI/1.0")
         .send().await
-        .map_err(|e| format!("Failed to send request: {}", e))?;
+        .map_err(|e| {
+            log_operation_error!("Model search", &e);
+            format!("Failed to send request: {}", e)
+        })?;
 
     if !response.status().is_success() {
-        return Err(format!("API request failed with status: {}", response.status()));
+        let status = response.status();
+        log_operation_error!("Model search", &format!("API returned status {}", status));
+        return Err(format!("API request failed with status: {}", status));
     }
 
     let hf_models: Vec<HfModelInfo> = response
         .json().await
-        .map_err(|e| format!("Failed to parse JSON: {}", e))?;
+        .map_err(|e| {
+            log_operation_error!("Model search", &format!("JSON parse failed: {}", e));
+            format!("Failed to parse JSON: {}", e)
+        })?;
 
     // Filter to only include OpenVINO models and optionally filter by query
     let model_ids: Vec<String> = hf_models
@@ -231,6 +261,9 @@ pub async fn search_models(query: String, limit: Option<u32>) -> Result<SearchRe
 
     let total_count = model_ids.len() as u64;
 
+    log_operation_success!("Model search");
+    tracing::debug!(count = total_count, query = %query, "Found models");
+
     Ok(SearchResult {
         model_ids,
         total_count: Some(total_count),
@@ -239,6 +272,8 @@ pub async fn search_models(query: String, limit: Option<u32>) -> Result<SearchRe
 
 #[tauri::command]
 pub async fn get_model_info(model_id: String) -> Result<ModelInfo, String> {
+    log_operation_start!("Get model info");
+    
     let client = reqwest::Client::new();
 
     // Ensure we're getting info for an OpenVINO model
@@ -247,6 +282,8 @@ pub async fn get_model_info(model_id: String) -> Result<ModelInfo, String> {
     } else {
         format!("OpenVINO/{}", model_id)
     };
+
+    tracing::debug!(model_id = %normalized_model_id, "Fetching model info from HuggingFace");
 
     // Don't encode the model ID - HuggingFace API expects it as-is in the path
     let url = format!(
@@ -258,23 +295,32 @@ pub async fn get_model_info(model_id: String) -> Result<ModelInfo, String> {
         .get(&url)
         .header("User-Agent", "SparrowAI/1.0")
         .send().await
-        .map_err(|e| format!("Failed to send request: {}", e))?;
+        .map_err(|e| {
+            log_operation_error!("Get model info", &e, model_id = %normalized_model_id);
+            format!("Failed to send request: {}", e)
+        })?;
 
     if !response.status().is_success() {
+        let status = response.status();
+        log_operation_error!("Get model info", &format!("API returned status {}", status), model_id = %normalized_model_id);
         return Err(
             format!(
                 "API request failed with status: {}. Make sure the model exists under OpenVINO organization.",
-                response.status()
+                status
             )
         );
     }
 
     let hf_model: HfModelInfo = response
         .json().await
-        .map_err(|e| format!("Failed to parse JSON: {}", e))?;
+        .map_err(|e| {
+            log_operation_error!("Get model info", &format!("JSON parse failed: {}", e), model_id = %normalized_model_id);
+            format!("Failed to parse JSON: {}", e)
+        })?;
 
     // Verify this is actually an OpenVINO model
     if !hf_model.id.starts_with("OpenVINO/") {
+        log_operation_error!("Get model info", "Model not from OpenVINO organization", model_id = %hf_model.id);
         return Err(format!("Model {} is not from OpenVINO organization", hf_model.id));
     }
 
@@ -288,6 +334,9 @@ pub async fn get_model_info(model_id: String) -> Result<ModelInfo, String> {
         .into_iter()
         .map(|s| ModelSibling { rfilename: s.rfilename })
         .collect();
+
+    log_operation_success!("Get model info");
+    tracing::debug!(model_id = %hf_model.id, files = siblings.len(), "Retrieved model info");
 
     // Handle both API formats for pipeline_tag
     let pipeline_tag = hf_model.pipeline_tag.or(hf_model.pipeline_tag_alt);
@@ -478,15 +527,23 @@ pub async fn download_entire_model(
         format!("OpenVINO/{}", model_id)
     };
 
+    log_operation_start!("Model download", model_id = %normalized_model_id);
+
     // Get model info first to retrieve commit SHA
-    let model_info = get_model_info(normalized_model_id.clone()).await?;
+    let model_info = get_model_info(normalized_model_id.clone()).await.map_err(|e| {
+        log_operation_error!("Get model info", &e, model_id = %normalized_model_id);
+        e
+    })?;
 
     // Create a client with timeout to prevent hanging
     let client = reqwest::Client
         ::builder()
         .timeout(std::time::Duration::from_secs(300)) // 5 minute timeout per request
         .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+        .map_err(|e| {
+            log_operation_error!("HTTP client creation", &e);
+            format!("Failed to create HTTP client: {}", e)
+        })?;
 
     let target_dir = if let Some(path) = download_path {
         PathBuf::from(path).join(&normalized_model_id)
@@ -495,12 +552,18 @@ pub async fn download_entire_model(
         let home_dir = std::env
             ::var("USERPROFILE")
             .or_else(|_| std::env::var("HOME"))
-            .map_err(|e| format!("Failed to get user home directory: {}", e))?;
+            .map_err(|e| {
+                log_operation_error!("Get home directory", &e);
+                format!("Failed to get user home directory: {}", e)
+            })?;
         PathBuf::from(home_dir).join(".sparrow").join("models").join(&normalized_model_id)
     };
 
     // Create target directory
-    std::fs::create_dir_all(&target_dir).map_err(|e| format!("Failed to create directory: {}", e))?;
+    std::fs::create_dir_all(&target_dir).map_err(|e| {
+        log_operation_error!("Create directory", &e, dir = %target_dir.display());
+        format!("Failed to create directory: {}", e)
+    })?;
 
     // Use siblings from model_info instead of making a separate API call
     let downloadable_files: Vec<&ModelSibling> = model_info.siblings
@@ -509,15 +572,17 @@ pub async fn download_entire_model(
         .collect();
 
     if downloadable_files.is_empty() {
+        log_operation_error!("Model download", "No files found in repository", 
+            model_id = %normalized_model_id
+        );
         return Err("No files found in model repository".to_string());
     }
 
     let total_files = downloadable_files.len();
     
-    info!(
+    log_progress!("Downloading model files", 
         model_id = %normalized_model_id,
-        total_files = %total_files,
-        "Starting download of model files"
+        total_files = total_files
     );
 
     let mut downloaded_files = Vec::new();
@@ -672,6 +737,7 @@ pub async fn check_bge_models_exist(download_path: Option<String>) -> Result<boo
         let home_dir = match std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
             Ok(home) => home,
             Err(_) => {
+                log_operation_error!("Check BGE models", "Failed to get home directory");
                 return Err("Failed to get user home directory".to_string());
             }
         };
@@ -684,6 +750,13 @@ pub async fn check_bge_models_exist(download_path: Option<String>) -> Result<boo
 
     let embedding_exists = embedding_model_path.exists() && embedding_model_path.is_dir();
     let reranker_exists = reranker_model_path.exists() && reranker_model_path.is_dir();
+
+    tracing::debug!(
+        embedding_exists = embedding_exists,
+        reranker_exists = reranker_exists,
+        path = %downloads_dir.display(),
+        "Checked BGE models existence"
+    );
 
     Ok(embedding_exists && reranker_exists)
 }

@@ -188,12 +188,21 @@ pub async fn connect_mcp_server(
     app_handle: AppHandle,
     server_name: String,
 ) -> Result<String, String> {
+    log_operation_start!("Connect MCP server");
+    tracing::debug!(server = %server_name, "Connecting to MCP server");
+    
     get_or_init_manager(&app_handle).await?;
     
     // We need to extract the manager temporarily to call async methods
     let mut temp_manager = {
-        let mut manager_guard = MCP_MANAGER.lock().map_err(|e| format!("Lock error: {}", e))?;
-        manager_guard.take().ok_or("Manager not initialized")?
+        let mut manager_guard = MCP_MANAGER.lock().map_err(|e| {
+            log_operation_error!("Connect MCP server", &e, note = "lock error");
+            format!("Lock error: {}", e)
+        })?;
+        manager_guard.take().ok_or_else(|| {
+            log_operation_error!("Connect MCP server", "Manager not initialized");
+            "Manager not initialized".to_string()
+        })?
     };
     
     // Connect to server (this is async)
@@ -206,8 +215,12 @@ pub async fn connect_mcp_server(
     }
     
     // Handle connection result
-    connection_result.map_err(|e| format!("Failed to connect to server '{}': {}", server_name, e))?;
+    connection_result.map_err(|e| {
+        log_operation_error!("Connect MCP server", &e, server = %server_name);
+        format!("Failed to connect to server '{}': {}", server_name, e)
+    })?;
     
+    log_operation_success!("Connect MCP server");
     Ok(format!("Connected to MCP server '{}'", server_name))
 }
 
@@ -216,15 +229,25 @@ pub async fn disconnect_mcp_server(
     app_handle: AppHandle,
     server_name: String,
 ) -> Result<String, String> {
+    log_operation_start!("Disconnect MCP server");
+    tracing::debug!(server = %server_name, "Disconnecting from MCP server");
+    
     get_or_init_manager(&app_handle).await?;
     
     {
-        let mut manager_guard = MCP_MANAGER.lock().map_err(|e| format!("Lock error: {}", e))?;
-        let manager = manager_guard.as_mut().ok_or("Manager not initialized")?;
+        let mut manager_guard = MCP_MANAGER.lock().map_err(|e| {
+            log_operation_error!("Disconnect MCP server", &e, note = "lock error");
+            format!("Lock error: {}", e)
+        })?;
+        let manager = manager_guard.as_mut().ok_or_else(|| {
+            log_operation_error!("Disconnect MCP server", "Manager not initialized");
+            "Manager not initialized".to_string()
+        })?;
         
         manager.disconnect_from_server(&server_name);
     }
     
+    log_operation_success!("Disconnect MCP server");
     Ok(format!("Disconnected from MCP server '{}'", server_name))
 }
 
@@ -353,12 +376,21 @@ pub async fn call_mcp_tool(
     tool_name: String,
     arguments: Option<serde_json::Map<String, serde_json::Value>>,
 ) -> Result<String, String> {
+    log_operation_start!("Call MCP tool");
+    tracing::debug!(tool = %tool_name, has_args = arguments.is_some(), "Calling MCP tool");
+    
     get_or_init_manager(&app_handle).await?;
     
     // Extract manager temporarily
     let temp_manager = {
-        let mut manager_guard = MCP_MANAGER.lock().map_err(|e| format!("Lock error: {}", e))?;
-        manager_guard.take().ok_or("Manager not initialized")?
+        let mut manager_guard = MCP_MANAGER.lock().map_err(|e| {
+            log_operation_error!("Call MCP tool", &e, note = "lock error");
+            format!("Lock error: {}", e)
+        })?;
+        manager_guard.take().ok_or_else(|| {
+            log_operation_error!("Call MCP tool", "Manager not initialized");
+            "Manager not initialized".to_string()
+        })?
     };
     
     // Call tool (this is async)
@@ -371,7 +403,15 @@ pub async fn call_mcp_tool(
     }
     
     // Handle result
-    call_result.map_err(|e| format!("Failed to call MCP tool: {}", e))
+    let result = call_result.map_err(|e| {
+        log_operation_error!("Call MCP tool", &e, tool = %tool_name);
+        format!("Failed to call MCP tool: {}", e)
+    })?;
+    
+    log_operation_success!("Call MCP tool");
+    tracing::debug!(tool = %tool_name, result_length = result.len(), "MCP tool executed");
+    
+    Ok(result)
 }
 
 #[tauri::command]

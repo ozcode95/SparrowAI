@@ -86,6 +86,8 @@ pub fn create_minimal_test_config(config_path: &PathBuf) -> Result<(), String> {
 }
 
 pub fn validate_ovms_config(config_path: &PathBuf) -> Result<(), String> {
+    tracing::debug!(config_path = %config_path.display(), "Validating OVMS configuration");
+    
     if !config_path.exists() {
         return Err(format!("Config file does not exist: {}", config_path.display()));
     }
@@ -124,12 +126,14 @@ pub fn validate_ovms_config(config_path: &PathBuf) -> Result<(), String> {
         return Err("'mediapipe_config_list' must be an array".to_string());
     }
 
-    info!(config_path = %config_path.display(), "OVMS config validation passed");
+    tracing::debug!(config_path = %config_path.display(), "OVMS config validation passed");
     Ok(())
 }
 
 #[tauri::command]
 pub async fn download_ovms(app_handle: AppHandle) -> Result<String, String> {
+    log_operation_start!("Downloading OVMS");
+    
     let sparrow_dir = get_sparrow_dir(Some(&app_handle));
     let ovms_dir = get_ovms_dir(Some(&app_handle));
 
@@ -151,15 +155,18 @@ pub async fn download_ovms(app_handle: AppHandle) -> Result<String, String> {
     // Check if OVMS executable already exists
     let ovms_exe = get_ovms_exe_path(Some(&app_handle));
     if ovms_exe.exists() {
+        log_operation_success!("OVMS already present", 
+            path = %ovms_exe.display()
+        );
         return Ok("OVMS already downloaded and extracted".to_string());
     }
 
     // Remove any existing corrupted zip file
     if zip_path.exists() {
         if let Err(e) = fs::remove_file(&zip_path) {
-            warn!(error = %e, "Failed to remove existing zip file");
+            log_warning!("Failed to remove existing zip file", error = %e);
         } else {
-            info!("Removed existing zip file for fresh download");
+            tracing::debug!("Removed existing zip file for fresh download");
         }
     }
 
@@ -169,9 +176,12 @@ pub async fn download_ovms(app_handle: AppHandle) -> Result<String, String> {
         .user_agent(constants::USER_AGENT)
         .timeout(std::time::Duration::from_secs(constants::DOWNLOAD_TIMEOUT_SECS))
         .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+        .map_err(|e| {
+            log_operation_error!("OVMS download setup", &e);
+            format!("Failed to create HTTP client: {}", e)
+        })?;
 
-    info!(url = %constants::OVMS_DOWNLOAD_URL, "Starting OVMS download");
+    log_progress!("Starting OVMS download", url = %constants::OVMS_DOWNLOAD_URL);
 
     let mut retries = constants::MAX_DOWNLOAD_RETRIES;
 
@@ -182,7 +192,11 @@ pub async fn download_ovms(app_handle: AppHandle) -> Result<String, String> {
             }
             Err(e) => {
                 retries -= 1;
-                warn!(error = %e, attempts_left = retries, "Download attempt failed");
+                log_warning!(
+                    "OVMS download attempt failed", 
+                    error = %e,
+                    attempts_remaining = retries
+                );
 
                 // Remove corrupted file if it exists
                 if zip_path.exists() {
@@ -190,6 +204,7 @@ pub async fn download_ovms(app_handle: AppHandle) -> Result<String, String> {
                 }
 
                 if retries == 0 {
+                    log_operation_error!("OVMS download", &e);
                     return Err(format!("Failed to download OVMS after 3 attempts: {}", e));
                 }
 
@@ -198,7 +213,7 @@ pub async fn download_ovms(app_handle: AppHandle) -> Result<String, String> {
         }
     }
 
-    info!("Download completed successfully, extracting...");
+    log_progress!("OVMS download completed, extracting...");
 
     // Extract the zip file to ovms directory
     extract_ovms(&zip_path, &ovms_dir)?;
@@ -206,12 +221,16 @@ pub async fn download_ovms(app_handle: AppHandle) -> Result<String, String> {
     // Clean up the zip file after successful extraction
     if zip_path.exists() {
         if let Err(e) = fs::remove_file(&zip_path) {
-            warn!(zip_path = %zip_path.display(), error = %e, "Failed to remove zip file");
+            log_warning!("Failed to cleanup zip file", 
+                zip_path = %zip_path.display(),
+                error = %e
+            );
         } else {
-            info!(zip_path = %zip_path.display(), "Successfully cleaned up zip file");
+            tracing::debug!(zip_path = %zip_path.display(), "Cleaned up zip file");
         }
     }
 
+    log_operation_success!("OVMS downloaded and extracted");
     Ok("OVMS downloaded and extracted successfully".to_string())
 }
 
@@ -231,7 +250,9 @@ async fn download_and_validate(
     // Get content length for validation
     let expected_length = response.content_length();
     if let Some(length) = expected_length {
-        info!(size_mb = length / 1024 / 1024, "Downloading OVMS");
+        let size_mb = length / 1024 / 1024;
+        log_progress!("Downloading OVMS", size_mb = size_mb);
+        tracing::debug!(size_bytes = length, size_mb = size_mb, "Download size");
     }
 
     let bytes = response
@@ -653,30 +674,32 @@ fn check_ovms_version(ovms_exe: &PathBuf) -> Result<bool, String> {
 
 #[tauri::command]
 pub async fn start_ovms_server(app_handle: AppHandle) -> Result<String, String> {
-    info!("OVMS server start command initiated");
+    log_operation_start!("Starting OVMS server");
+    
     // Check if OVMS is already running
     match check_ovms_status().await {
         Ok(ovms_status) => {
-            info!(loaded_models = ?ovms_status.loaded_models, "OVMS server is already running");
+            log_operation_success!(
+                "OVMS server already running",
+                loaded_models = ?ovms_status.loaded_models
+            );
             return Ok("OVMS server is already running".to_string());
         }
         Err(_) => {
-            info!("OVMS not running, starting server...");
+            tracing::debug!("OVMS not running, proceeding with startup");
         }
     }
 
     let ovms_exe = get_ovms_exe_path(Some(&app_handle));
     let config_path = get_ovms_config_path(Some(&app_handle));
 
-    // // Create minimal config if it doesn't exist
-    // if !config_path.exists() {
-    //     create_minimal_test_config(&config_path)?;
-    // }
-
     // Validate config
     validate_ovms_config(&config_path)?;
 
-    info!("Starting OVMS server...");
+    log_progress!("Launching OVMS process", 
+        exe = %ovms_exe.display(),
+        config = %config_path.display()
+    );
 
     // Start OVMS process
     let mut cmd = Command::new(&ovms_exe);
@@ -698,9 +721,13 @@ pub async fn start_ovms_server(app_handle: AppHandle) -> Result<String, String> 
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
 
-    let mut child = cmd.spawn().map_err(|e| format!("Failed to start OVMS: {}", e))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        log_operation_error!("OVMS process spawn", &e);
+        format!("Failed to start OVMS: {}", e)
+    })?;
 
     // Wait a moment for server to start
+    tracing::debug!("Waiting for OVMS to initialize...");
     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
     // Check if process is still running before storing it
@@ -727,7 +754,11 @@ pub async fn start_ovms_server(app_handle: AppHandle) -> Result<String, String> 
                 ovms_exe.display()
             );
 
-            error!(error = %error_msg, "OVMS startup failed");
+            log_operation_error!("OVMS startup", &error_msg,
+                exit_status = %status,
+                config = %config_path.display(),
+                executable = %ovms_exe.display()
+            );
             Err(error_msg)
         }
         Ok(None) => {
@@ -739,21 +770,26 @@ pub async fn start_ovms_server(app_handle: AppHandle) -> Result<String, String> 
                 *process_guard = Some(child);
             } // Guard is dropped here
 
-            info!("OVMS server started on port 1114");
+            log_operation_success!("OVMS server started on port 1114");
 
             Ok("OVMS server started successfully.".to_string())
         }
-        Err(e) => { Err(format!("Failed to check OVMS status: {}", e)) }
+        Err(e) => { 
+            log_operation_error!("OVMS status check", &e);
+            Err(format!("Failed to check OVMS status: {}", e)) 
+        }
     }
 }
 
 // Stop OVMS server
 pub fn stop_ovms_server() -> Result<(), String> {
+    log_operation_start!("Stopping OVMS server");
+    
     let process_mutex = OVMS_PROCESS.get_or_init(|| Arc::new(Mutex::new(None)));
     let mut process_guard = process_mutex.lock().unwrap();
 
     if let Some(mut child) = process_guard.take() {
-        info!("Stopping OVMS server...");
+        tracing::debug!("Terminating OVMS process...");
 
         // Try to terminate gracefully first
         if let Err(e) = child.kill() {

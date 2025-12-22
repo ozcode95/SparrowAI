@@ -7,6 +7,20 @@ use std::io;
 
 use crate::{ paths, constants };
 
+/// Custom time formatter with 2 decimal places for seconds
+struct CustomTimeFormat;
+
+impl tracing_subscriber::fmt::time::FormatTime for CustomTimeFormat {
+    fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
+        let now = Local::now();
+        // Format base time without fractional seconds
+        let base = now.format("%Y-%m-%d %H:%M:%S").to_string();
+        // Get fractional seconds in centiseconds (hundredths)
+        let centisecs = (now.timestamp_subsec_millis() / 10) % 100;
+        w.write_str(&format!("{}.{:02}", base, centisecs))
+    }
+}
+
 /// Initialize the logging system with file-based logging and archiving
 pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
     let log_dir = paths::get_logs_dir()?;
@@ -28,28 +42,42 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("Failed to create rolling file appender: {}", e))?;
     let (non_blocking_appender, _guard) = non_blocking(file_appender);
     
-    // Create console layer for development - simplified output (message only)
+    // Create console layer - clean, user-friendly output
+    // Format: [LEVEL] message (for INFO and above)
+    // Errors show more context
     let console_layer = fmt::layer()
         .with_target(false)
         .with_thread_ids(false)
         .with_line_number(false)
         .with_file(false)
-        .with_level(false)
+        .with_level(true) // Show level for user awareness
         .with_ansi(true)
-        .without_time();
+        .compact() // Use compact format for cleaner output
+        .with_timer(CustomTimeFormat);
     
-    // Create file layer with structured format
+    // Create file layer - detailed, structured logging for debugging
+    // Format: timestamp [LEVEL] target:line_number - message {fields}
     let file_layer = fmt::layer()
         .with_target(true)
         .with_thread_ids(true)
         .with_line_number(true)
         .with_file(true)
         .with_ansi(false)
+        .with_timer(CustomTimeFormat)
         .with_writer(non_blocking_appender);
     
-    // Set up environment filter (default to INFO level)
+    // Set up environment filter
+    // Console: INFO and above (clean output)
+    // File: DEBUG and above (detailed logging)
     let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(constants::DEFAULT_LOG_FILTER));
+        .unwrap_or_else(|_| {
+            EnvFilter::new(constants::DEFAULT_LOG_FILTER)
+                // Reduce noise from dependencies in console
+                .add_directive("h2=warn".parse().unwrap())
+                .add_directive("hyper=warn".parse().unwrap())
+                .add_directive("reqwest=warn".parse().unwrap())
+                .add_directive("sled=warn".parse().unwrap())
+        });
     
     // Initialize the subscriber
     tracing_subscriber::registry()
@@ -58,9 +86,12 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
         .with(file_layer)
         .init();
     
-    tracing::info!("Logging system initialized");
-    tracing::info!("Log directory: {}", log_dir.display());
-    tracing::info!("Archive directory: {}", archive_dir.display());
+    tracing::info!("🚀 SparrowAI starting...");
+    tracing::debug!(
+        log_dir = %log_dir.display(),
+        archive_dir = %archive_dir.display(),
+        "Logging system initialized"
+    );
     
     // Store the guard to prevent dropping (this keeps the non-blocking writer alive)
     std::mem::forget(_guard);

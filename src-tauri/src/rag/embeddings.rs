@@ -55,8 +55,12 @@ impl EmbeddingService {
 #[tauri::command]
 pub async fn create_document_embeddings(documents: Vec<Document>) -> Result<Vec<Document>, String> {
     if documents.is_empty() {
+        tracing::trace!("No documents to create embeddings for");
         return Ok(documents);
     }
+
+    log_operation_start!("Create embeddings");
+    tracing::debug!(count = documents.len(), "Creating embeddings");
 
     let embedding_service = EmbeddingService::new();
 
@@ -65,7 +69,11 @@ pub async fn create_document_embeddings(documents: Vec<Document>) -> Result<Vec<
         .map(|doc| doc.content.clone())
         .collect();
 
-    let embeddings = embedding_service.create_embeddings(texts).await?;
+    let embeddings = embedding_service.create_embeddings(texts).await
+        .map_err(|e| {
+            log_operation_error!("Create embeddings", &e, count = documents.len());
+            e
+        })?;
 
     let mut updated_docs = documents;
     for (i, embedding) in embeddings.into_iter().enumerate() {
@@ -73,6 +81,9 @@ pub async fn create_document_embeddings(documents: Vec<Document>) -> Result<Vec<
             doc.embedding = Some(embedding);
         }
     }
+
+    log_operation_success!("Create embeddings");
+    tracing::debug!(count = updated_docs.len(), "Embeddings created for documents");
 
     Ok(updated_docs)
 }

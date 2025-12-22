@@ -1,5 +1,5 @@
 use serde::{ Deserialize, Serialize };
-use tracing::{ warn, error, debug, info };
+use tracing::{ error, debug, info };
 use serde_json;
 use std::collections::HashMap;
 use std::fs;
@@ -171,7 +171,9 @@ pub async fn get_chat_sessions() -> Result<ChatSessionsStorage, String> {
 
 #[tauri::command]
 pub async fn create_chat_session(title: Option<String>) -> Result<ChatSession, String> {
-    info!("Creating new chat session");
+    let session_title = title.clone().unwrap_or_else(|| constants::DEFAULT_CHAT_TITLE.to_string());
+    log_operation_start!("Creating chat session", title = %session_title);
+    
     let mut storage = load_chat_sessions()?;
 
     let session_id = Uuid::new_v4().to_string();
@@ -179,20 +181,24 @@ pub async fn create_chat_session(title: Option<String>) -> Result<ChatSession, S
 
     let session = ChatSession {
         id: session_id.clone(),
-        title: title.unwrap_or_else(|| constants::DEFAULT_CHAT_TITLE.to_string()),
+        title: session_title,
         created_at: now,
         updated_at: now,
         model_id: None,
         messages: Vec::new(),
     };
 
-    info!(session_id = %session_id, title = %session.title, "New session created");
+    log_debug_details!(
+        session_id = %session_id,
+        title = %session.title,
+        "Chat session created"
+    );
     
     storage.sessions.insert(session_id.clone(), session.clone());
     storage.active_session_id = Some(session_id.clone());
 
     save_chat_sessions(&storage)?;
-    info!(session_id = %session_id, "Chat session saved to storage");
+    log_operation_success!("Chat session created", session_id = %session_id);
 
     Ok(session)
 }
@@ -285,10 +291,11 @@ pub async fn add_message_to_session(
     tokens_per_second: Option<f64>,
     is_error: Option<bool>
 ) -> Result<ChatMessage, String> {
-    info!(
+    tracing::debug!(
         session_id = %session_id,
         role = %role,
         content_length = content.len(),
+        tokens_per_second = ?tokens_per_second,
         "Adding message to session"
     );
     
@@ -297,7 +304,7 @@ pub async fn add_message_to_session(
     let session = storage.sessions
         .get_mut(&session_id)
         .ok_or_else(|| {
-            error!(session_id = %session_id, "Session not found");
+            log_operation_error!("Add message to session", "Session not found", session_id = %session_id);
             format!("Chat session not found: {}", session_id)
         })?;
 
@@ -319,7 +326,7 @@ pub async fn add_message_to_session(
     // Auto-generate title from first user message if still "New Chat"
     let auto_generated_title = if session.title == "New Chat" && role == "user" {
         let title = generate_chat_title(&content);
-        info!(
+        tracing::debug!(
             session_id = %session_id,
             old_title = "New Chat",
             new_title = %title,
@@ -442,29 +449,29 @@ pub async fn chat_with_loaded_model_streaming(
     // Get MCP tools info for system message
     let mcp_tools = match mcp::get_all_mcp_tools_for_chat(app.clone()).await {
         Ok(tools) => {
-            info!("Successfully loaded {} MCP tools for system message", tools.len());
+            tracing::debug!(count = tools.len(), "Loaded MCP tools for chat");
             if tools.is_empty() {
-                warn!("MCP tools list is empty - no tools will be available to LLM");
+                log_warning!("No MCP tools available", note = "LLM will not have access to any tools");
             } else {
-                debug!("Available MCP tools: {:?}", tools.iter().map(|t| &t.function.name).collect::<Vec<_>>());
+                tracing::debug!(tools = ?tools.iter().map(|t| &t.function.name).collect::<Vec<_>>(), "Available MCP tools");
             }
             tools
         }
         Err(e) => {
-            warn!("Failed to load MCP tools for system message: {}", e);
+            log_warning!("Failed to load MCP tools", error = %e);
             Vec::new()
         }
     };
 
     let tools_info = if !mcp_tools.is_empty() {
-        debug!("Processing MCP tools for system message...");
+        tracing::debug!("Processing MCP tools for system message...");
 
         // Generate tool descriptions in simple text format for the custom template
         let tool_descs: Vec<String> = mcp_tools
             .iter()
             .enumerate()
             .map(|(i, tool)| {
-                debug!("Processing tool {}: {}", i, tool.function.name);
+                tracing::trace!(index = i, name = %tool.function.name, "Processing tool");
                 let params_str = match &tool.function.parameters {
                     Some(params) => serde_json::to_string_pretty(params).unwrap_or_default(),
                     None => "{}".to_string(),
@@ -497,10 +504,10 @@ For each function call, return a json object with function name and arguments wi
 {{"name": <function-name>, "arguments": <args-json-object>}}
 </tool_call>"#, tool_descs_text);
 
-        debug!("Generated custom tool template: {} characters", formatted_tools.len());
+        tracing::debug!(length = formatted_tools.len(), "Generated custom tool template");
         formatted_tools
     } else {
-        debug!("No MCP tools available for system message");
+        tracing::trace!("No MCP tools available for system message");
         "".to_string()
     };
 
@@ -521,22 +528,13 @@ For each function call, return a json object with function name and arguments wi
     // Always append tools info to system message (whether custom or default)
     let system_message = format!("{}{}", base_system_message, tools_info);
 
-    info!(
-        system_message_length = system_message.len(),
+    tracing::debug!(
+        length = system_message.len(),
         has_tools = !tools_info.is_empty(),
         tools_count = mcp_tools.len(),
-        "System message prepared with tools info"
+        message = %system_message,
+        "System message prepared"
     );
-
-    debug!("Message: {}", system_message);
-    // Log what we're including
-    debug!("System message length: {} chars", system_message.len());
-    debug!("Tools info length: {} chars", tools_info.len());
-    if !tools_info.is_empty() {
-        debug!("Including tools info in system message");
-    } else {
-        debug!("No tools info to include");
-    }
 
     let mut messages = vec![
         ChatCompletionRequestSystemMessageArgs::default()
@@ -558,7 +556,7 @@ For each function call, return a json object with function name and arguments wi
                     }
                 }
 
-                info!(
+                tracing::debug!(
                     history_count = history.len(),
                     session_id = session_id.clone().unwrap(),
                     "Including conversation history"
@@ -594,20 +592,20 @@ For each function call, return a json object with function name and arguments wi
                             }
                         }
                         _ => {
-                            warn!(role = %msg.role, "Skipping unknown role");
+                            log_warning!("Skipping message with unknown role", role = %msg.role);
                             continue;
                         } // Skip unknown roles
                     };
                 }
             }
             Err(e) => {
-                error!(error = %e, "Failed to get conversation history");
+                log_operation_error!("Load conversation history", &e);
             }
         }
     }
     
     // Log total messages being sent
-    debug!(
+    tracing::debug!(
         total_messages = messages.len(),
         has_tools = !tools_info.is_empty(),
         "Preparing to send messages to LLM"
@@ -622,7 +620,8 @@ For each function call, return a json object with function name and arguments wi
             .into()
     );
 
-    debug!("Starting chat request");
+    log_operation_start!("Chat request");
+    tracing::debug!(model = %model_name, message_length = message.len(), messages_count = messages.len(), "Chat parameters");
 
     // Create streaming chat completion
     let mut request_builder = CreateChatCompletionRequestArgs::default();
@@ -705,13 +704,14 @@ For each function call, return a json object with function name and arguments wi
     */
 
     // Tools info is now in system message instead
-    debug!("Tools info included in system message instead of request tools array");
+    tracing::debug!("Tools info included in system message instead of request tools array");
 
     let request = request_builder
         .build()
-        .map_err(|e| format!("Failed to build chat request: {}", e))?;
-
-    // Request details logged to file only (verbose output disabled for console)
+        .map_err(|e| {
+            log_operation_error!("Build chat request", &e);
+            format!("Failed to build chat request: {}", e)
+        })?;
 
     // Check system message for tools info (since tools are now in system message)
     if let Ok(request_value) = serde_json::to_value(&request) {
@@ -724,9 +724,9 @@ For each function call, return a json object with function name and arguments wi
                                 content_str.contains("<tools>") ||
                                 content_str.contains("Available functions:")
                             {
-                                debug!("Tools info found in system message");
+                                tracing::trace!("Tools info found in system message");
                             } else {
-                                debug!("No tools info found in system message");
+                                tracing::trace!("No tools info found in system message");
                             }
                         }
                     }
@@ -736,17 +736,19 @@ For each function call, return a json object with function name and arguments wi
 
         // Verify no tools array in request (should be commented out)
         if request_value.get("tools").is_some() {
-            warn!("Tools array still present in request!");
+            log_warning!("Tools array still present in request", note = "should be in system message");
         } else {
-            debug!("Confirmed: No tools array in request (as expected)");
+            tracing::trace!("Confirmed: No tools array in request (as expected)");
         }
     }
-    // Request logging complete
 
     let mut stream = client
         .chat()
         .create_stream(request).await
-        .map_err(|e| format!("Failed to create chat stream: {}", e))?;
+        .map_err(|e| {
+            log_operation_error!("Create chat stream", &e);
+            format!("Failed to create chat stream: {}", e)
+        })?;
 
     let mut full_response = String::new();
     let mut executed_tools = std::collections::HashSet::new();
@@ -786,7 +788,7 @@ For each function call, return a json object with function name and arguments wi
 
                             executed_tools.insert(tool_signature);
 
-                            debug!("Found complete tool call: name={}, args={}", fn_name, fn_args);
+                            tracing::debug!(name = %fn_name, args = %fn_args, "Found tool call");
 
                             // Parse arguments as JSON for MCP tool call
                             let args_map = match
@@ -800,9 +802,7 @@ For each function call, return a json object with function name and arguments wi
                                     Some(map)
                                 }
                                 Err(e) => {
-                                    let parse_error =
-                                        format!("Failed to parse tool arguments: {}", e);
-                                    warn!("{}", parse_error);
+                                    log_warning!("Failed to parse tool arguments", error = %e, args = %fn_args);
                                     None
                                 }
                             };
@@ -810,12 +810,8 @@ For each function call, return a json object with function name and arguments wi
                             // Call the MCP tool
                             match mcp::call_mcp_tool(app.clone(), fn_name.clone(), args_map).await {
                                 Ok(tool_result) => {
-                                    let tool_result_info = format!(
-                                        "Tool {} returned: {}",
-                                        fn_name,
-                                        tool_result
-                                    );
-                                    debug!("{}", tool_result_info);
+                                    tracing::debug!(tool = %fn_name, result_length = tool_result.len(), "Tool execution completed");
+                                    tracing::trace!(result = %tool_result, "Tool result content");
 
                                     // Emit function call result to frontend
                                     let _ = app.emit(
@@ -845,8 +841,7 @@ For each function call, return a json object with function name and arguments wi
                                     needs_continuation = true;
                                 }
                                 Err(e) => {
-                                    let tool_error = format!("Tool call failed: {}", e);
-                                    error!("{}", tool_error);
+                                    log_operation_error!("Tool execution", &e, tool = %fn_name);
                                     let error_response_text =
                                         format!("\n<tool_response>\nError: {}\n</tool_response>", e);
                                     full_response.push_str(&error_response_text);
@@ -869,18 +864,17 @@ For each function call, return a json object with function name and arguments wi
 
                     // Handle finish reason
                     if let Some(_finish_reason) = &chat_choice.finish_reason {
-                        debug!("Stream finished with reason: {:?}", _finish_reason);
+                        tracing::debug!(reason = ?_finish_reason, "Stream finished");
 
                         // Check for any remaining incomplete tool calls
                         if has_incomplete_tool_call(&full_response) {
-                            warn!("Stream ended with incomplete tool call");
+                            log_warning!("Stream ended with incomplete tool call", note = "response may be truncated");
                         }
                     }
                 }
             }
             Err(err) => {
-                let error_info = format!("error: {err}");
-                error!("{}", error_info);
+                log_operation_error!("Chat stream", &err);
                 let _ = app.emit(
                     "chat-error",
                     serde_json::json!({
@@ -894,13 +888,13 @@ For each function call, return a json object with function name and arguments wi
 
     // Continue the conversation if we executed tools and got JSON responses
     if needs_continuation {
-        debug!("Checking if continuation is needed after tool execution...");
+        tracing::trace!("Checking if continuation needed after tool execution...");
 
         // Check if the tool responses contain JSON structures that need interpretation
         let should_continue = check_if_continuation_needed(&full_response);
 
         if should_continue {
-            debug!("Tool response contains JSON - continuing conversation...");
+            tracing::debug!("Tool response contains JSON - continuing conversation...");
 
             match
                 continue_conversation_after_tools(
@@ -1004,7 +998,7 @@ async fn continue_conversation_after_tools(
     // This prevents the LLM from seeing the XML format and copying it
     let clean_tool_response = extract_tool_response_content(&assistant_response_with_tools);
     
-    debug!("Clean tool response for continuation (length: {})", clean_tool_response.len());
+    tracing::trace!(length = clean_tool_response.len(), "Clean tool response for continuation");
 
     // Build a minimal message list for continuation - ONLY system, user question, and tool result
     // Do NOT include conversation history to avoid the LLM seeing XML patterns
@@ -1029,7 +1023,7 @@ async fn continue_conversation_after_tools(
         // Add only the current user's question
         continuation_messages.push(last_user_msg.clone());
     } else {
-        warn!("Could not find user message in conversation history");
+        log_warning!("Could not find user message in history", note = "continuation may lack context");
     }
 
     // Add a simplified assistant message showing the tool result without XML formatting
@@ -1093,20 +1087,19 @@ async fn continue_conversation_after_tools(
                     }
 
                     if let Some(finish_reason) = &chat_choice.finish_reason {
-                        debug!("Continuation finished with reason: {:?}", finish_reason);
+                        tracing::debug!(reason = ?finish_reason, "Continuation finished");
                         break;
                     }
                 }
             }
             Err(err) => {
-                let error_info = format!("Continuation stream error: {}", err);
-                error!("{}", error_info);
-                return Err(error_info);
+                log_operation_error!("Continuation stream", &err);
+                return Err(format!("Continuation stream error: {}", err));
             }
         }
     }
 
-    debug!("Continuation response: {}", continued_response);
+    tracing::debug!(length = continued_response.len(), "Continuation response completed");
     Ok(continued_response)
 }
 

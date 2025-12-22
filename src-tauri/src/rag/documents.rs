@@ -7,18 +7,30 @@ use crate::constants;
 
 #[tauri::command]
 pub async fn process_document(file_path: String) -> Result<Vec<Document>, String> {
+    log_operation_start!("Process document");
+    
     let path = Path::new(&file_path);
     let extension = path.extension()
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_lowercase();
 
-    match extension.as_str() {
+    tracing::debug!(file = %file_path, extension = %extension, "Processing document");
+
+    let result = match extension.as_str() {
         "pdf" => process_pdf(&file_path).await,
         "docx" => process_docx(&file_path).await,
         "xlsx" | "xls" => process_excel(&file_path).await,
-        _ => Err("Unsupported file type".to_string()),
-    }
+        _ => {
+            log_operation_error!("Process document", "Unsupported file type", extension = %extension);
+            Err("Unsupported file type".to_string())
+        }
+    }?;
+    
+    log_operation_success!("Process document");
+    tracing::debug!(file = %file_path, chunks = result.len(), "Document processed into chunks");
+    
+    Ok(result)
 }
 
 #[tauri::command]
@@ -34,7 +46,12 @@ pub async fn save_temp_file(file_name: String, file_data: Vec<u8>) -> Result<Str
 
 async fn process_pdf(file_path: &str) -> Result<Vec<Document>, String> {
     let text = extract_text(file_path)
-        .map_err(|e| format!("Failed to extract PDF text: {}", e))?;
+        .map_err(|e| {
+            log_operation_error!("PDF extraction", &e, file = %file_path);
+            format!("Failed to extract PDF text: {}", e)
+        })?;
+    
+    tracing::debug!(file = %file_path, text_length = text.len(), "Extracted PDF text");
     
     let chunks = chunk_text(&text, constants::DEFAULT_CHUNK_SIZE, constants::DEFAULT_CHUNK_OVERLAP);
     

@@ -45,23 +45,31 @@ impl McpManager {
         &mut self,
         name: &str
     ) -> Result<(), Box<dyn std::error::Error>> {
-        info!(server_name = %name, "Attempting to connect to MCP server");
+        log_operation_start!("MCP server connection");
+        tracing::debug!(server = %name, "Connecting to MCP server");
+        
         let server_config = self.config
             .get_server(name)
-            .ok_or(format!("Server '{}' not found in configuration", name))?;
+            .ok_or_else(|| {
+                log_operation_error!("MCP server connection", "Server not found", server = %name);
+                format!("Server '{}' not found in configuration", name)
+            })?;
 
         // Validate configuration
-        server_config.validate().map_err(|e| format!("Invalid server configuration: {}", e))?;
+        server_config.validate().map_err(|e| {
+            log_operation_error!("MCP server connection", &e, server = %name, note = "invalid configuration");
+            format!("Invalid server configuration: {}", e)
+        })?;
 
         let transport_type = server_config.get_transport_type();
-        info!(server_name = %name, transport_type = ?transport_type, "Detected transport type");
+        tracing::debug!(server = %name, transport_type = ?transport_type, "Detected transport type");
 
         let client = match transport_type {
             TransportType::Stdio => {
                 let command = server_config.command.as_ref().unwrap();
                 let args = server_config.args.as_deref().unwrap_or(&[]);
 
-                info!(command = %command, args = ?args, "Starting MCP server via stdio");
+                tracing::debug!(command = %command, args = ?args, "Starting MCP server via stdio");
 
                 // Create the command - on Windows, we might need to handle .cmd extensions
                 let mut cmd = if
@@ -76,11 +84,11 @@ impl McpManager {
 
                     match test_cmd.output().await {
                         Ok(_) => {
-                            info!(original_command = %command, resolved_command = %cmd_with_extension, "Resolved Windows command with .cmd extension");
+                            tracing::trace!(original = %command, resolved = %cmd_with_extension, "Resolved Windows command with .cmd extension");
                             Command::new(cmd_with_extension)
                         }
                         Err(_) => {
-                            info!(command = %command, "Using original command without extension resolution");
+                            tracing::trace!(command = %command, "Using original command");
                             Command::new(command)
                         }
                     }
@@ -114,21 +122,21 @@ impl McpManager {
 
                 // Create transport and connect
                 let transport = TokioChildProcess::new(cmd).map_err(|e| {
-                    warn!(command = %command, args = ?args, error = %e, "Failed to create TokioChildProcess");
+                    log_operation_error!("MCP server start", &e, command = %command, args = ?args);
                     format!("Failed to start command '{}': {}", command, e)
                 })?;
                 ().serve(transport).await?
             }
             TransportType::Sse => {
                 let url = server_config.url.as_ref().unwrap();
-                info!(url = %url, "Connecting to MCP server via SSE");
+                tracing::debug!(url = %url, "Connecting to MCP server via SSE");
 
                 let transport = SseClientTransport::start(url.clone()).await?;
                 ().serve(transport).await?
             }
             TransportType::StreamableHttp => {
                 let url = server_config.url.as_ref().unwrap();
-                info!(url = %url, "Connecting to MCP server via Streamable HTTP");
+                tracing::debug!(url = %url, "Connecting to MCP server via Streamable HTTP");
 
                 let transport = StreamableHttpClientTransport::from_uri(url.clone());
                 ().serve(transport).await?
@@ -136,12 +144,13 @@ impl McpManager {
         };
 
         self.clients.insert(name.to_string(), client);
-        info!(server_name = %name, "Successfully connected to MCP server");
+        log_operation_success!("MCP server connection");
+        tracing::debug!(server = %name, "Successfully connected to MCP server");
         Ok(())
     }
 
     pub fn disconnect_from_server(&mut self, name: &str) {
-        info!(server_name = %name, "Disconnecting from MCP server");
+        tracing::debug!(server = %name, "Disconnecting from MCP server");
         self.clients.remove(name);
     }
 
@@ -151,9 +160,12 @@ impl McpManager {
     ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
         let client = self.clients
             .get(server_name)
-            .ok_or(format!("Server '{}' not connected", server_name))?;
+            .ok_or_else(|| {
+                log_operation_error!("Fetch MCP tools", "Server not connected", server = %server_name);
+                format!("Server '{}' not connected", server_name)
+            })?;
 
-        debug!(server_name = %server_name, "Fetching tools from MCP server");
+        tracing::debug!(server = %server_name, "Fetching tools from MCP server");
         let tools_response = client.list_tools(Default::default()).await?;
 
         let tool_names: Vec<String> = tools_response.tools

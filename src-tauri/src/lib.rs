@@ -2,6 +2,8 @@ use std::sync::{ Arc, Mutex };
 use tauri::Emitter;
 use tracing::{ info, error };
 
+#[macro_use]
+mod log_utils;
 mod errors;
 mod paths;
 mod constants;
@@ -71,6 +73,8 @@ struct InitializationStatus {
 static INIT_STATUS: std::sync::OnceLock<Arc<Mutex<InitializationStatus>>> = std::sync::OnceLock::new();
 
 async fn initialize_ovms(app_handle: tauri::AppHandle) {
+    log_operation_start!("OVMS initialization");
+    
     let status_mutex = INIT_STATUS.get_or_init(||
         Arc::new(
             Mutex::new(InitializationStatus {
@@ -95,11 +99,17 @@ async fn initialize_ovms(app_handle: tauri::AppHandle) {
         status.progress = 15;
         app_handle
             .emit("ovms-init-status", &*status)
-            .unwrap_or_else(|e| error!(error = %e, "Failed to emit status"));
+            .unwrap_or_else(|e| {
+                log_warning!("Failed to emit init status", error = %e);
+            });
     }
 
+    tracing::debug!("Checking OVMS presence");
+    
     // Check if OVMS is present
     if !ovms::is_ovms_present(Some(&app_handle)) {
+        log_progress!("OVMS not found, downloading...");
+        
         // Update status: Downloading
         {
             let mut status = status_mutex.lock().unwrap();
@@ -108,12 +118,14 @@ async fn initialize_ovms(app_handle: tauri::AppHandle) {
             status.progress = 25;
             app_handle
                 .emit("ovms-init-status", &*status)
-                .unwrap_or_else(|e| error!(error = %e, "Failed to emit status"));
+                .unwrap_or_else(|e| {
+                    log_warning!("Failed to emit init status", error = %e);
+                });
         }
 
         match ovms::download_ovms(app_handle.clone()).await {
             Ok(msg) => {
-                info!(message = %msg, "OVMS download");
+                tracing::debug!(message = %msg, "OVMS download completed");
 
                 // Update status: Downloaded
                 {
@@ -123,7 +135,9 @@ async fn initialize_ovms(app_handle: tauri::AppHandle) {
                     status.progress = 75;
                     app_handle
                         .emit("ovms-init-status", &*status)
-                        .unwrap_or_else(|e| error!(error = %e, "Failed to emit status"));
+                        .unwrap_or_else(|e| {
+                            log_warning!("Failed to emit init status", error = %e);
+                        });
                 }
 
                 // Update status: Creating config
@@ -134,7 +148,9 @@ async fn initialize_ovms(app_handle: tauri::AppHandle) {
                     status.progress = 77;
                     app_handle
                         .emit("ovms-init-status", &*status)
-                        .unwrap_or_else(|e| error!(error = %e, "Failed to emit status"));
+                        .unwrap_or_else(|e| {
+                            log_warning!("Failed to emit init status", error = %e);
+                        });
                 }
 
                 // Create initial OVMS config with BGE models
@@ -143,7 +159,7 @@ async fn initialize_ovms(app_handle: tauri::AppHandle) {
                 {
                     Ok(home) => home,
                     Err(_) => {
-                        error!("Failed to get user home directory for OVMS config");
+                        log_operation_error!("OVMS initialization", "Failed to get home directory");
                         return;
                     }
                 };
@@ -168,19 +184,21 @@ async fn initialize_ovms(app_handle: tauri::AppHandle) {
                 }
             }
             Err(e) => {
-                error!(error = %e, "Failed to download OVMS");
+                log_operation_error!("OVMS download", &e);
                 let mut status = status_mutex.lock().unwrap();
                 status.has_error = true;
                 status.error_message = Some(format!("Failed to download OVMS: {}", e));
                 status.message = "Download failed".to_string();
                 app_handle
                     .emit("ovms-init-status", &*status)
-                    .unwrap_or_else(|e| error!(error = %e, "Failed to emit status"));
+                    .unwrap_or_else(|e| {
+                        log_warning!("Failed to emit init status", error = %e);
+                    });
                 return;
             }
         }
     } else {
-        info!("OVMS already present");
+        tracing::debug!("OVMS already present, skipping download");
 
         // Update status: Present
         {
@@ -190,13 +208,15 @@ async fn initialize_ovms(app_handle: tauri::AppHandle) {
             status.progress = 75;
             app_handle
                 .emit("ovms-init-status", &*status)
-                .unwrap_or_else(|e| error!(error = %e, "Failed to emit status"));
+                .unwrap_or_else(|e| {
+                    log_warning!("Failed to emit init status", error = %e);
+                });
         }
 
         // Check if OVMS config already exists
         let config_path = ovms::get_ovms_config_path(Some(&app_handle));
         if !config_path.exists() {
-            info!("OVMS config not found, creating initial config...");
+            log_progress!("Creating initial OVMS config...");
 
             // Update status: Creating config
             {
@@ -206,7 +226,9 @@ async fn initialize_ovms(app_handle: tauri::AppHandle) {
                 status.progress = 77;
                 app_handle
                     .emit("ovms-init-status", &*status)
-                    .unwrap_or_else(|e| error!(error = %e, "Failed to emit status"));
+                    .unwrap_or_else(|e| {
+                        log_warning!("Failed to emit init status", error = %e);
+                    });
             }
 
             // Create initial OVMS config with BGE models
@@ -214,6 +236,8 @@ async fn initialize_ovms(app_handle: tauri::AppHandle) {
                 let bge_model_path =
                     format!("{}/.sparrow/models/OpenVINO/bge-base-en-v1.5-int8-ov", home_dir);
 
+                tracing::debug!(model = "bge-base-en-v1.5-int8-ov", path = %bge_model_path, "Creating OVMS config for BGE model");
+                
                 match
                     ovms::create_ovms_config(
                         app_handle.clone(),
@@ -222,22 +246,22 @@ async fn initialize_ovms(app_handle: tauri::AppHandle) {
                     ).await
                 {
                     Ok(_) => {
-                        info!("OVMS config created successfully");
+                        tracing::debug!("OVMS config created successfully");
                     }
                     Err(e) => {
-                        error!(error = %e, "Failed to create OVMS config");
-                        // Continue with initialization even if config creation fails
+                        log_warning!("Failed to create initial OVMS config", error = %e, note = "continuing initialization");
                     }
                 }
             } else {
-                error!("Failed to get user home directory for OVMS config");
+                log_warning!("Failed to get home directory for OVMS config", note = "skipping config creation");
             }
         } else {
-            info!("OVMS config already exists, skipping config creation");
+            tracing::debug!("OVMS config already exists, skipping config creation");
         }
     }
 
     // Start OVMS server
+    log_progress!("Starting OVMS server...");
     {
         let mut status = status_mutex.lock().unwrap();
         status.step = "starting_server".to_string();
@@ -245,12 +269,15 @@ async fn initialize_ovms(app_handle: tauri::AppHandle) {
         status.progress = 85;
         app_handle
             .emit("ovms-init-status", &*status)
-            .unwrap_or_else(|e| error!(error = %e, "Failed to emit status"));
+            .unwrap_or_else(|e| {
+                log_warning!("Failed to emit init status", error = %e);
+            });
     }
 
     match ovms::start_ovms_server(app_handle.clone()).await {
         Ok(msg) => {
-            info!(message = %msg, "OVMS startup");
+            log_operation_success!("OVMS initialization");
+            tracing::debug!(message = %msg, "OVMS server started successfully");
             let mut status = status_mutex.lock().unwrap();
             status.step = "complete".to_string();
             status.message = "OVMS initialization complete".to_string();
@@ -258,17 +285,21 @@ async fn initialize_ovms(app_handle: tauri::AppHandle) {
             status.is_complete = true;
             app_handle
                 .emit("ovms-init-status", &*status)
-                .unwrap_or_else(|e| error!(error = %e, "Failed to emit status"));
+                .unwrap_or_else(|e| {
+                    log_warning!("Failed to emit init status", error = %e);
+                });
         }
         Err(e) => {
-            error!(error = %e, "Failed to start OVMS server");
+            log_operation_error!("OVMS server startup", &e);
             let mut status = status_mutex.lock().unwrap();
             status.has_error = true;
             status.error_message = Some(format!("Failed to start OVMS server: {}", e));
             status.message = "Server startup failed".to_string();
             app_handle
                 .emit("ovms-init-status", &*status)
-                .unwrap_or_else(|e| error!(error = %e, "Failed to emit status"));
+                .unwrap_or_else(|e| {
+                    log_warning!("Failed to emit init status", error = %e);
+                });
         }
     }
 }
@@ -378,9 +409,9 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 // Stop OVMS server when app is closing
                 if let Err(e) = ovms::stop_ovms_server() {
-                    error!(error = %e, "Failed to stop OVMS server");
+                    log_operation_error!("OVMS server shutdown", &e);
                 } else {
-                    info!("OVMS server stopped on app shutdown");
+                    log_operation_success!("OVMS server shutdown");
                 }
             }
         })
