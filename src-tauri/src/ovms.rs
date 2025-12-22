@@ -9,6 +9,8 @@ use serde::{ Deserialize, Serialize };
 use tauri::AppHandle;
 use tracing::{ info, warn, error, debug };
 
+use crate::{ paths, constants };
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OvmsStatus {
     pub status: String,
@@ -36,10 +38,6 @@ struct ModelInfo {
     model_version_status: Vec<ModelVersionStatus>,
 }
 
-const OVMS_DOWNLOAD_URL: &str =
-    "https://github.com/openvinotoolkit/model_server/releases/download/v2025.4/ovms_windows_python_off.zip";
-const OVMS_ZIP_FILE: &str = "ovms_windows_python_off.zip";
-
 // Global OVMS process management
 static OVMS_PROCESS: std::sync::OnceLock<Arc<Mutex<Option<Child>>>> = std::sync::OnceLock::new();
 
@@ -47,26 +45,19 @@ static OVMS_PROCESS: std::sync::OnceLock<Arc<Mutex<Option<Child>>>> = std::sync:
 pub static LOADED_MODEL: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
 
 pub fn get_sparrow_dir(_app_handle: Option<&AppHandle>) -> PathBuf {
-    // Get the base .sparrow directory
-    let home_dir = std::env
-        ::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home_dir).join(".sparrow")
+    paths::get_sparrow_dir().unwrap_or_else(|_| PathBuf::from(".sparrow"))
 }
 
 pub fn get_ovms_dir(app_handle: Option<&AppHandle>) -> PathBuf {
-    // OVMS directory is .sparrow/ovms
-    get_sparrow_dir(app_handle).join("ovms")
+    paths::get_ovms_dir(app_handle).unwrap_or_else(|_| get_sparrow_dir(app_handle).join("ovms"))
 }
 
 pub fn get_ovms_config_path(app_handle: Option<&AppHandle>) -> PathBuf {
-    get_ovms_dir(app_handle).join("models_config.json")
+    paths::get_ovms_config_path(app_handle).unwrap_or_else(|_| get_ovms_dir(app_handle).join(constants::OVMS_CONFIG_FILE))
 }
 
 pub fn get_ovms_exe_path(app_handle: Option<&AppHandle>) -> PathBuf {
-    // With the new extraction method, ovms.exe is directly in the ovms folder
-    get_ovms_dir(app_handle).join("ovms.exe")
+    paths::get_ovms_exe_path(app_handle).unwrap_or_else(|_| get_ovms_dir(app_handle).join(constants::OVMS_EXE_NAME))
 }
 
 #[allow(dead_code)]
@@ -155,7 +146,7 @@ pub async fn download_ovms(app_handle: AppHandle) -> Result<String, String> {
     }
 
     // Download zip to .sparrow root directory
-    let zip_path = sparrow_dir.join(OVMS_ZIP_FILE);
+    let zip_path = sparrow_dir.join(constants::OVMS_ZIP_FILE);
 
     // Check if OVMS executable already exists
     let ovms_exe = get_ovms_exe_path(Some(&app_handle));
@@ -175,14 +166,14 @@ pub async fn download_ovms(app_handle: AppHandle) -> Result<String, String> {
     // Download the file with retry logic and better error handling
     let client = reqwest::Client
         ::builder()
-        .user_agent("intel-ai-corebuilder/0.1.0")
-        .timeout(std::time::Duration::from_secs(600)) // 10 minute timeout
+        .user_agent(constants::USER_AGENT)
+        .timeout(std::time::Duration::from_secs(constants::DOWNLOAD_TIMEOUT_SECS))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
-    info!(url = %OVMS_DOWNLOAD_URL, "Starting OVMS download");
+    info!(url = %constants::OVMS_DOWNLOAD_URL, "Starting OVMS download");
 
-    let mut retries = 3;
+    let mut retries = constants::MAX_DOWNLOAD_RETRIES;
 
     while retries > 0 {
         match download_and_validate(&client, &zip_path).await {
@@ -229,7 +220,7 @@ async fn download_and_validate(
     zip_path: &PathBuf
 ) -> Result<Vec<u8>, String> {
     let response = client
-        .get(OVMS_DOWNLOAD_URL)
+        .get(constants::OVMS_DOWNLOAD_URL)
         .send().await
         .map_err(|e| format!("Failed to send request: {}", e))?;
 
@@ -1006,6 +997,7 @@ pub async fn get_ovms_model_metadata(model_name: String) -> Result<String, Strin
     }
 }
 
+#[allow(dead_code)]
 pub fn generate_ovms_graph(model_dir: &PathBuf, model_id: &str) -> Result<(), String> {
     // Extract model name from ID (e.g., "OpenVINO/Phi-3.5-mini-instruct-int4-ov" -> "Phi-3.5-mini-instruct-int4-ov")
     let model_name = model_id.split('/').last().unwrap_or(model_id);

@@ -1,5 +1,5 @@
 use serde::{ Deserialize, Serialize };
-use tracing::{ warn, error, debug, info }; // Add 'info' to the tracing import
+use tracing::{ warn, error, debug, info };
 use serde_json;
 use std::collections::HashMap;
 use std::fs;
@@ -8,12 +8,12 @@ use uuid::Uuid;
 use async_openai::types::ChatCompletionRequestUserMessageArgs;
 use async_openai::types::ChatCompletionRequestSystemMessageArgs;
 use async_openai::types::ChatCompletionRequestAssistantMessageArgs;
-// Removed unused tool choice imports since tools are now in system message
 use async_openai::{ types::CreateChatCompletionRequestArgs, Client };
 use async_openai::{ config::OpenAIConfig };
 use futures::StreamExt;
 use tauri::{ AppHandle, Emitter };
-use crate::mcp;
+
+use crate::{ mcp, paths, constants };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -51,26 +51,7 @@ impl Default for ChatSessionsStorage {
 }
 
 fn get_chat_sessions_path() -> Result<PathBuf, String> {
-    let home_dir = std::env
-        ::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .map_err(|_| "Failed to get user home directory".to_string())?;
-
-    let sparrow_dir = PathBuf::from(&home_dir).join(".sparrow");
-
-    // Create .sparrow directory if it doesn't exist
-    if !sparrow_dir.exists() {
-        info!(path = %sparrow_dir.display(), "Creating .sparrow directory");
-        fs
-            ::create_dir_all(&sparrow_dir)
-            .map_err(|e| format!("Failed to create .sparrow directory: {}", e))?;
-        info!(path = %sparrow_dir.display(), "Directory created successfully");
-    }
-
-    let sessions_path = sparrow_dir.join("chat_sessions.json");
-    debug!(path = %sessions_path.display(), "Chat sessions path resolved");
-    
-    Ok(sessions_path)
+    paths::get_chat_sessions_path().map_err(|e| e.to_string())
 }
 
 fn load_chat_sessions() -> Result<ChatSessionsStorage, String> {
@@ -151,13 +132,13 @@ fn generate_chat_title(content: &str) -> String {
     let cleaned = content.trim();
 
     // Remove common question words and make it more title-like
-    let title = if cleaned.len() <= 60 {
+    let title = if cleaned.len() <= constants::MAX_CHAT_TITLE_LENGTH {
         cleaned.to_string()
     } else {
-        // Find a good break point near 60 characters
-        let mut break_point = 60;
-        if let Some(space_pos) = cleaned[..60].rfind(' ') {
-            if space_pos > 40 {
+        // Find a good break point near max length
+        let mut break_point = constants::MAX_CHAT_TITLE_LENGTH;
+        if let Some(space_pos) = cleaned[..constants::MAX_CHAT_TITLE_LENGTH].rfind(' ') {
+            if space_pos > constants::MIN_CHAT_TITLE_LENGTH {
                 // Only use space if it's not too early
                 break_point = space_pos;
             }
@@ -198,7 +179,7 @@ pub async fn create_chat_session(title: Option<String>) -> Result<ChatSession, S
 
     let session = ChatSession {
         id: session_id.clone(),
-        title: title.unwrap_or_else(|| "New Chat".to_string()),
+        title: title.unwrap_or_else(|| constants::DEFAULT_CHAT_TITLE.to_string()),
         created_at: now,
         updated_at: now,
         model_id: None,
@@ -223,7 +204,7 @@ pub async fn create_temporary_chat_session(title: Option<String>) -> Result<Chat
 
     let session = ChatSession {
         id: session_id.clone(),
-        title: title.unwrap_or_else(|| "New Chat".to_string()),
+        title: title.unwrap_or_else(|| constants::DEFAULT_CHAT_TITLE.to_string()),
         created_at: now,
         updated_at: now,
         model_id: None,

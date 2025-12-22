@@ -1,6 +1,7 @@
 use super::Document;
 use async_openai::{ types::CreateEmbeddingRequestArgs, Client };
 use async_openai::config::OpenAIConfig;
+use crate::constants;
 
 pub struct EmbeddingService {
     client: Client<OpenAIConfig>,
@@ -8,9 +9,10 @@ pub struct EmbeddingService {
 
 impl EmbeddingService {
     pub fn new() -> Self {
+        let api_base = format!("{}{}", constants::OVMS_API_BASE, constants::OVMS_OPENAI_PATH);
         let config = OpenAIConfig::new()
             .with_api_key("unused")
-            .with_api_base("http://localhost:1114/v3"); // Your OVMS endpoint
+            .with_api_base(api_base);
 
         Self {
             client: Client::with_config(config),
@@ -23,7 +25,7 @@ impl EmbeddingService {
         }
 
         let request = CreateEmbeddingRequestArgs::default()
-            .model("bge-base-en-v1.5-int8-ov") // or your local embedding model
+            .model(constants::DEFAULT_EMBEDDING_MODEL)
             .input(texts)
             .build()
             .map_err(|e| format!("Failed to build embedding request: {}", e))?;
@@ -87,7 +89,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_embedding_service_creation() {
-        let service = EmbeddingService::new();
+        let _service = EmbeddingService::new();
         // Just test that the service can be created
         assert!(true);
     }

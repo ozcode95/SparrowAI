@@ -3,6 +3,7 @@ use pdf_extract::extract_text;
 use calamine::{Reader, Xlsx, open_workbook};
 use std::path::Path;
 use std::fs;
+use crate::constants;
 
 #[tauri::command]
 pub async fn process_document(file_path: String) -> Result<Vec<Document>, String> {
@@ -35,7 +36,7 @@ async fn process_pdf(file_path: &str) -> Result<Vec<Document>, String> {
     let text = extract_text(file_path)
         .map_err(|e| format!("Failed to extract PDF text: {}", e))?;
     
-    let chunks = chunk_text(&text, 1000, 200); // 1000 chars with 200 overlap
+    let chunks = chunk_text(&text, constants::DEFAULT_CHUNK_SIZE, constants::DEFAULT_CHUNK_OVERLAP);
     
     let mut documents = Vec::new();
     let file_name = Path::new(file_path)
@@ -71,7 +72,7 @@ async fn process_docx(file_path: &str) -> Result<Vec<Document>, String> {
     // Simple DOCX processing - you might want to use docx-rs properly
     let text = format!("DOCX content from: {}", file_path);
     
-    let chunks = chunk_text(&text, 1000, 200);
+    let chunks = chunk_text(&text, constants::DEFAULT_CHUNK_SIZE, constants::DEFAULT_CHUNK_OVERLAP);
     
     let mut documents = Vec::new();
     let file_name = Path::new(file_path)
@@ -122,7 +123,7 @@ async fn process_excel(file_path: &str) -> Result<Vec<Document>, String> {
                 text.push('\n');
             }
             
-            let chunks = chunk_text(&text, 1000, 200);
+            let chunks = chunk_text(&text, constants::DEFAULT_CHUNK_SIZE, constants::DEFAULT_CHUNK_OVERLAP);
             
             for (i, chunk) in chunks.iter().enumerate() {
                 if chunk.trim().is_empty() {

@@ -7,6 +7,8 @@ use tokio::io::AsyncWriteExt;
 use std::fs;
 use std::collections::HashMap;
 
+use crate::constants;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ModelSibling {
     pub rfilename: String,
@@ -73,7 +75,9 @@ struct HfFileInfo {
     #[serde(rename = "path")]
     pub path: String,
     #[serde(rename = "type")]
+    #[allow(dead_code)]
     pub file_type: String,
+    #[allow(dead_code)]
     pub size: Option<u64>,
 }
 
@@ -103,7 +107,7 @@ async fn download_single_file(
     // Start the request
     let response = client
         .get(file_url)
-        .header("User-Agent", "SparrowAI/1.0")
+        .header("User-Agent", constants::USER_AGENT)
         .send().await
         .map_err(|e| format!("Request failed: {}", e))?;
 
@@ -133,7 +137,7 @@ async fn download_single_file(
         downloaded += chunk.len() as u64;
 
         // Emit progress events, but not too frequently to avoid overwhelming the UI
-        if last_progress_emit.elapsed().as_millis() > 100 || downloaded == content_length {
+        if last_progress_emit.elapsed().as_millis() > constants::DOWNLOAD_PROGRESS_INTERVAL_MS || downloaded == content_length {
             let file_progress = if content_length > 0 {
                 (((downloaded as f64) / (content_length as f64)) * 100.0) as u32
             } else {
@@ -181,19 +185,21 @@ async fn download_single_file(
 #[tauri::command]
 pub async fn search_models(query: String, limit: Option<u32>) -> Result<SearchResult, String> {
     let client = reqwest::Client::new();
-    let search_limit = limit.unwrap_or(20).min(100);
+    let search_limit = limit.unwrap_or(constants::DEFAULT_MODEL_SEARCH_LIMIT).min(constants::MAX_MODEL_SEARCH_LIMIT);
 
     // Search specifically under OpenVINO organization
     let search_query = if query.trim().is_empty() {
-        "OpenVINO".to_string()
+        constants::OPENVINO_ORG.to_string()
     } else {
-        format!("OpenVINO/{}", query)
+        format!("{}/{}", constants::OPENVINO_ORG, query)
     };
 
     let url = format!(
-        "https://huggingface.co/api/models?search={}&limit={}&author=OpenVINO",
+        "{}/models?search={}&limit={}&author={}",
+        constants::HUGGINGFACE_API_BASE,
         urlencoding::encode(&search_query),
-        search_limit
+        search_limit,
+        constants::OPENVINO_ORG
     );
 
     let response = client

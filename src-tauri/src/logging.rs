@@ -5,10 +5,12 @@ use tracing_appender::{non_blocking, rolling};
 use chrono::{Local, NaiveDate};
 use std::io;
 
+use crate::{ paths, constants };
+
 /// Initialize the logging system with file-based logging and archiving
 pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
-    let log_dir = get_log_directory()?;
-    let archive_dir = log_dir.join("archive");
+    let log_dir = paths::get_logs_dir()?;
+    let archive_dir = paths::get_logs_archive_dir()?;
     
     // Create log directories
     fs::create_dir_all(&log_dir)?;
@@ -47,7 +49,7 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
     
     // Set up environment filter (default to INFO level)
     let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,sparrow=debug"));
+        .unwrap_or_else(|_| EnvFilter::new(constants::DEFAULT_LOG_FILTER));
     
     // Initialize the subscriber
     tracing_subscriber::registry()
@@ -69,17 +71,6 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
     }
     
     Ok(())
-}
-
-/// Get the application's log directory
-fn get_log_directory() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    // Use user data directory for logs
-    let home_dir = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .map_err(|_| "Failed to get user home directory")?;
-    
-    let log_dir = PathBuf::from(home_dir).join(".sparrow").join("logs");
-    Ok(log_dir)
 }
 
 /// Archive logs older than today
@@ -136,14 +127,14 @@ fn extract_date_from_filename(filename: &str) -> Option<String> {
 
 /// Clean up old archived logs (keep last 30 days)
 pub fn cleanup_old_archives() -> Result<(), Box<dyn std::error::Error>> {
-    let log_dir = get_log_directory()?;
-    let archive_dir = log_dir.join("archive");
+    let _log_dir = paths::get_logs_dir()?;
+    let archive_dir = paths::get_logs_archive_dir()?;
     
     if !archive_dir.exists() {
         return Ok(());
     }
     
-    let cutoff_date = Local::now().naive_local().date() - chrono::Duration::days(30);
+    let cutoff_date = Local::now().naive_local().date() - chrono::Duration::days(constants::LOG_RETENTION_DAYS);
     
     for entry in fs::read_dir(&archive_dir)? {
         let entry = entry?;

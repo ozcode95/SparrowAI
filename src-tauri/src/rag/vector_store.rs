@@ -1,6 +1,7 @@
 use super::{Document, SearchResult, FileInfo, FileInfoSummary};
 use sled::Db;
 use nalgebra::DVector;
+use crate::paths;
 
 // Database schema version for future migrations
 const DB_SCHEMA_VERSION: &str = "v1.0.0";
@@ -11,23 +12,7 @@ pub struct VectorStore {
 
 impl VectorStore {
     pub fn new() -> Result<Self, String> {
-        // Get user profile directory
-        let home_dir = match std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
-            Ok(home) => std::path::PathBuf::from(home),
-            Err(_) => {
-                return Err("Failed to get user home directory".to_string());
-            }
-        };
-
-        let mut data_dir = home_dir;
-        data_dir.push(".sparrow");
-        data_dir.push("vector_store");
-        
-        // Create data directory if it doesn't exist
-        if let Some(parent) = data_dir.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create data directory: {}", e))?;
-        }
+        let data_dir = paths::get_vector_store_path().map_err(|e| e.to_string())?;
         
         // Try to open the database, with fallback for corruption or schema mismatch
         let db = match sled::open(&data_dir) {
