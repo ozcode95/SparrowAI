@@ -32,6 +32,11 @@ export const ChatPage = () => {
   const [currentStreamingMessage, setCurrentStreamingMessage] = useState("");
   const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
   const [isLoadingModel, setIsLoadingModel] = useState(false);
+  const [usageData, setUsageData] = useState<{
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  } | null>(null);
 
   // Local LLM configuration (optional overrides)
   const [localTemperature, setLocalTemperature] = useState<number | null>(null);
@@ -96,67 +101,113 @@ export const ChatPage = () => {
   useEffect(() => {
     let accumulatedMessage = "";
     let accumulatedToolCalls: ToolCall[] = [];
+    let streamStartTime: number | null = null;
 
-    const unlisten = listen<{ token: string; finished: boolean }>(
-      "chat-token",
-      async (event) => {
-        if (event.payload.finished) {
-          console.log(
-            "Chat streaming finished, accumulated message length:",
-            accumulatedMessage.length
-          );
+    const unlisten = listen<{
+      token: string;
+      finished: boolean;
+      usage?: {
+        prompt_tokens: number;
+        completion_tokens: number;
+        total_tokens: number;
+      };
+    }>("chat-token", async (event) => {
+      if (event.payload.finished) {
+        console.log(
+          "Chat streaming finished, accumulated message length:",
+          accumulatedMessage.length
+        );
 
-          // Save the complete assistant message to chat session
-          if (accumulatedMessage.trim()) {
-            try {
-              // Save to backend
-              if (activeChatSessionId) {
-                console.log(
-                  "Saving assistant message to session:",
-                  activeChatSessionId
-                );
-                await invoke("add_message_to_session", {
-                  sessionId: activeChatSessionId,
-                  role: "assistant",
-                  content: accumulatedMessage,
-                  tokensPerSecond: null,
-                  isError: false,
-                });
-                console.log("Assistant message saved successfully");
-
-                // Add to UI
-                const assistantMessage: ChatMessageType = {
-                  id: crypto.randomUUID(),
-                  role: "assistant",
-                  content: accumulatedMessage,
-                  timestamp: Date.now(),
-                  toolCalls:
-                    accumulatedToolCalls.length > 0
-                      ? accumulatedToolCalls
-                      : undefined,
-                };
-                addMessageToCurrentChat(assistantMessage);
-              } else {
-                console.warn("No active session ID to save message");
-              }
-            } catch (error) {
-              console.error("Failed to save assistant message:", error);
+        // Extract usage data from the finished event payload
+        const usageFromPayload = event.payload.usage
+          ? {
+              promptTokens: event.payload.usage.prompt_tokens,
+              completionTokens: event.payload.usage.completion_tokens,
+              totalTokens: event.payload.usage.total_tokens,
             }
-          }
+          : null;
 
-          // Clear streaming state
-          setCurrentStreamingMessage("");
-          setToolCalls([]);
-          setIsStreaming(false);
-          accumulatedMessage = "";
-          accumulatedToolCalls = [];
-        } else {
-          // Accumulate the token
-          accumulatedMessage += event.payload.token;
-          setCurrentStreamingMessage((prev) => prev + event.payload.token);
+        console.log("Usage data from finished event:", usageFromPayload);
+
+        // Calculate tokens per second
+        let tokensPerSecond: number | null = null;
+        if (usageFromPayload && streamStartTime) {
+          const elapsedSeconds = (Date.now() - streamStartTime) / 1000;
+          tokensPerSecond = usageFromPayload.completionTokens / elapsedSeconds;
+          console.log(
+            `Tokens/sec: ${tokensPerSecond.toFixed(2)} (${
+              usageFromPayload.completionTokens
+            } tokens in ${elapsedSeconds.toFixed(2)}s)`
+          );
         }
+
+        // Save the complete assistant message to chat session
+        if (accumulatedMessage.trim()) {
+          try {
+            // Save to backend
+            if (activeChatSessionId) {
+              console.log(
+                "Saving assistant message to session:",
+                activeChatSessionId
+              );
+              console.log("Usage data to save:", usageFromPayload);
+              await invoke("add_message_to_session", {
+                sessionId: activeChatSessionId,
+                role: "assistant",
+                content: accumulatedMessage,
+                tokensPerSecond: tokensPerSecond,
+                isError: false,
+                promptTokens: usageFromPayload?.promptTokens ?? null,
+                completionTokens: usageFromPayload?.completionTokens ?? null,
+                totalTokens: usageFromPayload?.totalTokens ?? null,
+              });
+              console.log(
+                "Assistant message saved successfully with usage data"
+              );
+
+              // Add to UI with usage data
+              const assistantMessage: ChatMessageType = {
+                id: crypto.randomUUID(),
+                role: "assistant",
+                content: accumulatedMessage,
+                timestamp: Date.now(),
+                tokens_per_second: tokensPerSecond,
+                completion_tokens: usageFromPayload?.completionTokens,
+                total_tokens: usageFromPayload?.totalTokens,
+                prompt_tokens: usageFromPayload?.promptTokens,
+                toolCalls:
+                  accumulatedToolCalls.length > 0
+                    ? accumulatedToolCalls
+                    : undefined,
+              };
+              addMessageToCurrentChat(assistantMessage);
+            } else {
+              console.warn("No active session ID to save message");
+            }
+          } catch (error) {
+            console.error("Failed to save assistant message:", error);
+          }
+        }
+
+        // Clear streaming state
+        setCurrentStreamingMessage("");
+        setToolCalls([]);
+        setIsStreaming(false);
+        setUsageData(null); // Clear usage data for next message
+        accumulatedMessage = "";
+        accumulatedToolCalls = [];
+        streamStartTime = null;
+      } else {
+        // Set start time on first token
+        if (!streamStartTime) {
+          streamStartTime = Date.now();
+        }
+
+        // Accumulate the token
+        accumulatedMessage += event.payload.token;
+        setCurrentStreamingMessage((prev) => prev + event.payload.token);
       }
-    );
+    });
 
     return () => {
       unlisten.then((fn) => fn());
@@ -167,6 +218,26 @@ export const ChatPage = () => {
   useEffect(() => {
     const unlisten = listen<ToolCall>("tool-call", (event) => {
       setToolCalls((prev) => [...prev, event.payload]);
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // Listen for usage statistics
+  useEffect(() => {
+    const unlisten = listen<{
+      prompt_tokens: number;
+      completion_tokens: number;
+      total_tokens: number;
+    }>("chat-usage", (event) => {
+      console.log("📊 Received usage statistics:", event.payload);
+      setUsageData({
+        promptTokens: event.payload.prompt_tokens,
+        completionTokens: event.payload.completion_tokens,
+        totalTokens: event.payload.total_tokens,
+      });
     });
 
     return () => {
@@ -420,7 +491,24 @@ export const ChatPage = () => {
                 } p-4`}
               >
                 {message.role === "assistant" ? (
-                  <MessageContent content={message.content} />
+                  <>
+                    <MessageContent content={message.content} />
+                    {/* Display tokens per second and usage info */}
+                    {(message.tokens_per_second || message.total_tokens) && (
+                      <div className="mt-3 pt-2 border-t border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400 flex items-center gap-4">
+                        {message.tokens_per_second && (
+                          <span className="font-mono">
+                            ⚡ {message.tokens_per_second.toFixed(2)} tokens/s
+                          </span>
+                        )}
+                        {message.total_tokens && (
+                          <span className="font-mono">
+                            📊 {message.completion_tokens || 0} tokens
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </>
                 ) : (
                   <div className="prose prose-sm max-w-none dark:prose-invert">
                     <ReactMarkdown>{message.content}</ReactMarkdown>

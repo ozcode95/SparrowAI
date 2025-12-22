@@ -8,6 +8,7 @@ use uuid::Uuid;
 use async_openai::types::ChatCompletionRequestUserMessageArgs;
 use async_openai::types::ChatCompletionRequestSystemMessageArgs;
 use async_openai::types::ChatCompletionRequestAssistantMessageArgs;
+use async_openai::types::ChatCompletionStreamOptions;
 use async_openai::{ types::CreateChatCompletionRequestArgs, Client };
 use async_openai::{ config::OpenAIConfig };
 use futures::StreamExt;
@@ -23,6 +24,9 @@ pub struct ChatMessage {
     pub timestamp: i64,
     pub tokens_per_second: Option<f64>,
     pub is_error: Option<bool>,
+    pub prompt_tokens: Option<u32>,
+    pub completion_tokens: Option<u32>,
+    pub total_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -289,7 +293,10 @@ pub async fn add_message_to_session(
     role: String,
     content: String,
     tokens_per_second: Option<f64>,
-    is_error: Option<bool>
+    is_error: Option<bool>,
+    prompt_tokens: Option<u32>,
+    completion_tokens: Option<u32>,
+    total_tokens: Option<u32>
 ) -> Result<ChatMessage, String> {
     tracing::debug!(
         session_id = %session_id,
@@ -318,6 +325,9 @@ pub async fn add_message_to_session(
         timestamp: now,
         tokens_per_second,
         is_error,
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
     };
 
     session.messages.push(message.clone());
@@ -371,7 +381,10 @@ pub async fn add_message_to_temporary_session(
     role: String,
     content: String,
     tokens_per_second: Option<f64>,
-    is_error: Option<bool>
+    is_error: Option<bool>,
+    prompt_tokens: Option<u32>,
+    completion_tokens: Option<u32>,
+    total_tokens: Option<u32>
 ) -> Result<(ChatSession, ChatMessage), String> {
     let message_id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp_millis();
@@ -383,6 +396,9 @@ pub async fn add_message_to_temporary_session(
         timestamp: now,
         tokens_per_second,
         is_error,
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
     };
 
     session.messages.push(message.clone());
@@ -629,6 +645,9 @@ For each function call, return a json object with function name and arguments wi
         .model(model_name.clone())
         .messages(messages.clone())
         .stream(true)
+        .stream_options(ChatCompletionStreamOptions {
+            include_usage: true,
+        })
         .temperature(temperature.unwrap_or(0.7) as f32)
         .top_p(top_p.unwrap_or(1.0) as f32);
 
@@ -753,12 +772,35 @@ For each function call, return a json object with function name and arguments wi
     let mut full_response = String::new();
     let mut executed_tools = std::collections::HashSet::new();
     let mut needs_continuation = false;
+    let mut usage_data: Option<(u32, u32, u32)> = None; // (prompt_tokens, completion_tokens, total_tokens)
 
     // Process streaming responses with function call support
     while let Some(result) = stream.next().await {
         match result {
             Ok(response) => {
-                // Stream response chunk logging disabled for cleaner output
+                // // Log entire response structure for debugging
+                // if let Ok(response_json) = serde_json::to_string_pretty(&response) {
+                //     tracing::debug!(
+                //         response_json = %response_json,
+                //         "Complete streaming response chunk"
+                //     );
+                // }
+
+                // Capture usage data if present (comes in final chunk with empty choices)
+                if let Some(usage) = response.usage {
+                    let prompt_tokens = usage.prompt_tokens;
+                    let completion_tokens = usage.completion_tokens;
+                    let total_tokens = usage.total_tokens;
+                    
+                    usage_data = Some((prompt_tokens, completion_tokens, total_tokens));
+                    
+                    info!(
+                        prompt_tokens = prompt_tokens,
+                        completion_tokens = completion_tokens,
+                        total_tokens = total_tokens,
+                        "✅ Captured usage statistics from final stream chunk"
+                    );
+                }
 
                 for chat_choice in response.choices {
                     // Processing stream choice (verbose logging disabled)
@@ -936,14 +978,33 @@ For each function call, return a json object with function name and arguments wi
         }
     }
 
-    // Emit completion signal
+    // Emit completion signal with usage data
     let _ = app.emit(
         "chat-token",
         serde_json::json!({
-        "token": "",
-        "finished": true
-    })
+            "token": "",
+            "finished": true,
+            "usage": usage_data.map(|(prompt, completion, total)| {
+                serde_json::json!({
+                    "prompt_tokens": prompt,
+                    "completion_tokens": completion,
+                    "total_tokens": total
+                })
+            })
+        })
     );
+
+    // Emit usage data as separate event for easier frontend handling
+    if let Some((prompt_tokens, completion_tokens, total_tokens)) = usage_data {
+        let _ = app.emit(
+            "chat-usage",
+            serde_json::json!({
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens
+            })
+        );
+    }
 
     // Log the complete response before breaking
     debug!(
