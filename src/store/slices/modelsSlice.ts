@@ -1,4 +1,5 @@
 import { StateCreator } from "zustand";
+import { invoke } from "@tauri-apps/api/core";
 import type { AppState, ModelsSlice } from "../types";
 
 export const createModelsSlice: StateCreator<AppState, [], [], ModelsSlice> = (
@@ -72,4 +73,33 @@ export const createModelsSlice: StateCreator<AppState, [], [], ModelsSlice> = (
 
   setIsOvmsRunning: (isRunning) => set({ isOvmsRunning: isRunning }),
   setLoadedModel: (modelId) => set({ loadedModel: modelId }),
+
+  getLoadedModel: async () => {
+    const maxRetries = 5;
+    const retryDelay = 1000; // 1 second
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const ovmsStatus: any = await invoke("check_ovms_status");
+
+        if (ovmsStatus?.loaded_models?.length > 0) {
+          const sortedModels = ovmsStatus.loaded_models.sort();
+          const modelId = `OpenVINO/${sortedModels[0]}`;
+          set({ loadedModel: modelId });
+          return modelId;
+        } else {
+          // Wait before retrying (except on last attempt)
+          if (attempt < maxRetries - 1) {
+            await new Promise((resolve) => setTimeout(resolve, retryDelay));
+          }
+        }
+      } catch (error) {
+        console.error("Failed to get loaded model:", error);
+        break;
+      }
+    }
+
+    set({ loadedModel: null });
+    return null;
+  },
 });

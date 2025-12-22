@@ -23,7 +23,7 @@ import { useUI, useModels, useChat, useTheme } from "./store";
 
 function App() {
   const { currentPage, setCurrentPage, showNotification } = useUI();
-  const { setIsOvmsRunning } = useModels();
+  const { setIsOvmsRunning, getLoadedModel } = useModels();
   const { themeMode } = useTheme();
   const {
     setActiveChatSessionId,
@@ -35,6 +35,7 @@ function App() {
   const [initStatus, setInitStatus] = useState<any>(null);
   const [showInitDialog, setShowInitDialog] = useState(false);
   const ovmsNotificationShownRef = useRef(false);
+  const modelLoadedRef = useRef(false);
 
   useDownloadedModels();
 
@@ -82,6 +83,14 @@ function App() {
 
         if (status.is_complete) {
           setIsOvmsRunning(true);
+
+          // Load model once when OVMS is ready
+          if (!modelLoadedRef.current) {
+            await getLoadedModel();
+            modelLoadedRef.current = true;
+          }
+
+          // Close dialog and show notification after model is loaded
           setShowInitDialog(false);
 
           // Only show notification once using ref
@@ -117,11 +126,19 @@ function App() {
 
   // Listen for OVMS initialization updates
   useEffect(() => {
-    const unlisten = listen<any>("ovms-init-progress", (event) => {
+    const unlisten = listen<any>("ovms-init-progress", async (event) => {
       setInitStatus(event.payload);
 
       if (event.payload.is_complete && !event.payload.has_error) {
         setIsOvmsRunning(true);
+
+        // Load model once when OVMS is ready
+        if (!modelLoadedRef.current) {
+          await getLoadedModel();
+          modelLoadedRef.current = true;
+        }
+
+        // Close dialog and show notification after model is loaded
         setShowInitDialog(false);
 
         // Only show notification once using ref
@@ -129,6 +146,9 @@ function App() {
           showNotification("OVMS initialized successfully", "success", 3000);
           ovmsNotificationShownRef.current = true;
         }
+
+        const ovmsEvent = new Event("ovms-initialization-complete");
+        window.dispatchEvent(ovmsEvent);
       }
     });
 

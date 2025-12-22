@@ -101,6 +101,7 @@ export const useModels = () =>
       setDownloadedModels: state.setDownloadedModels,
       setIsOvmsRunning: state.setIsOvmsRunning,
       setLoadedModel: state.setLoadedModel,
+      getLoadedModel: state.getLoadedModel,
     }))
   );
 

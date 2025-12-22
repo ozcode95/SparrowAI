@@ -39,7 +39,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     showNotification,
   } = useUI();
 
-  const { setLoadedModel } = useModels();
+  const { getLoadedModel } = useModels();
 
   const {
     chatSessions,
@@ -74,23 +74,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
       icon: <Puzzle className="h-5 w-5" />,
     },
   ];
-
-  const getLoadedModel = async () => {
-    try {
-      const ovmsStatus: any = await invoke("check_ovms_status");
-      if (ovmsStatus?.loaded_models?.length > 0) {
-        const sortedModels = ovmsStatus.loaded_models.sort();
-        const modelId = `OpenVINO/${sortedModels[0]}`;
-        setLoadedModel(modelId);
-        return modelId;
-      }
-    } catch (error) {
-      console.error("Failed to get loaded model:", error);
-    }
-
-    setLoadedModel(null);
-    return null;
-  };
 
   const createNewChat = async () => {
     try {
@@ -304,7 +287,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
               "w-full justify-start",
               isCollapsed && "justify-center px-0"
             )}
-            onClick={() => setOvmsStatusDialogOpen(true)}
+            onClick={() => {
+              getLoadedModel(); // Refresh model status on click
+              setOvmsStatusDialogOpen(true);
+            }}
           >
             <Info className="h-5 w-5" />
             {!isCollapsed && <span className="ml-2">Status</span>}

@@ -379,7 +379,11 @@ export const ChatPage = () => {
         <div className="flex-1 overflow-y-auto mb-4 space-y-4 px-2">
           {currentChatMessages.length === 0 && !isStreaming && (
             <Card className="p-8 text-center">
-              <Bot className="w-16 h-16 mx-auto mb-4 text-gray-400" />
+              <img
+                src="/white_logo_xbg.png"
+                alt="SparrowAI"
+                className="w-16 h-16 mx-auto mb-4"
+              />
               <h2 className="text-xl font-semibold mb-2">
                 Start a conversation
               </h2>
@@ -399,8 +403,12 @@ export const ChatPage = () => {
               }`}
             >
               {message.role === "assistant" && (
-                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-                  <Bot className="w-5 h-5 text-primary" />
+                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center p-1">
+                  <img
+                    src="/white_logo_xbg.png"
+                    alt="AI"
+                    className="w-full h-full object-contain"
+                  />
                 </div>
               )}
 
@@ -449,8 +457,12 @@ export const ChatPage = () => {
           {/* Streaming message */}
           {isStreaming && currentStreamingMessage && (
             <div className="flex gap-3 items-center justify-start">
-              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-                <Bot className="w-5 h-5 text-primary" />
+              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center p-1">
+                <img
+                  src="/white_logo_xbg.png"
+                  alt="AI"
+                  className="w-full h-full object-contain"
+                />
               </div>
               <Card className="flex-1 p-4">
                 <MessageContent content={currentStreamingMessage} />
@@ -461,9 +473,13 @@ export const ChatPage = () => {
           {/* Loading indicator */}
           {isStreaming && !currentStreamingMessage && (
             <div className="flex gap-3 items-center justify-start">
-              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center relative">
+              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center relative p-1">
                 <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-primary animate-spin"></div>
-                <Bot className="w-5 h-5 text-primary" />
+                <img
+                  src="/white_logo_xbg.png"
+                  alt="AI"
+                  className="w-full h-full object-contain"
+                />
               </div>
               <Card className="p-4">
                 <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400">

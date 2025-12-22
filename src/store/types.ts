@@ -75,6 +75,7 @@ export interface ModelsSlice {
   setDownloadedModels: (modelIds: string[]) => void;
   setIsOvmsRunning: (isRunning: boolean) => void;
   setLoadedModel: (modelId: string | null) => void;
+  getLoadedModel: () => Promise<string | null>;
 }
 
 export interface Settings {

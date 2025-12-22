@@ -71,6 +71,7 @@ export const McpPage = () => {
     setIsLoading(true);
     try {
       const result = await invoke<McpServerInfo[]>("get_mcp_servers");
+      console.warn(result);
       setServers(result);
     } catch (error) {
       console.error("Failed to load MCP servers:", error);
