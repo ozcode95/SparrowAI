@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { logUserAction, logError, logInfo, logDebug } from "@/lib/logger";
 import { PageContainer } from "../layout";
 import { Card, Button, Input } from "../ui";
 import { useAppStore } from "@/store";
@@ -81,7 +82,7 @@ export const ModelsPage = () => {
 
       setDownloadedModels(models);
     } catch (error) {
-      console.error("Failed to load downloaded models:", error);
+      logError("Failed to load downloaded models", error as Error);
     }
   };
 
@@ -207,8 +208,9 @@ export const ModelsPage = () => {
   const handleOpenModelFolder = async (modelId: string) => {
     try {
       await invoke("open_model_folder", { modelId });
+      logUserAction("Open model folder", { modelId });
     } catch (error) {
-      console.error("Failed to open model folder:", error);
+      logError("Failed to open model folder", error as Error, { modelId });
     }
   };
 

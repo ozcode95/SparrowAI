@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { logUserAction, logError, logInfo, logWarn } from "@/lib/logger";
 import { PageContainer } from "../layout";
 import { Card, Button } from "../ui";
 import { ModelDownloadDialog } from "./ModelDownloadDialog";

@@ -29,3 +29,4 @@ export type { DialogProps, DialogContentProps } from "./Dialog";
 
 export { LoadingSpinner } from "./LoadingSpinner";
 export { NotificationSnackbar } from "./NotificationSnackbar";
+export { ErrorBoundary } from "./ErrorBoundary";

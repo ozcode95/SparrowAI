@@ -20,6 +20,7 @@ import {
 
 import { useDownloadedModels } from "./hooks";
 import { useUI, useModels, useChat, useTheme } from "./store";
+import { logInfo, logError, logDebug, logWarn } from "./lib/logger";
 
 function App() {
   const { currentPage, setCurrentPage, showNotification } = useUI();
@@ -36,6 +37,7 @@ function App() {
   const [showInitDialog, setShowInitDialog] = useState(false);
   const ovmsNotificationShownRef = useRef(false);
   const modelLoadedRef = useRef(false);
+  const initCompletedRef = useRef(false);
 
   useDownloadedModels();
 
@@ -43,12 +45,13 @@ function App() {
   useEffect(() => {
     const autoConnectMcpServers = async () => {
       try {
+        logDebug("Auto-connecting MCP servers");
         const connected = await invoke<string[]>("auto_connect_mcp_servers");
         if (connected.length > 0) {
-          console.log("Auto-connected MCP servers:", connected);
+          logInfo("MCP servers auto-connected", { servers: connected });
         }
       } catch (error) {
-        console.error("Failed to auto-connect MCP servers:", error);
+        logError("Failed to auto-connect MCP servers", error as Error);
       }
     };
     autoConnectMcpServers();
@@ -56,6 +59,7 @@ function App() {
 
   // Apply theme mode to DOM on mount and when it changes
   useEffect(() => {
+    logDebug("Applying theme mode", { mode: themeMode });
     if (themeMode === "dark") {
       document.documentElement.classList.add("dark");
     } else {
@@ -65,6 +69,7 @@ function App() {
 
   // Clear chat state on app startup (session will be created on first message)
   useEffect(() => {
+    logDebug("Clearing chat state on startup");
     clearTemporarySession();
     clearCurrentChatMessages();
     setActiveChatSessionId(null);
@@ -72,6 +77,13 @@ function App() {
 
   // Monitor OVMS initialization status
   useEffect(() => {
+    // Skip if already initialized
+    if (initCompletedRef.current) {
+      return;
+    }
+
+    let interval: NodeJS.Timeout | null = null;
+
     const checkInitStatus = async () => {
       try {
         const status: any = await invoke("get_initialization_status");
@@ -82,7 +94,14 @@ function App() {
         }
 
         if (status.is_complete) {
+          logInfo("OVMS initialization completed", { step: status.step });
           setIsOvmsRunning(true);
+          initCompletedRef.current = true; // Mark as completed
+
+          // Clear the interval once initialization is complete
+          if (interval) {
+            clearInterval(interval);
+          }
 
           // Load model once when OVMS is ready
           if (!modelLoadedRef.current) {
@@ -104,6 +123,16 @@ function App() {
         }
 
         if (status.has_error) {
+          logError(
+            "OVMS initialization failed",
+            new Error(status.error_message || "Unknown error")
+          );
+
+          // Clear interval on error too
+          if (interval) {
+            clearInterval(interval);
+          }
+
           setShowInitDialog(false);
           showNotification(
             `OVMS initialization failed: ${
@@ -114,14 +143,18 @@ function App() {
           );
         }
       } catch (error) {
-        console.error("Failed to check init status:", error);
+        logError("Failed to check OVMS init status", error as Error);
       }
     };
 
     checkInitStatus();
-    const interval = setInterval(checkInitStatus, 2000);
+    interval = setInterval(checkInitStatus, 2000);
 
-    return () => clearInterval(interval);
+    return () => {
+      if (interval) {
+        clearInterval(interval);
+      }
+    };
   }, []);
 
   // Listen for OVMS initialization updates
@@ -130,7 +163,16 @@ function App() {
       setInitStatus(event.payload);
 
       if (event.payload.is_complete && !event.payload.has_error) {
+        // Skip if already completed
+        if (initCompletedRef.current) {
+          return;
+        }
+
+        logInfo("OVMS initialization event received", {
+          progress: event.payload.progress,
+        });
         setIsOvmsRunning(true);
+        initCompletedRef.current = true; // Mark as completed
 
         // Load model once when OVMS is ready
         if (!modelLoadedRef.current) {

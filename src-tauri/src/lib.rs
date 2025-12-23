@@ -307,13 +307,19 @@ async fn initialize_ovms(app_handle: tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Initialize logging system
-    if let Err(e) = logging::init_logging() {
-        eprintln!("Failed to initialize logging: {}", e);
-    }
+    // Build the Tauri log plugin with custom configuration
+    let log_plugin = match logging::build_tauri_log_plugin() {
+        Ok(builder) => builder.build(),
+        Err(e) => {
+            eprintln!("Failed to configure logging plugin: {}", e);
+            // Fallback to default configuration
+            tauri_plugin_log::Builder::new().build()
+        }
+    };
 
     tauri::Builder
         ::default()
+        .plugin(log_plugin)
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -398,6 +404,10 @@ pub fn run() {
             ]
         )
         .setup(|app| {
+            // Log startup message now that logging is configured
+            tracing::info!("🚀 SparrowAI starting...");
+            tracing::debug!("Tauri application setup initiated");
+            
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 initialize_ovms(handle).await;

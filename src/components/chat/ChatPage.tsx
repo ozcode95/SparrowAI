@@ -8,6 +8,13 @@ import { useAppStore } from "@/store";
 import { Send, Bot, User, Loader2, Wrench } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { ChatMessage as ChatMessageType } from "@/store/types";
+import {
+  logUserAction,
+  logError,
+  logInfo,
+  logDebug,
+  logWarn,
+} from "@/lib/logger";
 
 interface ToolCall {
   tool_name: string;
@@ -85,7 +92,9 @@ export const ChatPage = () => {
           setCurrentChatMessages(messages);
         })
         .catch((error) => {
-          console.error("Failed to load session messages:", error);
+          logError("Failed to load session messages", error as Error, {
+            sessionId: activeChatSessionId,
+          });
         });
     } else if (!activeChatSessionId) {
       previousSessionIdRef.current = null;
@@ -113,10 +122,9 @@ export const ChatPage = () => {
       };
     }>("chat-token", async (event) => {
       if (event.payload.finished) {
-        console.log(
-          "Chat streaming finished, accumulated message length:",
-          accumulatedMessage.length
-        );
+        logDebug("Chat streaming finished", {
+          messageLength: accumulatedMessage.length,
+        });
 
         // Extract usage data from the finished event payload
         const usageFromPayload = event.payload.usage
@@ -134,11 +142,11 @@ export const ChatPage = () => {
         if (usageFromPayload && streamStartTime) {
           const elapsedSeconds = (Date.now() - streamStartTime) / 1000;
           tokensPerSecond = usageFromPayload.completionTokens / elapsedSeconds;
-          console.log(
-            `Tokens/sec: ${tokensPerSecond.toFixed(2)} (${
-              usageFromPayload.completionTokens
-            } tokens in ${elapsedSeconds.toFixed(2)}s)`
-          );
+          logInfo("Chat stream completed", {
+            tokensPerSecond: tokensPerSecond.toFixed(2),
+            completionTokens: usageFromPayload.completionTokens,
+            elapsedSeconds: elapsedSeconds.toFixed(2),
+          });
         }
 
         // Save the complete assistant message to chat session
@@ -146,11 +154,10 @@ export const ChatPage = () => {
           try {
             // Save to backend
             if (activeChatSessionId) {
-              console.log(
-                "Saving assistant message to session:",
-                activeChatSessionId
-              );
-              console.log("Usage data to save:", usageFromPayload);
+              logDebug("Saving assistant message", {
+                sessionId: activeChatSessionId,
+                hasUsageData: !!usageFromPayload,
+              });
               await invoke("add_message_to_session", {
                 sessionId: activeChatSessionId,
                 role: "assistant",
@@ -161,9 +168,10 @@ export const ChatPage = () => {
                 completionTokens: usageFromPayload?.completionTokens ?? null,
                 totalTokens: usageFromPayload?.totalTokens ?? null,
               });
-              console.log(
-                "Assistant message saved successfully with usage data"
-              );
+              logInfo("Assistant message saved", {
+                sessionId: activeChatSessionId,
+                contentLength: accumulatedMessage.length,
+              });
 
               // Add to UI with usage data
               const assistantMessage: ChatMessageType = {
@@ -182,10 +190,12 @@ export const ChatPage = () => {
               };
               addMessageToCurrentChat(assistantMessage);
             } else {
-              console.warn("No active session ID to save message");
+              logWarn("No active session ID to save message");
             }
           } catch (error) {
-            console.error("Failed to save assistant message:", error);
+            logError("Failed to save assistant message", error as Error, {
+              sessionId: activeChatSessionId,
+            });
           }
         }
 
@@ -232,7 +242,7 @@ export const ChatPage = () => {
       completion_tokens: number;
       total_tokens: number;
     }>("chat-usage", (event) => {
-      console.log("📊 Received usage statistics:", event.payload);
+      logDebug("Received usage statistics", event.payload);
       setUsageData({
         promptTokens: event.payload.prompt_tokens,
         completionTokens: event.payload.completion_tokens,
@@ -250,7 +260,7 @@ export const ChatPage = () => {
     const unlisten = listen<{ error: string }>("chat-error", (event) => {
       setIsStreaming(false);
       setCurrentStreamingMessage("");
-      console.error("Chat error:", event.payload.error);
+      logError("Chat error occurred", new Error(event.payload.error));
 
       const errorMessage: ChatMessageType = {
         id: crypto.randomUUID(),
@@ -298,16 +308,18 @@ export const ChatPage = () => {
 
       // Create new session if this is the first message (no active session)
       if (!activeChatSessionId && !temporarySession) {
-        console.log("Creating new chat session...");
+        logInfo("Creating new chat session");
         const newSession = await invoke<any>("create_chat_session", {
           title: null,
         });
-        console.log("New session created:", newSession);
+        logInfo("New session created", { sessionId: newSession.id });
         sessionToUse = newSession.id;
         setActiveChatSessionId(newSession.id);
 
         // Add user message to the new session
-        console.log("Adding user message to new session:", newSession.id);
+        logDebug("Adding user message to new session", {
+          sessionId: newSession.id,
+        });
         await invoke("add_message_to_session", {
           sessionId: newSession.id,
           role: "user",
@@ -315,18 +327,22 @@ export const ChatPage = () => {
           tokensPerSecond: null,
           isError: false,
         });
-        console.log("User message added to new session");
+        logDebug("User message added to new session");
 
         // Trigger sidebar refresh
         window.dispatchEvent(new CustomEvent("chat-session-created"));
       } else if (activeChatSessionId) {
         // Verify the session exists in backend before adding message
-        console.log("Checking if session exists:", activeChatSessionId);
+        logDebug("Verifying session exists", {
+          sessionId: activeChatSessionId,
+        });
         try {
           await invoke("get_session_messages", {
             sessionId: activeChatSessionId,
           });
-          console.log("Session exists, adding message");
+          logDebug("Session verified, adding message", {
+            sessionId: activeChatSessionId,
+          });
 
           // Add to existing active session
           await invoke("add_message_to_session", {
@@ -336,14 +352,18 @@ export const ChatPage = () => {
             tokensPerSecond: null,
             isError: false,
           });
-          console.log("User message added to existing session");
+          logDebug("User message added to existing session", {
+            sessionId: activeChatSessionId,
+          });
         } catch (error) {
-          console.error("Session not found in backend, creating new one");
+          logWarn("Session not found in backend, creating new one", {
+            sessionId: activeChatSessionId,
+          });
           // Session doesn't exist in backend, create a new one
           const newSession = await invoke<any>("create_chat_session", {
             title: null,
           });
-          console.log("New session created:", newSession);
+          logInfo("New session created", { sessionId: newSession.id });
           sessionToUse = newSession.id;
           setActiveChatSessionId(newSession.id);
 
@@ -355,14 +375,21 @@ export const ChatPage = () => {
             tokensPerSecond: null,
             isError: false,
           });
-          console.log("User message added to new session");
+          logDebug("User message added to new session");
 
           // Trigger sidebar refresh
           window.dispatchEvent(new CustomEvent("chat-session-created"));
         }
       }
 
-      console.log("Using session for chat:", sessionToUse);
+      logDebug("Starting chat with session", {
+        sessionId: sessionToUse,
+        modelId: loadedModel,
+      });
+      logUserAction("Send chat message", {
+        sessionId: sessionToUse,
+        messageLength: messageContent.length,
+      });
 
       // Prepare LLM configuration (use local overrides if set, otherwise global settings)
       const effectiveTemperature =
@@ -390,7 +417,9 @@ export const ChatPage = () => {
         maxCompletionTokens: settings.maxCompletionTokens,
       });
     } catch (error) {
-      console.error("Failed to send message:", error);
+      logError("Failed to send message", error as Error, {
+        sessionId: sessionToUse,
+      });
       setIsStreaming(false);
     }
   };

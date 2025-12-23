@@ -1,5 +1,6 @@
 import { StateCreator } from "zustand";
 import type { AppState, SettingsSlice, Settings } from "../types";
+import { logStateChange } from "../../lib/logger";
 
 const defaultSettings: Settings = {
   includeConversationHistory: true,
@@ -22,15 +23,21 @@ export const createSettingsSlice: StateCreator<
 > = (set) => ({
   settings: defaultSettings,
 
-  updateSettings: (newSettings) =>
+  updateSettings: (newSettings) => {
+    logStateChange("settings", "updateSettings", {
+      keys: Object.keys(newSettings),
+    });
     set((state) => ({
       settings: { ...state.settings, ...newSettings },
-    })),
+    }));
+  },
 
   resetSettings: () => set({ settings: defaultSettings }),
 
-  updateSetting: (key, value) =>
+  updateSetting: (key, value) => {
+    logStateChange("settings", "updateSetting", { key, value });
     set((state) => ({
       settings: { ...state.settings, [key]: value },
-    })),
+    }));
+  },
 });

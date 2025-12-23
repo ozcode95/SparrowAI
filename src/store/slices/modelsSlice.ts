@@ -1,6 +1,7 @@
 import { StateCreator } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppState, ModelsSlice } from "../types";
+import { logStateChange, logError, logInfo } from "../../lib/logger";
 
 export const createModelsSlice: StateCreator<AppState, [], [], ModelsSlice> = (
   set,
@@ -28,7 +29,8 @@ export const createModelsSlice: StateCreator<AppState, [], [], ModelsSlice> = (
       selectedModel: null,
     }),
 
-  setModelDownloading: (modelId, isDownloading) =>
+  setModelDownloading: (modelId, isDownloading) => {
+    logStateChange("models", "setModelDownloading", { modelId, isDownloading });
     set((state) => {
       const newDownloadingModels = new Set(state.downloadingModels);
       if (isDownloading) {
@@ -37,7 +39,8 @@ export const createModelsSlice: StateCreator<AppState, [], [], ModelsSlice> = (
         newDownloadingModels.delete(modelId);
       }
       return { downloadingModels: newDownloadingModels };
-    }),
+    });
+  },
 
   isModelDownloading: (modelId) => get().downloadingModels.has(modelId),
   hasAnyDownloading: () => get().downloadingModels.size > 0,
@@ -72,7 +75,10 @@ export const createModelsSlice: StateCreator<AppState, [], [], ModelsSlice> = (
     set({ downloadedModels: new Set(modelIds) }),
 
   setIsOvmsRunning: (isRunning) => set({ isOvmsRunning: isRunning }),
-  setLoadedModel: (modelId) => set({ loadedModel: modelId }),
+  setLoadedModel: (modelId) => {
+    logStateChange("models", "setLoadedModel", { modelId });
+    set({ loadedModel: modelId });
+  },
 
   getLoadedModel: async () => {
     const maxRetries = 5;
@@ -85,6 +91,7 @@ export const createModelsSlice: StateCreator<AppState, [], [], ModelsSlice> = (
         if (ovmsStatus?.loaded_models?.length > 0) {
           const sortedModels = ovmsStatus.loaded_models.sort();
           const modelId = `OpenVINO/${sortedModels[0]}`;
+          logInfo("Model loaded in OVMS", { modelId });
           set({ loadedModel: modelId });
           return modelId;
         } else {
@@ -94,7 +101,9 @@ export const createModelsSlice: StateCreator<AppState, [], [], ModelsSlice> = (
           }
         }
       } catch (error) {
-        console.error("Failed to get loaded model:", error);
+        logError("Failed to get loaded model", error as Error, {
+          attempt: attempt + 1,
+        });
         break;
       }
     }

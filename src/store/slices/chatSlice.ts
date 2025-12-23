@@ -1,5 +1,6 @@
 import { StateCreator } from "zustand";
 import type { AppState, ChatSlice } from "../types";
+import { logStateChange, logDebug } from "../../lib/logger";
 
 export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (
   set,
@@ -11,16 +12,23 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (
   temporarySession: null,
 
   setChatSessions: (sessions) => set({ chatSessions: sessions }),
-  setActiveChatSessionId: (sessionId) =>
-    set({ activeChatSessionId: sessionId }),
+  setActiveChatSessionId: (sessionId) => {
+    logStateChange("chat", "setActiveChatSessionId", { sessionId });
+    set({ activeChatSessionId: sessionId });
+  },
   setCurrentChatMessages: (messages) =>
     set({ currentChatMessages: Array.isArray(messages) ? messages : [] }),
   setTemporarySession: (session) => set({ temporarySession: session }),
 
-  addChatSession: (session) =>
+  addChatSession: (session) => {
+    logStateChange("chat", "addChatSession", {
+      sessionId: session.id,
+      title: session.title,
+    });
     set((state) => ({
       chatSessions: { ...state.chatSessions, [session.id]: session },
-    })),
+    }));
+  },
 
   updateChatSession: (sessionId, updates) =>
     set((state) => ({
@@ -30,7 +38,8 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (
       },
     })),
 
-  removeChatSession: (sessionId) =>
+  removeChatSession: (sessionId) => {
+    logStateChange("chat", "removeChatSession", { sessionId });
     set((state) => {
       const newSessions = { ...state.chatSessions };
       delete newSessions[sessionId];
@@ -41,7 +50,8 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (
             ? null
             : state.activeChatSessionId,
       };
-    }),
+    });
+  },
 
   addMessageToCurrentChat: (message) =>
     set((state) => ({
