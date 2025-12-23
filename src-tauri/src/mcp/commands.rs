@@ -1,13 +1,16 @@
 use super::config::{McpConfig, McpServerConfig};
 use super::client::{McpManager, McpServerInfo};
+use super::builtin_tools::{BuiltinToolRegistry, BuiltinTool, ToolResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tauri::AppHandle;
+use serde_json::Value;
 
 // Global MCP manager instance
 lazy_static::lazy_static! {
     static ref MCP_MANAGER: Arc<Mutex<Option<McpManager>>> = Arc::new(Mutex::new(None));
+    static ref BUILTIN_TOOLS: BuiltinToolRegistry = BuiltinToolRegistry::new();
 }
 
 async fn get_or_init_manager(app_handle: &AppHandle) -> Result<(), String> {
@@ -349,6 +352,12 @@ pub async fn fetch_mcp_server_tools_details(
 pub async fn get_all_mcp_tools_for_chat(
     app_handle: AppHandle,
 ) -> Result<Vec<async_openai::types::ChatCompletionTool>, String> {
+    // Get built-in tools first
+    let mut all_tools = BUILTIN_TOOLS.to_openai_tools();
+    
+    tracing::debug!(builtin_count = all_tools.len(), "Added built-in tools for chat");
+    
+    // Get external MCP tools
     get_or_init_manager(&app_handle).await?;
     
     // Extract manager temporarily
@@ -357,8 +366,8 @@ pub async fn get_all_mcp_tools_for_chat(
         manager_guard.take().ok_or("Manager not initialized")?
     };
     
-    // Get all tools (this is async)
-    let tools_result = temp_manager.get_all_tools_for_openai().await;
+    // Get all external MCP tools (this is async)
+    let external_tools_result = temp_manager.get_all_tools_for_openai().await;
     
     // Put the manager back
     {
@@ -366,8 +375,19 @@ pub async fn get_all_mcp_tools_for_chat(
         *manager_guard = Some(temp_manager);
     }
     
-    // Handle result
-    tools_result.map_err(|e| format!("Failed to get all MCP tools: {}", e))
+    // Add external tools to the list
+    match external_tools_result {
+        Ok(mut external_tools) => {
+            tracing::debug!(external_count = external_tools.len(), "Added external MCP tools for chat");
+            all_tools.append(&mut external_tools);
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to get external MCP tools, continuing with built-in tools only");
+        }
+    }
+    
+    tracing::info!(total_tools = all_tools.len(), "Total tools available for chat (built-in + external)");
+    Ok(all_tools)
 }
 
 #[tauri::command]
@@ -376,9 +396,36 @@ pub async fn call_mcp_tool(
     tool_name: String,
     arguments: Option<serde_json::Map<String, serde_json::Value>>,
 ) -> Result<String, String> {
-    log_operation_start!("Call MCP tool");
-    tracing::debug!(tool = %tool_name, has_args = arguments.is_some(), "Calling MCP tool");
+    log_operation_start!("Call tool");
+    tracing::debug!(tool = %tool_name, has_args = arguments.is_some(), "Calling tool");
     
+    // Check if this is a built-in tool (prefixed with "builtin_")
+    if tool_name.starts_with("builtin_") {
+        let actual_tool_name = &tool_name[8..]; // Remove "builtin_" prefix
+        tracing::debug!(builtin_tool = %actual_tool_name, "Executing built-in tool");
+        
+        // Convert arguments to Value
+        let args_value = match arguments {
+            Some(map) => Value::Object(map),
+            None => Value::Object(serde_json::Map::new()),
+        };
+        
+        // Execute built-in tool
+        let result = BUILTIN_TOOLS.execute_tool(actual_tool_name, args_value).await?;
+        
+        // Extract text from ToolResult
+        let result_text = result.content.iter()
+            .map(|c| c.text.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        
+        log_operation_success!("Built-in tool executed");
+        tracing::debug!(tool = %actual_tool_name, result_length = result_text.len(), "Built-in tool executed");
+        
+        return Ok(result_text);
+    }
+    
+    // Otherwise, handle as external MCP tool
     get_or_init_manager(&app_handle).await?;
     
     // Extract manager temporarily
@@ -408,8 +455,8 @@ pub async fn call_mcp_tool(
         format!("Failed to call MCP tool: {}", e)
     })?;
     
-    log_operation_success!("Call MCP tool");
-    tracing::debug!(tool = %tool_name, result_length = result.len(), "MCP tool executed");
+    log_operation_success!("MCP tool executed");
+    tracing::debug!(tool = %tool_name, result_length = result.len(), "External MCP tool executed");
     
     Ok(result)
 }
@@ -520,4 +567,63 @@ pub async fn auto_connect_mcp_servers(
     }
     
     Ok(connected)
+}
+
+// ============================================================================
+// Built-in MCP Tools Commands
+// ============================================================================
+
+/// Get all built-in tools
+#[tauri::command]
+pub async fn get_builtin_tools() -> Result<Vec<BuiltinTool>, String> {
+    Ok(BUILTIN_TOOLS.list_tools())
+}
+
+/// Execute a built-in tool
+#[tauri::command]
+pub async fn execute_builtin_tool(
+    tool_name: String,
+    arguments: Value,
+) -> Result<ToolResult, String> {
+    tracing::debug!(tool = %tool_name, args = ?arguments, "Executing built-in tool");
+    
+    BUILTIN_TOOLS.execute_tool(&tool_name, arguments).await
+}
+
+/// Get all available tools (both built-in and external MCP servers)
+#[tauri::command]
+pub async fn get_all_available_tools(
+    app_handle: AppHandle,
+) -> Result<AllToolsResponse, String> {
+    // Get built-in tools
+    let builtin_tools = BUILTIN_TOOLS.list_tools();
+    
+    // Get external MCP server tools
+    let mut external_tools = HashMap::new();
+    
+    // Try to get MCP servers (they might not be initialized)
+    if let Ok(()) = get_or_init_manager(&app_handle).await {
+        let manager_guard = MCP_MANAGER.lock().map_err(|e| format!("Lock error: {}", e))?;
+        if let Some(manager) = manager_guard.as_ref() {
+            for (server_name, _) in manager.get_config().list_servers() {
+                if manager.clients.contains_key(server_name) {
+                    // Server is connected, try to get its tools
+                    // Note: This is a simplified version. In production, you'd want to
+                    // fetch tools asynchronously without holding the lock
+                    external_tools.insert(server_name.clone(), Vec::new());
+                }
+            }
+        }
+    }
+    
+    Ok(AllToolsResponse {
+        builtin_tools,
+        external_servers: external_tools,
+    })
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AllToolsResponse {
+    pub builtin_tools: Vec<BuiltinTool>,
+    pub external_servers: HashMap<String, Vec<String>>, // server_name -> tool_names
 }

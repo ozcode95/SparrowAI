@@ -68,3 +68,6 @@ tracing-appender = "0.2"
 
 # Error handling
 thiserror = "1.0"
+
+# System information for built-in MCP tools
+sysinfo = "0.31"
