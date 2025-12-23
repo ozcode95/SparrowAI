@@ -19,7 +19,7 @@
     "fs:allow-rename",
     "fs:allow-copy-file",
     "fs:allow-exists",
-    "fs:allow-read-dir", 
+    "fs:allow-read-dir",
     "shell:allow-execute",
     "shell:allow-spawn",
     "http:default",

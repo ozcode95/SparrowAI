@@ -1,5 +1,10 @@
 import React, { useState, useEffect } from "react";
-import { Settings as SettingsIcon, MessageSquare, Sliders, Settings } from "lucide-react";
+import {
+  Settings as SettingsIcon,
+  MessageSquare,
+  Sliders,
+  Settings,
+} from "lucide-react";
 import { useUI, useSettings } from "@/store";
 import {
   Dialog,
@@ -13,7 +18,9 @@ import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 
 export const SettingsDialog: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<"general" | "chat" | "advanced">("general");
+  const [activeTab, setActiveTab] = useState<"general" | "chat" | "advanced">(
+    "general"
+  );
   const [isLoadingAutostart, setIsLoadingAutostart] = useState(false);
 
   const { settingsDialogOpen, setSettingsDialogOpen } = useUI();
@@ -28,10 +35,10 @@ export const SettingsDialog: React.FC = () => {
 
   const loadAutostartStatus = async () => {
     try {
-      const enabled = await invoke<boolean>('is_autostart_enabled');
+      const enabled = await invoke<boolean>("is_autostart_enabled");
       updateSettings({ enableAutostart: enabled });
     } catch (error) {
-      console.error('Failed to load autostart status:', error);
+      console.error("Failed to load autostart status:", error);
     }
   };
 
@@ -39,13 +46,13 @@ export const SettingsDialog: React.FC = () => {
     setIsLoadingAutostart(true);
     try {
       if (checked) {
-        await invoke('enable_autostart');
+        await invoke("enable_autostart");
       } else {
-        await invoke('disable_autostart');
+        await invoke("disable_autostart");
       }
       updateSettings({ enableAutostart: checked });
     } catch (error) {
-      console.error('Failed to toggle autostart:', error);
+      console.error("Failed to toggle autostart:", error);
       // Revert on error
       loadAutostartStatus();
     } finally {

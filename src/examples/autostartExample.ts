@@ -1,14 +1,14 @@
 /**
  * Autostart Implementation Example for SparrowAI
- * 
+ *
  * This file demonstrates how to use the autostart functionality
  * in your Tauri application using both methods:
  * 1. JavaScript API from @tauri-apps/plugin-autostart
  * 2. Custom Rust backend commands
  */
 
-import { enable, isEnabled, disable } from '@tauri-apps/plugin-autostart'
-import { invoke } from '@tauri-apps/api/core'
+import { enable, isEnabled, disable } from "@tauri-apps/plugin-autostart";
+import { invoke } from "@tauri-apps/api/core";
 
 // ============================================================================
 // Method 1: Using JavaScript Plugin API (Direct Access)
@@ -19,10 +19,10 @@ import { invoke } from '@tauri-apps/api/core'
  */
 export async function enableAutostartJS() {
   try {
-    await enable()
-    console.log('Autostart enabled successfully (JS API)')
+    await enable();
+    console.log("Autostart enabled successfully (JS API)");
   } catch (error) {
-    console.error('Failed to enable autostart:', error)
+    console.error("Failed to enable autostart:", error);
   }
 }
 
@@ -31,10 +31,10 @@ export async function enableAutostartJS() {
  */
 export async function disableAutostartJS() {
   try {
-    await disable()
-    console.log('Autostart disabled successfully (JS API)')
+    await disable();
+    console.log("Autostart disabled successfully (JS API)");
   } catch (error) {
-    console.error('Failed to disable autostart:', error)
+    console.error("Failed to disable autostart:", error);
   }
 }
 
@@ -43,12 +43,12 @@ export async function disableAutostartJS() {
  */
 export async function checkAutostartJS(): Promise<boolean> {
   try {
-    const enabled = await isEnabled()
-    console.log(`Autostart is ${enabled ? 'enabled' : 'disabled'} (JS API)`)
-    return enabled
+    const enabled = await isEnabled();
+    console.log(`Autostart is ${enabled ? "enabled" : "disabled"} (JS API)`);
+    return enabled;
   } catch (error) {
-    console.error('Failed to check autostart status:', error)
-    return false
+    console.error("Failed to check autostart status:", error);
+    return false;
   }
 }
 
@@ -61,10 +61,10 @@ export async function checkAutostartJS(): Promise<boolean> {
  */
 export async function enableAutostartRust() {
   try {
-    await invoke('enable_autostart')
-    console.log('Autostart enabled successfully (Rust backend)')
+    await invoke("enable_autostart");
+    console.log("Autostart enabled successfully (Rust backend)");
   } catch (error) {
-    console.error('Failed to enable autostart:', error)
+    console.error("Failed to enable autostart:", error);
   }
 }
 
@@ -73,10 +73,10 @@ export async function enableAutostartRust() {
  */
 export async function disableAutostartRust() {
   try {
-    await invoke('disable_autostart')
-    console.log('Autostart disabled successfully (Rust backend)')
+    await invoke("disable_autostart");
+    console.log("Autostart disabled successfully (Rust backend)");
   } catch (error) {
-    console.error('Failed to disable autostart:', error)
+    console.error("Failed to disable autostart:", error);
   }
 }
 
@@ -85,12 +85,14 @@ export async function disableAutostartRust() {
  */
 export async function checkAutostartRust(): Promise<boolean> {
   try {
-    const enabled = await invoke<boolean>('is_autostart_enabled')
-    console.log(`Autostart is ${enabled ? 'enabled' : 'disabled'} (Rust backend)`)
-    return enabled
+    const enabled = await invoke<boolean>("is_autostart_enabled");
+    console.log(
+      `Autostart is ${enabled ? "enabled" : "disabled"} (Rust backend)`
+    );
+    return enabled;
   } catch (error) {
-    console.error('Failed to check autostart status:', error)
-    return false
+    console.error("Failed to check autostart status:", error);
+    return false;
   }
 }
 
@@ -99,12 +101,12 @@ export async function checkAutostartRust(): Promise<boolean> {
  */
 export async function toggleAutostartRust(): Promise<boolean> {
   try {
-    const newState = await invoke<boolean>('toggle_autostart')
-    console.log(`Autostart toggled: now ${newState ? 'enabled' : 'disabled'}`)
-    return newState
+    const newState = await invoke<boolean>("toggle_autostart");
+    console.log(`Autostart toggled: now ${newState ? "enabled" : "disabled"}`);
+    return newState;
   } catch (error) {
-    console.error('Failed to toggle autostart:', error)
-    return false
+    console.error("Failed to toggle autostart:", error);
+    return false;
   }
 }
 
@@ -116,17 +118,17 @@ export async function toggleAutostartRust(): Promise<boolean> {
  * Example React component usage
  */
 export function AutostartSettingsExample() {
-  const [autostartEnabled, setAutostartEnabled] = React.useState(false)
+  const [autostartEnabled, setAutostartEnabled] = React.useState(false);
 
   React.useEffect(() => {
     // Check current autostart status on mount
-    checkAutostartRust().then(setAutostartEnabled)
-  }, [])
+    checkAutostartRust().then(setAutostartEnabled);
+  }, []);
 
   const handleToggle = async () => {
-    const newState = await toggleAutostartRust()
-    setAutostartEnabled(newState)
-  }
+    const newState = await toggleAutostartRust();
+    setAutostartEnabled(newState);
+  };
 
   return (
     <div>
@@ -139,19 +141,19 @@ export function AutostartSettingsExample() {
         Launch SparrowAI on system startup
       </label>
     </div>
-  )
+  );
 }
 
 /**
  * Example: Initialize autostart settings
  */
 export async function initializeAutostartSettings() {
-  const isEnabled = await checkAutostartRust()
-  
+  const isEnabled = await checkAutostartRust();
+
   // You can store this in your app state/settings
   return {
     autostartEnabled: isEnabled,
-  }
+  };
 }
 
 /**
@@ -159,8 +161,8 @@ export async function initializeAutostartSettings() {
  */
 export async function updateAutostartSetting(enable: boolean) {
   if (enable) {
-    await enableAutostartRust()
+    await enableAutostartRust();
   } else {
-    await disableAutostartRust()
+    await disableAutostartRust();
   }
 }
