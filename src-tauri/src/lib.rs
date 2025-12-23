@@ -14,6 +14,7 @@ mod chat;
 mod rag;
 mod mcp;
 mod logging;
+mod autostart;
 
 #[tauri::command]
 async fn get_default_download_path() -> Result<String, String> {
@@ -318,6 +319,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
         .invoke_handler(
             tauri::generate_handler![
                 huggingface::search_models,
@@ -388,7 +390,11 @@ pub fn run() {
                 mcp::call_mcp_tool,
                 mcp::toggle_mcp_server_auto_connect,
                 mcp::enable_all_auto_connect,
-                mcp::auto_connect_mcp_servers
+                mcp::auto_connect_mcp_servers,
+                autostart::enable_autostart,
+                autostart::disable_autostart,
+                autostart::is_autostart_enabled,
+                autostart::toggle_autostart
             ]
         )
         .setup(|app| {

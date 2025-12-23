@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { Settings as SettingsIcon, MessageSquare, Sliders } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Settings as SettingsIcon, MessageSquare, Sliders, Settings } from "lucide-react";
 import { useUI, useSettings } from "@/store";
 import {
   Dialog,
@@ -10,18 +10,55 @@ import {
 } from "@/components/ui/Dialog";
 import { Button, Input, Textarea } from "@/components/ui";
 import { cn } from "@/lib/utils";
+import { invoke } from "@tauri-apps/api/core";
 
 export const SettingsDialog: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<"chat" | "advanced">("chat");
+  const [activeTab, setActiveTab] = useState<"general" | "chat" | "advanced">("general");
+  const [isLoadingAutostart, setIsLoadingAutostart] = useState(false);
 
   const { settingsDialogOpen, setSettingsDialogOpen } = useUI();
   const { settings, updateSettings } = useSettings();
+
+  // Load current autostart status when dialog opens
+  useEffect(() => {
+    if (settingsDialogOpen) {
+      loadAutostartStatus();
+    }
+  }, [settingsDialogOpen]);
+
+  const loadAutostartStatus = async () => {
+    try {
+      const enabled = await invoke<boolean>('is_autostart_enabled');
+      updateSettings({ enableAutostart: enabled });
+    } catch (error) {
+      console.error('Failed to load autostart status:', error);
+    }
+  };
+
+  const handleAutostartToggle = async (checked: boolean) => {
+    setIsLoadingAutostart(true);
+    try {
+      if (checked) {
+        await invoke('enable_autostart');
+      } else {
+        await invoke('disable_autostart');
+      }
+      updateSettings({ enableAutostart: checked });
+    } catch (error) {
+      console.error('Failed to toggle autostart:', error);
+      // Revert on error
+      loadAutostartStatus();
+    } finally {
+      setIsLoadingAutostart(false);
+    }
+  };
 
   const handleClose = () => {
     setSettingsDialogOpen(false);
   };
 
   const tabs = [
+    { id: "general" as const, label: "General", icon: Settings },
     { id: "chat" as const, label: "Chat", icon: MessageSquare },
     { id: "advanced" as const, label: "Advanced", icon: Sliders },
   ];
@@ -64,6 +101,49 @@ export const SettingsDialog: React.FC = () => {
 
           {/* Content */}
           <div className="flex-1 overflow-y-auto pr-2 w-[500px] min-h-[400px]">
+            {/* General Tab */}
+            {activeTab === "general" && (
+              <div className="space-y-6">
+                <div>
+                  <label className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={settings.enableAutostart}
+                      onChange={(e) => handleAutostartToggle(e.target.checked)}
+                      disabled={isLoadingAutostart}
+                      className="h-4 w-4 rounded text-accent-600 disabled:opacity-50"
+                    />
+                    <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                      Launch on System Startup
+                    </span>
+                  </label>
+                  <p className="ml-7 mt-1 text-sm text-gray-600 dark:text-gray-400">
+                    Automatically start SparrowAI when your computer boots up
+                  </p>
+                </div>
+
+                <div className={cn(!settings.enableAutostart && "opacity-50")}>
+                  <label className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={settings.startMinimized}
+                      onChange={(e) =>
+                        updateSettings({ startMinimized: e.target.checked })
+                      }
+                      disabled={!settings.enableAutostart}
+                      className="h-4 w-4 rounded text-accent-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                    <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                      Start Minimized
+                    </span>
+                  </label>
+                  <p className="ml-7 mt-1 text-sm text-gray-600 dark:text-gray-400">
+                    Launch the app minimized to system tray on startup
+                  </p>
+                </div>
+              </div>
+            )}
+
             {/* Chat Tab */}
             {activeTab === "chat" && (
               <div className="space-y-6">

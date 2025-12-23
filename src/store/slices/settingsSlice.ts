@@ -10,6 +10,8 @@ const defaultSettings: Settings = {
   maxTokens: null,
   maxCompletionTokens: null,
   useRAG: false,
+  enableAutostart: false,
+  startMinimized: true,
 };
 
 export const createSettingsSlice: StateCreator<

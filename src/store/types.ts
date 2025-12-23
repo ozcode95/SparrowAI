@@ -87,6 +87,8 @@ export interface Settings {
   maxTokens: number | null;
   maxCompletionTokens: number | null;
   useRAG: boolean;
+  enableAutostart: boolean;
+  startMinimized: boolean;
 }
 
 export interface SettingsSlice {

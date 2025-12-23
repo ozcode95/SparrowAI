@@ -22,6 +22,10 @@
     "fs:allow-read-dir", 
     "shell:allow-execute",
     "shell:allow-spawn",
-    "http:default"
+    "http:default",
+    "autostart:default",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled"
   ]
 }
