@@ -11,7 +11,13 @@ export interface ThemeSlice {
 }
 
 export type NotificationType = "success" | "error" | "warning" | "info";
-export type PageType = "chat" | "models" | "documents" | "mcp" | "settings";
+export type PageType =
+  | "chat"
+  | "models"
+  | "documents"
+  | "mcp"
+  | "tasks"
+  | "settings";
 
 export interface Notification {
   message: string;

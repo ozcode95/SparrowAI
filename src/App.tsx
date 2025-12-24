@@ -7,6 +7,7 @@ import { ChatPage } from "./components/chat";
 import { ModelsPage } from "./components/models";
 import { DocumentsPage } from "./components/documents";
 import { McpPage } from "./components/mcp";
+import { TasksPage } from "./components/tasks";
 import { SettingsDialog } from "./components/settings";
 import {
   NotificationSnackbar,
@@ -20,7 +21,7 @@ import {
 
 import { useDownloadedModels } from "./hooks";
 import { useUI, useModels, useChat, useTheme } from "./store";
-import { logInfo, logError, logDebug, logWarn } from "./lib/logger";
+import { logInfo, logError, logDebug } from "./lib/logger";
 
 function App() {
   const { currentPage, setCurrentPage, showNotification } = useUI();
@@ -30,7 +31,6 @@ function App() {
     setActiveChatSessionId,
     clearCurrentChatMessages,
     clearTemporarySession,
-    setTemporarySession,
   } = useChat();
 
   const [initStatus, setInitStatus] = useState<any>(null);
@@ -74,6 +74,22 @@ function App() {
     clearCurrentChatMessages();
     setActiveChatSessionId(null);
   }, []);
+
+  // Listen for task action events
+  useEffect(() => {
+    const unlistenNotification = listen<any>(
+      "task-action-show-notification",
+      (event) => {
+        logInfo("Task action: Show notification", event.payload);
+        const { title, message } = event.payload;
+        showNotification(`${title}: ${message}`, "info", 5000);
+      }
+    );
+
+    return () => {
+      unlistenNotification.then((fn) => fn());
+    };
+  }, [showNotification]);
 
   // Monitor OVMS initialization status
   useEffect(() => {
@@ -209,6 +225,8 @@ function App() {
         return <DocumentsPage />;
       case "mcp":
         return <McpPage />;
+      case "tasks":
+        return <TasksPage />;
       default:
         return <ChatPage />;
     }

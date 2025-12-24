@@ -15,6 +15,7 @@ mod rag;
 mod mcp;
 mod logging;
 mod autostart;
+mod tasks;
 
 #[tauri::command]
 async fn get_default_download_path() -> Result<String, String> {
@@ -326,6 +327,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(
             tauri::generate_handler![
                 huggingface::search_models,
@@ -403,7 +405,15 @@ pub fn run() {
                 autostart::enable_autostart,
                 autostart::disable_autostart,
                 autostart::is_autostart_enabled,
-                autostart::toggle_autostart
+                autostart::toggle_autostart,
+                tasks::create_task,
+                tasks::get_tasks,
+                tasks::get_task,
+                tasks::update_task,
+                tasks::delete_task,
+                tasks::toggle_task,
+                tasks::execute_task_manually,
+                tasks::get_task_logs
             ]
         )
         .setup(|app| {
@@ -419,6 +429,12 @@ pub fn run() {
             // Start periodic log cleanup task
             tauri::async_runtime::spawn(async move {
                 logging::periodic_cleanup_task().await;
+            });
+
+            // Start task scheduler
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tasks::start_task_scheduler(handle).await;
             });
 
             Ok(())

@@ -10,6 +10,7 @@ import {
   ChevronRight,
   Trash2,
   Info,
+  Clock,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useUI, useModels, useChat, type PageType } from "@/store";
@@ -72,6 +73,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       id: "mcp",
       label: "MCP",
       icon: <Puzzle className="h-5 w-5" />,
+    },
+    {
+      id: "tasks",
+      label: "Tasks",
+      icon: <Clock className="h-5 w-5" />,
     },
   ];
 
