@@ -12,7 +12,9 @@ export type TriggerTime =
   | { type: "DateTime"; datetime: string }
   | { type: "Daily"; time: string }
   | { type: "Weekly"; day_of_week: number; time: string }
-  | { type: "Monthly"; day_of_month: number; time: string };
+  | { type: "Monthly"; day_of_month: number; time: string }
+  | { type: "EveryNMinutes"; minutes: number }
+  | { type: "EveryNHours"; hours: number };
 
 export type TimeUnit = "Minutes" | "Hours" | "Days" | "Weeks";
 

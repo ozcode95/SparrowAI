@@ -63,12 +63,19 @@ export const CreateTaskDialog = ({
 
   // Trigger settings
   const [triggerType, setTriggerType] = useState<
-    "DateTime" | "Daily" | "Weekly" | "Monthly"
+    | "DateTime"
+    | "Daily"
+    | "Weekly"
+    | "Monthly"
+    | "EveryNMinutes"
+    | "EveryNHours"
   >("Daily");
   const [triggerDateTime, setTriggerDateTime] = useState("");
   const [triggerTime, setTriggerTime] = useState("09:00");
   const [triggerDayOfWeek, setTriggerDayOfWeek] = useState(0); // 0=Sunday
   const [triggerDayOfMonth, setTriggerDayOfMonth] = useState(1); // 1-31
+  const [intervalMinutes, setIntervalMinutes] = useState(30);
+  const [intervalHours, setIntervalHours] = useState(1);
   const [autoDelete, setAutoDelete] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
@@ -165,7 +172,7 @@ export const CreateTaskDialog = ({
           setTriggerTime(trigger.time);
           break;
       }
-      
+
       setAutoDelete(editingTask.auto_delete || false);
     } else {
       resetForm();
@@ -189,6 +196,8 @@ export const CreateTaskDialog = ({
     setTriggerTime("09:00");
     setTriggerDayOfWeek(0);
     setTriggerDayOfMonth(1);
+    setIntervalMinutes(30);
+    setIntervalHours(1);
     setAutoDelete(false);
   };
 
@@ -293,6 +302,26 @@ export const CreateTaskDialog = ({
             type: "Monthly",
             day_of_month: triggerDayOfMonth,
             time: triggerTime,
+          };
+          break;
+        case "EveryNMinutes":
+          if (intervalMinutes < 1) {
+            showNotification("Minutes must be at least 1", "error");
+            return;
+          }
+          trigger = {
+            type: "EveryNMinutes",
+            minutes: intervalMinutes,
+          };
+          break;
+        case "EveryNHours":
+          if (intervalHours < 1) {
+            showNotification("Hours must be at least 1", "error");
+            return;
+          }
+          trigger = {
+            type: "EveryNHours",
+            hours: intervalHours,
           };
           break;
         default:
@@ -535,6 +564,8 @@ export const CreateTaskDialog = ({
                 <option value="Daily">Daily</option>
                 <option value="Weekly">Weekly</option>
                 <option value="Monthly">Monthly</option>
+                <option value="EveryNMinutes">Every N minutes</option>
+                <option value="EveryNHours">Every N hours</option>
               </select>
             </div>
 
@@ -573,6 +604,38 @@ export const CreateTaskDialog = ({
                   type="time"
                   value={triggerTime}
                   onChange={(e) => setTriggerTime(e.target.value)}
+                />
+              </div>
+            )}
+
+            {triggerType === "EveryNMinutes" && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Interval (minutes)
+                </label>
+                <Input
+                  type="number"
+                  min="1"
+                  value={intervalMinutes}
+                  onChange={(e) =>
+                    setIntervalMinutes(parseInt(e.target.value) || 1)
+                  }
+                />
+              </div>
+            )}
+
+            {triggerType === "EveryNHours" && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Interval (hours)
+                </label>
+                <Input
+                  type="number"
+                  min="1"
+                  value={intervalHours}
+                  onChange={(e) =>
+                    setIntervalHours(parseInt(e.target.value) || 1)
+                  }
                 />
               </div>
             )}

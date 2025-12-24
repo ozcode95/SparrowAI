@@ -129,6 +129,12 @@ export const TasksPage = () => {
         return `Monthly on day ${trigger.day_of_month} at ${trigger.time}`;
       case "DateTime":
         return new Date(trigger.datetime).toLocaleString();
+      case "EveryNMinutes":
+        return `Every ${trigger.minutes} minute${
+          trigger.minutes !== 1 ? "s" : ""
+        }`;
+      case "EveryNHours":
+        return `Every ${trigger.hours} hour${trigger.hours !== 1 ? "s" : ""}`;
       default:
         return "Unknown";
     }

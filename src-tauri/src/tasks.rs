@@ -43,6 +43,10 @@ pub enum TriggerTime {
     Weekly { day_of_week: u8, time: String },
     /// Run monthly on a specific day at a specific time (1-31)
     Monthly { day_of_month: u8, time: String },
+    /// Run every N minutes
+    EveryNMinutes { minutes: u32 },
+    /// Run every N hours
+    EveryNHours { hours: u32 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,6 +254,26 @@ impl TaskScheduler {
                 } else {
                     error!("Invalid time format: {}", time);
                     None
+                }
+            },
+            TriggerTime::EveryNMinutes { minutes } => {
+                // If task has never run, start from now + interval
+                // Otherwise, add interval to last run time
+                if let Some(last_run) = task.last_run {
+                    let next = last_run + Duration::minutes(*minutes as i64);
+                    Some(if next > now { next } else { now + Duration::minutes(*minutes as i64) })
+                } else {
+                    Some(now + Duration::minutes(*minutes as i64))
+                }
+            },
+            TriggerTime::EveryNHours { hours } => {
+                // If task has never run, start from now + interval
+                // Otherwise, add interval to last run time
+                if let Some(last_run) = task.last_run {
+                    let next = last_run + Duration::hours(*hours as i64);
+                    Some(if next > now { next } else { now + Duration::hours(*hours as i64) })
+                } else {
+                    Some(now + Duration::hours(*hours as i64))
                 }
             }
         }
