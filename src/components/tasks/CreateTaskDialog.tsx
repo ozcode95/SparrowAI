@@ -34,6 +34,7 @@ interface BuiltinTool {
   name: string;
   description: string;
   input_schema: any;
+  hidden_from_task_creation?: boolean;
 }
 
 export const CreateTaskDialog = ({
@@ -522,11 +523,13 @@ export const CreateTaskDialog = ({
                     className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white truncate"
                   >
                     <option value="">Select a tool...</option>
-                    {builtinTools.map((tool) => (
-                      <option key={tool.name} value={tool.name}>
-                        {tool.name} - {tool.description}
-                      </option>
-                    ))}
+                    {builtinTools
+                      .filter((tool) => !tool.hidden_from_task_creation)
+                      .map((tool) => (
+                        <option key={tool.name} value={tool.name}>
+                          {tool.name} - {tool.description}
+                        </option>
+                      ))}
                   </select>
                 </div>
               )}

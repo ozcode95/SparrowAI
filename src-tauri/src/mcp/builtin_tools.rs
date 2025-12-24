@@ -12,6 +12,8 @@ pub struct BuiltinTool {
     pub name: String,
     pub description: String,
     pub input_schema: Value,
+    #[serde(default)]
+    pub hidden_from_task_creation: bool,
 }
 
 /// Result of executing a tool
@@ -57,10 +59,14 @@ impl BuiltinToolRegistry {
         use async_openai::types::{ChatCompletionTool, ChatCompletionToolType, FunctionObject};
         
         self.tools.values().map(|tool| {
+            let tool_name = format!("builtin_{}", tool.name);
+            tracing::debug!("Registering builtin tool for chat: {} (hidden_from_task_creation: {})", 
+                tool_name, tool.hidden_from_task_creation);
+            
             ChatCompletionTool {
                 r#type: ChatCompletionToolType::Function,
                 function: FunctionObject {
-                    name: format!("builtin_{}", tool.name), // Prefix with "builtin_" to identify source
+                    name: tool_name, // Prefix with "builtin_" to identify source
                     description: Some(tool.description.clone()),
                     parameters: Some(tool.input_schema.clone()),
                     strict: None,
@@ -81,6 +87,7 @@ impl BuiltinToolRegistry {
                     "properties": {},
                     "required": []
                 }),
+                hidden_from_task_creation: false,
             },
         );
 
@@ -101,6 +108,7 @@ impl BuiltinToolRegistry {
                     },
                     "required": []
                 }),
+                hidden_from_task_creation: false,
             },
         );
 
@@ -124,6 +132,181 @@ impl BuiltinToolRegistry {
                     },
                     "required": ["path"]
                 }),
+                hidden_from_task_creation: false,
+            },
+        );
+
+        // Tool 4: Create task from natural language prompt
+        self.tools.insert(
+            "create_task".to_string(),
+            BuiltinTool {
+                name: "create_task".to_string(),
+                description: "Create a scheduled task with structured parameters. Supports notifications and MCP function execution on various schedules.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name of the task"
+                        },
+                        "action_type": {
+                            "type": "object",
+                            "description": "Action to perform. For ShowNotification: must include 'type', 'title', 'message'. For RunMcpFunction: must include 'type', 'server_name', 'tool_name', 'arguments'",
+                            "oneOf": [
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "type": {
+                                            "type": "string",
+                                            "const": "ShowNotification"
+                                        },
+                                        "title": {
+                                            "type": "string",
+                                            "description": "Notification title"
+                                        },
+                                        "message": {
+                                            "type": "string",
+                                            "description": "Notification message"
+                                        }
+                                    },
+                                    "required": ["type", "title", "message"]
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "type": {
+                                            "type": "string",
+                                            "const": "RunMcpFunction"
+                                        },
+                                        "server_name": {
+                                            "type": "string",
+                                            "description": "MCP server name (e.g., 'builtin' for builtin tools)"
+                                        },
+                                        "tool_name": {
+                                            "type": "string",
+                                            "description": "Tool/function name to execute"
+                                        },
+                                        "arguments": {
+                                            "type": "object",
+                                            "description": "Arguments to pass to the function"
+                                        }
+                                    },
+                                    "required": ["type", "server_name", "tool_name"]
+                                }
+                            ]
+                        },
+                        "trigger_time": {
+                            "type": "object",
+                            "description": "When to run the task",
+                            "oneOf": [
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "type": {
+                                            "type": "string",
+                                            "const": "DateTime"
+                                        },
+                                        "datetime": {
+                                            "type": "string",
+                                            "description": "ISO 8601 datetime string (e.g., '2023-10-10T15:25:00Z' or '2023-10-10T15:25:00')"
+                                        }
+                                    },
+                                    "required": ["type", "datetime"]
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "type": {
+                                            "type": "string",
+                                            "const": "Daily"
+                                        },
+                                        "time": {
+                                            "type": "string",
+                                            "description": "Time in HH:MM format (24-hour)"
+                                        }
+                                    },
+                                    "required": ["type", "time"]
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "type": {
+                                            "type": "string",
+                                            "const": "Weekly"
+                                        },
+                                        "day_of_week": {
+                                            "type": "integer",
+                                            "description": "Day of week (0=Sunday, 1=Monday, ..., 6=Saturday)",
+                                            "minimum": 0,
+                                            "maximum": 6
+                                        },
+                                        "time": {
+                                            "type": "string",
+                                            "description": "Time in HH:MM format (24-hour)"
+                                        }
+                                    },
+                                    "required": ["type", "day_of_week", "time"]
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "type": {
+                                            "type": "string",
+                                            "const": "Monthly"
+                                        },
+                                        "day_of_month": {
+                                            "type": "integer",
+                                            "description": "Day of month (1-31)",
+                                            "minimum": 1,
+                                            "maximum": 31
+                                        },
+                                        "time": {
+                                            "type": "string",
+                                            "description": "Time in HH:MM format (24-hour)"
+                                        }
+                                    },
+                                    "required": ["type", "day_of_month", "time"]
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "type": {
+                                            "type": "string",
+                                            "const": "EveryNMinutes"
+                                        },
+                                        "minutes": {
+                                            "type": "integer",
+                                            "description": "Number of minutes between executions",
+                                            "minimum": 1
+                                        }
+                                    },
+                                    "required": ["type", "minutes"]
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "type": {
+                                            "type": "string",
+                                            "const": "EveryNHours"
+                                        },
+                                        "hours": {
+                                            "type": "integer",
+                                            "description": "Number of hours between executions",
+                                            "minimum": 1
+                                        }
+                                    },
+                                    "required": ["type", "hours"]
+                                }
+                            ]
+                        },
+                        "auto_delete": {
+                            "type": "boolean",
+                            "description": "Auto-delete task after one-time execution (default: false)"
+                        }
+                    },
+                    "required": ["name", "action_type", "trigger_time"]
+                }),
+                hidden_from_task_creation: true,
             },
         );
     }
@@ -142,6 +325,7 @@ impl BuiltinToolRegistry {
             "get_system_info" => execute_get_system_info().await,
             "get_current_time" => execute_get_current_time(arguments).await,
             "list_directory" => execute_list_directory(arguments).await,
+            "create_task" => execute_create_task(arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         }
     }
@@ -375,6 +559,150 @@ fn list_directory_recursive(path: &Path, prefix: &str, entries: &mut Vec<Value>)
     }
 
     Ok(())
+}
+
+async fn execute_create_task(arguments: Value) -> Result<ToolResult, String> {
+    use crate::tasks::{ActionType, TriggerTime};
+    
+    // Extract name
+    let name = arguments.get("name")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing 'name' parameter")?
+        .to_string();
+    
+    // Extract and parse action_type
+    let action_obj = arguments.get("action_type")
+        .ok_or("Missing 'action_type' parameter")?;
+    
+    let action_type_str = action_obj.get("type")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing 'action_type.type' field")?;
+    
+    let action_type = match action_type_str {
+        "ShowNotification" => {
+            let title = action_obj.get("title")
+                .and_then(|v| v.as_str())
+                .ok_or("Missing 'action_type.title' for ShowNotification")?
+                .to_string();
+            let message = action_obj.get("message")
+                .and_then(|v| v.as_str())
+                .ok_or("Missing 'action_type.message' for ShowNotification")?
+                .to_string();
+            ActionType::ShowNotification { title, message }
+        },
+        "RunMcpFunction" => {
+            let server_name = action_obj.get("server_name")
+                .and_then(|v| v.as_str())
+                .ok_or("Missing 'action_type.server_name' for RunMcpFunction")?
+                .to_string();
+            let tool_name = action_obj.get("tool_name")
+                .and_then(|v| v.as_str())
+                .ok_or("Missing 'action_type.tool_name' for RunMcpFunction")?
+                .to_string();
+            let arguments = action_obj.get("arguments")
+                .cloned()
+                .unwrap_or(json!({}));
+            ActionType::RunMcpFunction { server_name, tool_name, arguments }
+        },
+        _ => return Err(format!("Invalid action_type: {}", action_type_str)),
+    };
+    
+    // Extract and parse trigger_time
+    let trigger_obj = arguments.get("trigger_time")
+        .ok_or("Missing 'trigger_time' parameter")?;
+    
+    let trigger_type_str = trigger_obj.get("type")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing 'trigger_time.type' field")?;
+    
+    let trigger_time = match trigger_type_str {
+        "DateTime" => {
+            let datetime_str = trigger_obj.get("datetime")
+                .and_then(|v| v.as_str())
+                .ok_or("Missing 'trigger_time.datetime' for DateTime trigger")?;
+            
+            // Try parsing as RFC3339 first (with timezone)
+            let datetime = if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(datetime_str) {
+                dt.with_timezone(&chrono::Utc)
+            } else {
+                // Try parsing as naive datetime (without timezone), assume local timezone
+                use chrono::{NaiveDateTime, TimeZone};
+                let naive_dt = NaiveDateTime::parse_from_str(datetime_str, "%Y-%m-%dT%H:%M:%S")
+                    .or_else(|_| NaiveDateTime::parse_from_str(datetime_str, "%Y-%m-%d %H:%M:%S"))
+                    .map_err(|e| format!("Invalid datetime format (expected ISO 8601 with or without timezone): {}", e))?;
+                chrono::Local.from_local_datetime(&naive_dt)
+                    .single()
+                    .ok_or("Ambiguous or invalid local datetime")?
+                    .with_timezone(&chrono::Utc)
+            };
+            
+            TriggerTime::DateTime { datetime }
+        },
+        "Daily" => {
+            let time = trigger_obj.get("time")
+                .and_then(|v| v.as_str())
+                .ok_or("Missing 'trigger_time.time' for Daily trigger")?
+                .to_string();
+            TriggerTime::Daily { time }
+        },
+        "Weekly" => {
+            let day_of_week = trigger_obj.get("day_of_week")
+                .and_then(|v| v.as_u64())
+                .ok_or("Missing 'trigger_time.day_of_week' for Weekly trigger")? as u8;
+            let time = trigger_obj.get("time")
+                .and_then(|v| v.as_str())
+                .ok_or("Missing 'trigger_time.time' for Weekly trigger")?
+                .to_string();
+            TriggerTime::Weekly { day_of_week, time }
+        },
+        "Monthly" => {
+            let day_of_month = trigger_obj.get("day_of_month")
+                .and_then(|v| v.as_u64())
+                .ok_or("Missing 'trigger_time.day_of_month' for Monthly trigger")? as u8;
+            let time = trigger_obj.get("time")
+                .and_then(|v| v.as_str())
+                .ok_or("Missing 'trigger_time.time' for Monthly trigger")?
+                .to_string();
+            TriggerTime::Monthly { day_of_month, time }
+        },
+        "EveryNMinutes" => {
+            let minutes = trigger_obj.get("minutes")
+                .and_then(|v| v.as_u64())
+                .ok_or("Missing 'trigger_time.minutes' for EveryNMinutes trigger")? as u32;
+            TriggerTime::EveryNMinutes { minutes }
+        },
+        "EveryNHours" => {
+            let hours = trigger_obj.get("hours")
+                .and_then(|v| v.as_u64())
+                .ok_or("Missing 'trigger_time.hours' for EveryNHours trigger")? as u32;
+            TriggerTime::EveryNHours { hours }
+        },
+        _ => return Err(format!("Invalid trigger_time.type: {}", trigger_type_str)),
+    };
+    
+    // Extract auto_delete (optional)
+    let auto_delete = arguments.get("auto_delete")
+        .and_then(|v| v.as_bool());
+    
+    // Create the task using the tasks module
+    let task = crate::tasks::create_task(
+        name,
+        action_type,
+        json!({}),
+        trigger_time,
+        None,
+        auto_delete,
+    ).await?;
+
+    let result = json!({
+        "success": true,
+        "task_id": task.id,
+        "task_name": task.name,
+        "message": format!("Task '{}' created successfully", task.name),
+        "next_run": task.next_run,
+    });
+
+    Ok(ToolResult::text(serde_json::to_string_pretty(&result).unwrap()))
 }
 
 #[cfg(test)]
