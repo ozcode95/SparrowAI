@@ -5,7 +5,7 @@ import { PageContainer } from "../layout";
 import { Card, Button } from "../ui";
 import { MessageContent } from "./MessageContent";
 import { useAppStore } from "@/store";
-import { Send, Bot, User, Loader2, Wrench } from "lucide-react";
+import { Send, Bot, User, Loader2, Wrench, StopCircle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { ChatMessage as ChatMessageType } from "@/store/types";
 import {
@@ -115,6 +115,7 @@ export const ChatPage = () => {
     const unlisten = listen<{
       token: string;
       finished: boolean;
+      cancelled?: boolean;
       usage?: {
         prompt_tokens: number;
         completion_tokens: number;
@@ -124,6 +125,7 @@ export const ChatPage = () => {
       if (event.payload.finished) {
         logDebug("Chat streaming finished", {
           messageLength: accumulatedMessage.length,
+          cancelled: event.payload.cancelled,
         });
 
         // Extract usage data from the finished event payload
@@ -157,6 +159,7 @@ export const ChatPage = () => {
               logDebug("Saving assistant message", {
                 sessionId: activeChatSessionId,
                 hasUsageData: !!usageFromPayload,
+                cancelled: event.payload.cancelled,
               });
               await invoke("add_message_to_session", {
                 sessionId: activeChatSessionId,
@@ -171,6 +174,7 @@ export const ChatPage = () => {
               logInfo("Assistant message saved", {
                 sessionId: activeChatSessionId,
                 contentLength: accumulatedMessage.length,
+                cancelled: event.payload.cancelled,
               });
 
               // Add to UI with usage data
@@ -431,21 +435,61 @@ export const ChatPage = () => {
     }
   };
 
+  const handleStop = async () => {
+    if (!isStreaming) return;
+
+    try {
+      logUserAction("Stopping chat streaming");
+
+      // Get the active session ID
+      const sessionToStop = activeChatSessionId || "temp";
+
+      await invoke("stop_chat_streaming", {
+        sessionId: sessionToStop,
+      });
+
+      logInfo("Chat streaming stopped", { sessionId: sessionToStop });
+      setIsStreaming(false);
+      setCurrentStreamingMessage("");
+    } catch (error) {
+      logError("Failed to stop streaming", error as Error);
+    }
+  };
+
   const handleLoadModel = async (modelId: string) => {
     setIsLoadingModel(true);
     try {
-      // If a model is already loaded, unload it first
+      // If a model is already loaded, try to unload it first
       if (loadedModel) {
         console.log(`Unloading current model: ${loadedModel}`);
-        await invoke("unload_model");
-        console.log("Model unloaded successfully");
+        try {
+          await invoke("unload_model");
+          console.log("Model unloaded successfully");
+        } catch (unloadError) {
+          // Log but continue - the backend might handle model switching internally
+          console.warn(
+            "Failed to unload model, continuing anyway:",
+            unloadError
+          );
+          logWarn("Failed to unload model", {
+            error: String(unloadError),
+            modelId: loadedModel,
+          });
+        }
+        // Clear the state regardless of unload success
+        setLoadedModel(null);
       }
 
       // Load the new model
+      console.log(`Loading new model: ${modelId}`);
       await invoke("load_model", { modelId });
       setLoadedModel(modelId);
+      console.log(`Model loaded successfully: ${modelId}`);
     } catch (error) {
       console.error("Failed to load model:", error);
+      logError("Failed to load model", error as Error, { modelId });
+      // Show error to user
+      alert(`Failed to load model: ${error}`);
     } finally {
       setIsLoadingModel(false);
     }
@@ -734,18 +778,24 @@ export const ChatPage = () => {
                     <path d="M12 1v6m0 6v6m-6-6H0m12 0h6"></path>
                   </svg>
                 </Button>
-                <Button
-                  onClick={handleSend}
-                  disabled={!input.trim() || isStreaming || !loadedModel}
-                  className=""
-                  size="icon"
-                >
-                  {isStreaming ? (
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                  ) : (
+                {isStreaming ? (
+                  <Button
+                    onClick={handleStop}
+                    variant="destructive"
+                    size="icon"
+                    title="Stop generating"
+                  >
+                    <StopCircle className="w-5 h-5" />
+                  </Button>
+                ) : (
+                  <Button
+                    onClick={handleSend}
+                    disabled={!input.trim() || !loadedModel}
+                    size="icon"
+                  >
                     <Send className="w-5 h-5" />
-                  )}
-                </Button>
+                  </Button>
+                )}
               </div>
             </div>
           </div>

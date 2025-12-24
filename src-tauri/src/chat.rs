@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
+use std::sync::{ Arc, Mutex };
+use tokio::sync::broadcast;
 use async_openai::types::ChatCompletionRequestUserMessageArgs;
 use async_openai::types::ChatCompletionRequestSystemMessageArgs;
 use async_openai::types::ChatCompletionRequestAssistantMessageArgs;
@@ -15,6 +17,11 @@ use futures::StreamExt;
 use tauri::{ AppHandle, Emitter };
 
 use crate::{ mcp, paths, constants };
+
+// Global state for managing streaming cancellation
+lazy_static::lazy_static! {
+    static ref ACTIVE_STREAMS: Arc<Mutex<HashMap<String, broadcast::Sender<()>>>> = Arc::new(Mutex::new(HashMap::new()));
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -425,6 +432,23 @@ pub async fn get_session_messages(session_id: String) -> Result<Vec<ChatMessage>
 }
 
 #[tauri::command]
+pub async fn stop_chat_streaming(session_id: String) -> Result<String, String> {
+    info!(session_id = %session_id, "Attempting to stop chat streaming");
+    
+    let mut streams = ACTIVE_STREAMS.lock().map_err(|e| format!("Failed to acquire lock: {}", e))?;
+    
+    if let Some(sender) = streams.remove(&session_id) {
+        // Send cancellation signal
+        let _ = sender.send(());
+        info!(session_id = %session_id, "Streaming cancellation signal sent");
+        Ok(format!("Streaming stopped for session: {}", session_id))
+    } else {
+        log_warning!("No active stream found", session_id = %session_id);
+        Err(format!("No active streaming session found: {}", session_id))
+    }
+}
+
+#[tauri::command]
 pub async fn get_conversation_history(session_id: String) -> Result<Vec<ChatMessage>, String> {
     let storage = load_chat_sessions()?;
 
@@ -528,17 +552,16 @@ For each function call, return a json object with function name and arguments wi
     };
 
     let base_system_message = system_prompt.unwrap_or_else(|| {
-        "You are a helpful AI assistant with access to various functions/tools. 
-        You MUST use the available tools when they are relevant to answer the user's request.
+        "You are a helpful AI assistant with access to various functions/tools.
 
-        CRITICAL RULES FOR EVERY MESSAGE:
-        1. ALWAYS check if a tool can provide the answer - don't rely on previous responses
-        2. NEVER make up or guess information that could be obtained from a function call
-        3. If you have a tool that can answer the question, USE IT - even if you used it before
-        4. Each user message is a NEW request - previous tool calls don't apply to new questions
-        5. Call tools FRESH for each request, even if it's similar to a previous question
-
-        The available tools should be called EVERY TIME they are relevant, regardless of conversation history.".to_string()
+        Tool Usage Guidelines:
+        - Use tools ONLY when they are necessary to answer the user's question
+        - For simple greetings, general questions, or conversations, respond naturally WITHOUT using tools
+        - Only call a tool if the user's request specifically requires information or actions that the tool provides
+        - Examples of when NOT to use tools: greetings (hello, hi), general chat, opinions, explanations
+        - Examples of when to use tools: getting current time, converting units, fetching specific data
+        
+        When a tool would be helpful, use it. Otherwise, respond conversationally.".to_string()
     });
 
     // Always append tools info to system message (whether custom or default)
@@ -769,25 +792,47 @@ For each function call, return a json object with function name and arguments wi
             format!("Failed to create chat stream: {}", e)
         })?;
 
+    // Setup cancellation channel
+    let (cancel_tx, mut cancel_rx) = broadcast::channel::<()>(1);
+    let stream_id = session_id.clone().unwrap_or_else(|| "temp".to_string());
+    
+    // Register this stream for cancellation
+    {
+        let mut streams = ACTIVE_STREAMS.lock().map_err(|e| format!("Failed to acquire lock: {}", e))?;
+        streams.insert(stream_id.clone(), cancel_tx);
+    }
+
     let mut full_response = String::new();
     let mut executed_tools = std::collections::HashSet::new();
     let mut needs_continuation = false;
     let mut usage_data: Option<(u32, u32, u32)> = None; // (prompt_tokens, completion_tokens, total_tokens)
+    let mut was_cancelled = false;
 
     // Process streaming responses with function call support
-    while let Some(result) = stream.next().await {
-        match result {
-            Ok(response) => {
-                // // Log entire response structure for debugging
-                // if let Ok(response_json) = serde_json::to_string_pretty(&response) {
-                //     tracing::debug!(
-                //         response_json = %response_json,
-                //         "Complete streaming response chunk"
-                //     );
-                // }
+    loop {
+        tokio::select! {
+            // Check for cancellation signal
+            _ = cancel_rx.recv() => {
+                info!(stream_id = %stream_id, "Stream cancelled by user");
+                was_cancelled = true;
+                break;
+            }
+            // Process next stream item
+            result = stream.next() => {
+                match result {
+                    None => break,
+                    Some(stream_result) => match stream_result {
+                        Ok(response) => {
+                            // // Log entire response structure for debugging
+                            // if let Ok(response_json) = serde_json::to_string_pretty(&response) {
+                            //     tracing::debug!(
+                            //         response_json = %response_json,
+                            //         "Complete streaming response chunk"
+                            //     );
+                            // }
 
-                // Capture usage data if present (comes in final chunk with empty choices)
-                if let Some(usage) = response.usage {
+                            // Capture usage data if present (comes in final chunk with empty choices)
+                            if let Some(usage) = response.usage {
                     let prompt_tokens = usage.prompt_tokens;
                     let completion_tokens = usage.completion_tokens;
                     let total_tokens = usage.total_tokens;
@@ -915,17 +960,26 @@ For each function call, return a json object with function name and arguments wi
                     }
                 }
             }
-            Err(err) => {
-                log_operation_error!("Chat stream", &err);
-                let _ = app.emit(
-                    "chat-error",
-                    serde_json::json!({
-                        "error": format!("Stream error: {}", err)
-                    })
-                );
-                break;
+                        Err(err) => {
+                            log_operation_error!("Chat stream", &err);
+                            let _ = app.emit(
+                                "chat-error",
+                                serde_json::json!({
+                                    "error": format!("Stream error: {}", err)
+                                })
+                            );
+                            break;
+                        }
+                    }
+                }
             }
         }
+    }
+
+    // Cleanup: Remove this stream from active streams
+    {
+        let mut streams = ACTIVE_STREAMS.lock().map_err(|e| format!("Failed to acquire lock: {}", e))?;
+        streams.remove(&stream_id);
     }
 
     // Continue the conversation if we executed tools and got JSON responses
@@ -978,12 +1032,13 @@ For each function call, return a json object with function name and arguments wi
         }
     }
 
-    // Emit completion signal with usage data
+    // Emit completion signal with usage data and cancellation status
     let _ = app.emit(
         "chat-token",
         serde_json::json!({
             "token": "",
             "finished": true,
+            "cancelled": was_cancelled,
             "usage": usage_data.map(|(prompt, completion, total)| {
                 serde_json::json!({
                     "prompt_tokens": prompt,

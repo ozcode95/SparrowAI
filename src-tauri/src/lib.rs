@@ -367,6 +367,7 @@ pub fn run() {
                 chat::add_message_to_session,
                 chat::get_session_messages,
                 chat::get_conversation_history,
+                chat::stop_chat_streaming,
                 chat::chat_with_rag_streaming,
                 rag::documents::process_document,
                 rag::documents::save_temp_file,
