@@ -334,7 +334,7 @@ pub fn run() {
                 huggingface::get_model_info,
                 huggingface::download_entire_model,
                 huggingface::check_model_update_status,
-                huggingface::check_bge_models_exist,
+                huggingface::check_rag_models_exist,
                 models::check_downloaded_models,
                 models::delete_downloaded_model,
                 models::open_model_folder,

@@ -40,7 +40,10 @@ export const ModelDownloadDialog = ({
       id: "OpenVINO/Qwen3-Embedding-0.6B-int8-ov",
       name: "Qwen3 Embedding Model",
     },
-    { id: "OpenVINO/bge-reranker-base-int8-ov", name: "BGE Reranker Model" },
+    {
+      id: "OpenVINO/Qwen3-Reranker-0.6B-fp16-ov",
+      name: "Qwen3 Reranker Model",
+    },
   ];
 
   const handleDownload = async () => {

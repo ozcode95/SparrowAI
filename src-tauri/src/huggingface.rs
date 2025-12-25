@@ -727,9 +727,9 @@ pub async fn download_entire_model(
     }
 }
 
-/// Check if the required BGE models (embedding and reranker) are downloaded
+/// Check if the required RAG models (embedding and reranker) are downloaded
 #[tauri::command]
-pub async fn check_bge_models_exist(download_path: Option<String>) -> Result<bool, String> {
+pub async fn check_rag_models_exist(download_path: Option<String>) -> Result<bool, String> {
     let downloads_dir = if let Some(path) = download_path {
         PathBuf::from(path)
     } else {
@@ -737,16 +737,16 @@ pub async fn check_bge_models_exist(download_path: Option<String>) -> Result<boo
         let home_dir = match std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
             Ok(home) => home,
             Err(_) => {
-                log_operation_error!("Check BGE models", "Failed to get home directory");
+                log_operation_error!("Check RAG models", "Failed to get home directory");
                 return Err("Failed to get user home directory".to_string());
             }
         };
         PathBuf::from(home_dir).join(".sparrow").join("models")
     };
 
-    // Check for both BGE models
-    let embedding_model_path = downloads_dir.join("OpenVINO").join("bge-base-en-v1.5-int8-ov");
-    let reranker_model_path = downloads_dir.join("OpenVINO").join("bge-reranker-base-int8-ov");
+    // Check for both RAG models (Qwen3 embedding and reranker)
+    let embedding_model_path = downloads_dir.join("OpenVINO").join("Qwen3-Embedding-0.6B-int8-ov");
+    let reranker_model_path = downloads_dir.join("OpenVINO").join("Qwen3-Reranker-0.6B-fp16-ov");
 
     let embedding_exists = embedding_model_path.exists() && embedding_model_path.is_dir();
     let reranker_exists = reranker_model_path.exists() && reranker_model_path.is_dir();
@@ -755,7 +755,7 @@ pub async fn check_bge_models_exist(download_path: Option<String>) -> Result<boo
         embedding_exists = embedding_exists,
         reranker_exists = reranker_exists,
         path = %downloads_dir.display(),
-        "Checked BGE models existence"
+        "Checked RAG models existence"
     );
 
     Ok(embedding_exists && reranker_exists)
@@ -990,17 +990,18 @@ fn generate_graph_for_task(
             // Build plugin config for text generation
             let mut plugin_config = HashMap::new();
             
+            // Add cache_dir to plugin_config
+            let cache_dir = format!("{}/.ovms_cache", model_path.to_string_lossy().replace('\\', "/"));
+            plugin_config.insert("CACHE_DIR".to_string(), cache_dir);
+            
             if let Some(params) = params {
                 if let Some(kv_precision) = &params.kv_cache_precision {
                     plugin_config.insert("KV_CACHE_PRECISION".to_string(), kv_precision.clone());
                 }
             }
             
-            let plugin_config_str = if plugin_config.is_empty() {
-                "{}".to_string()
-            } else {
-                serde_json::to_string(&plugin_config).unwrap_or_else(|_| "{}".to_string())
-            };
+            let plugin_config_str = serde_json::to_string(&plugin_config)
+                .unwrap_or_else(|_| "{}".to_string());
             
             template_params.insert("plugin_config".to_string(), plugin_config_str);
             template_params.insert(
@@ -1113,7 +1114,14 @@ fn generate_graph_for_task(
             render_template(SPEECH2TEXT_GRAPH_TEMPLATE, &template_params)
         },
         "image_generation" => {
-            template_params.insert("plugin_config_str".to_string(), "".to_string());
+            // Build plugin config for image generation with cache_dir
+            let cache_dir = format!("{}/.ovms_cache", model_path.to_string_lossy().replace('\\', "/"));
+            let mut plugin_config = HashMap::new();
+            plugin_config.insert("CACHE_DIR".to_string(), cache_dir);
+            let plugin_config_json = serde_json::to_string(&plugin_config)
+                .unwrap_or_else(|_| "{}".to_string());
+            let plugin_config_str = format!("plugin_config: '{}',\n      ", plugin_config_json);
+            template_params.insert("plugin_config_str".to_string(), plugin_config_str);
             
             if let Some(params) = params {
                 if let Some(resolution) = &params.resolution {

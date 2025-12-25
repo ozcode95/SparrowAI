@@ -383,35 +383,35 @@ pub async fn create_ovms_config(
     model_name: String,
     model_path: String
 ) -> Result<String, String> {
-    // Always include both BGE models as the first entries
+    // Always include both RAG models (Qwen3) as the first entries
     let home_dir = std::env
         ::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_else(|_| ".".to_string());
-    let bge_reranker_path = PathBuf::from(&home_dir)
+    let qwen3_reranker_path = PathBuf::from(&home_dir)
         .join(".sparrow")
         .join("models")
         .join("OpenVINO")
-        .join("bge-reranker-base-int8-ov");
-    let bge_base_path = PathBuf::from(&home_dir)
+        .join("Qwen3-Reranker-0.6B-fp16-ov");
+    let qwen3_embedding_path = PathBuf::from(&home_dir)
         .join(".sparrow")
         .join("models")
         .join("OpenVINO")
-        .join("bge-base-en-v1.5-int8-ov");
+        .join("Qwen3-Embedding-0.6B-int8-ov");
 
     let mut mediapipe_configs = vec![
         json!({
-            "name": "bge-reranker-base-int8-ov",
-            "base_path": bge_reranker_path.to_string_lossy().replace('\\', "/")
+            "name": "Qwen3-Reranker-0.6B-fp16-ov",
+            "base_path": qwen3_reranker_path.to_string_lossy().replace('\\', "/")
         }),
         json!({
-            "name": "bge-base-en-v1.5-int8-ov",
-            "base_path": bge_base_path.to_string_lossy().replace('\\', "/")
+            "name": "Qwen3-Embedding-0.6B-int8-ov",
+            "base_path": qwen3_embedding_path.to_string_lossy().replace('\\', "/")
         })
     ];
 
-    // Add the provided model if it's not one of the BGE models
-    if model_name != "bge-reranker-base-int8-ov" && model_name != "bge-base-en-v1.5-int8-ov" {
+    // Add the provided model if it's not one of the RAG models
+    if model_name != "Qwen3-Reranker-0.6B-fp16-ov" && model_name != "Qwen3-Embedding-0.6B-int8-ov" {
         mediapipe_configs.push(
             json!({
             "name": model_name,
@@ -462,47 +462,47 @@ pub async fn update_ovms_config(
     // Normalize the model_path to use forward slashes for OVMS
     let normalized_model_path = model_path.replace('\\', "/");
 
-    // Always ensure both BGE models are present
+    // Always ensure both RAG models (Qwen3) are present
     let home_dir = std::env
         ::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_else(|_| ".".to_string());
-    let bge_reranker_path = PathBuf::from(&home_dir)
+    let qwen3_reranker_path = PathBuf::from(&home_dir)
         .join(".sparrow")
         .join("models")
         .join("OpenVINO")
-        .join("bge-reranker-base-int8-ov");
-    let bge_base_path = PathBuf::from(&home_dir)
+        .join("Qwen3-Reranker-0.6B-fp16-ov");
+    let qwen3_embedding_path = PathBuf::from(&home_dir)
         .join(".sparrow")
         .join("models")
         .join("OpenVINO")
-        .join("bge-base-en-v1.5-int8-ov");
+        .join("Qwen3-Embedding-0.6B-int8-ov");
 
     if let Some(model_list) = config["mediapipe_config_list"].as_array_mut() {
-        // Check which BGE models already exist and find the third model index
-        let mut has_bge_reranker = false;
-        let mut has_bge_base = false;
+        // Check which RAG models already exist and find the third model index
+        let mut has_qwen3_reranker = false;
+        let mut has_qwen3_embedding = false;
         let mut third_model_index = None;
         let mut found_target_model = false;
 
         for (index, model) in model_list.iter_mut().enumerate() {
             if let Some(name) = model["name"].as_str() {
-                if name == "bge-reranker-base-int8-ov" {
-                    has_bge_reranker = true;
+                if name == "Qwen3-Reranker-0.6B-fp16-ov" {
+                    has_qwen3_reranker = true;
                     // Update the path in case it changed
                     model["base_path"] = json!(
-                        bge_reranker_path.to_string_lossy().replace('\\', "/")
+                        qwen3_reranker_path.to_string_lossy().replace('\\', "/")
                     );
-                } else if name == "bge-base-en-v1.5-int8-ov" {
-                    has_bge_base = true;
+                } else if name == "Qwen3-Embedding-0.6B-int8-ov" {
+                    has_qwen3_embedding = true;
                     // Update the path in case it changed
-                    model["base_path"] = json!(bge_base_path.to_string_lossy().replace('\\', "/"));
+                    model["base_path"] = json!(qwen3_embedding_path.to_string_lossy().replace('\\', "/"));
                 } else if name == model_name {
                     // Target model already exists, just update its path
                     model["base_path"] = json!(normalized_model_path);
                     found_target_model = true;
                 } else {
-                    // This is a third model (not BGE models)
+                    // This is a third model (not RAG models)
                     if third_model_index.is_none() {
                         third_model_index = Some(index);
                     }
@@ -510,33 +510,33 @@ pub async fn update_ovms_config(
             }
         }
 
-        // Add missing BGE models (always as first entries)
+        // Add missing RAG models (always as first entries)
         let mut insert_index = 0;
-        if !has_bge_reranker {
+        if !has_qwen3_reranker {
             model_list.insert(
                 insert_index,
                 json!({
-                "name": "bge-reranker-base-int8-ov",
-                "base_path": bge_reranker_path.to_string_lossy().replace('\\', "/")
+                "name": "Qwen3-Reranker-0.6B-fp16-ov",
+                "base_path": qwen3_reranker_path.to_string_lossy().replace('\\', "/")
             })
             );
             insert_index += 1;
         }
-        if !has_bge_base {
+        if !has_qwen3_embedding {
             model_list.insert(
                 insert_index,
                 json!({
-                "name": "bge-base-en-v1.5-int8-ov",
-                "base_path": bge_base_path.to_string_lossy().replace('\\', "/")
+                "name": "Qwen3-Embedding-0.6B-int8-ov",
+                "base_path": qwen3_embedding_path.to_string_lossy().replace('\\', "/")
             })
             );
         }
 
-        // Handle the third model if the target model is not one of the BGE models
+        // Handle the third model if the target model is not one of the RAG models
         if
             !found_target_model &&
-            model_name != "bge-reranker-base-int8-ov" &&
-            model_name != "bge-base-en-v1.5-int8-ov"
+            model_name != "Qwen3-Reranker-0.6B-fp16-ov" &&
+            model_name != "Qwen3-Embedding-0.6B-int8-ov"
         {
             let new_model_config =
                 json!({
@@ -959,8 +959,8 @@ pub async fn check_ovms_status() -> Result<OvmsStatus, String> {
                     continue;
                 }
 
-                // Skip BGE models (embedding and reranker models)
-                if key.starts_with("bge") {
+                // Skip RAG models (Qwen3 embedding and reranker models)
+                if key.starts_with("Qwen3") {
                     continue;
                 }
 
@@ -1069,7 +1069,7 @@ pub fn generate_ovms_graph(model_dir: &PathBuf, model_id: &str) -> Result<(), St
     // Generate graph.pbtxt content based on model type
     let cache_dir = format!("{}/.ovms_cache", model_dir.to_string_lossy().replace('\\', "/"));
     let graph_content = if tokenizer_name.is_some() && detokenizer_name.is_some() {
-        if model_name == "bge-reranker-base-int8-ov" {
+        if model_name == "Qwen3-Reranker-0.6B-fp16-ov" {
             format!(
                 r#"input_stream: "REQUEST_PAYLOAD:input"
 output_stream: "RESPONSE_PAYLOAD:output"
@@ -1101,7 +1101,7 @@ node {{
     output_stream: "RESPONSE_PAYLOAD:output"
             }}"#
             )
-        } else if model_name == "bge-base-en-v1.5-int8-ov" {
+        } else if model_name == "Qwen3-Embedding-0.6B-int8-ov" {
             format!(
                 r#"input_stream: "REQUEST_PAYLOAD:input"
 output_stream: "RESPONSE_PAYLOAD:output"

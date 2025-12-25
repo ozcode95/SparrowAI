@@ -143,13 +143,19 @@ export const TasksPage = () => {
   const formatRepeatInterval = (task: Task) => {
     // For Daily/Weekly/Monthly/EveryN triggers, they inherently repeat
     const triggerType = task.trigger_time.type;
-    if (["Daily", "Weekly", "Monthly", "EveryNMinutes", "EveryNHours"].includes(triggerType)) {
+    if (
+      ["Daily", "Weekly", "Monthly", "EveryNMinutes", "EveryNHours"].includes(
+        triggerType
+      )
+    ) {
       return "Repeating";
     }
-    
+
     // For DateTime triggers, check repeat_interval
     if (!task.repeat_interval) return "Once";
-    return `Every ${task.repeat_interval.value} ${task.repeat_interval.unit.toLowerCase()}`;
+    return `Every ${
+      task.repeat_interval.value
+    } ${task.repeat_interval.unit.toLowerCase()}`;
   };
 
   const formatActionType = (action: Task["action_type"]) => {
