@@ -140,9 +140,16 @@ export const TasksPage = () => {
     }
   };
 
-  const formatRepeatInterval = (interval?: Task["repeat_interval"]) => {
-    if (!interval) return "Once";
-    return `Every ${interval.value} ${interval.unit.toLowerCase()}`;
+  const formatRepeatInterval = (task: Task) => {
+    // For Daily/Weekly/Monthly/EveryN triggers, they inherently repeat
+    const triggerType = task.trigger_time.type;
+    if (["Daily", "Weekly", "Monthly", "EveryNMinutes", "EveryNHours"].includes(triggerType)) {
+      return "Repeating";
+    }
+    
+    // For DateTime triggers, check repeat_interval
+    if (!task.repeat_interval) return "Once";
+    return `Every ${task.repeat_interval.value} ${task.repeat_interval.unit.toLowerCase()}`;
   };
 
   const formatActionType = (action: Task["action_type"]) => {
@@ -253,7 +260,7 @@ export const TasksPage = () => {
                       <div className="flex items-center gap-2">
                         <RefreshCw className="h-4 w-4 text-gray-400" />
                         <span className="text-gray-600 dark:text-gray-400">
-                          {formatRepeatInterval(task.repeat_interval)}
+                          {formatRepeatInterval(task)}
                         </span>
                       </div>
                       {task.next_run && (

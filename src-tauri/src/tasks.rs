@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
-use chrono::{DateTime, Utc, Duration, NaiveTime, Datelike};
+use chrono::{DateTime, Utc, Duration, NaiveTime, Datelike, TimeZone};
 use tauri::{AppHandle, Emitter};
 use tracing::{info, error, debug};
 use std::path::PathBuf;
@@ -178,14 +178,31 @@ impl TaskScheduler {
             },
             TriggerTime::Daily { time } => {
                 if let Ok(naive_time) = NaiveTime::parse_from_str(time, "%H:%M") {
-                    let today = now.date_naive().and_time(naive_time);
-                    let today_utc = DateTime::<Utc>::from_naive_utc_and_offset(today, Utc);
+                    // Get local time and work in local timezone
+                    use chrono::Local;
+                    let local_now = Local::now();
+                    let today_local = local_now.date_naive().and_time(naive_time);
+                    let today_local_dt = Local.from_local_datetime(&today_local).single();
                     
-                    if today_utc > now {
-                        Some(today_utc)
+                    if let Some(today_local_dt) = today_local_dt {
+                        let today_utc = today_local_dt.with_timezone(&Utc);
+                        
+                        if today_utc > now {
+                            Some(today_utc)
+                        } else {
+                            // Schedule for tomorrow at the same local time
+                            let tomorrow_local = local_now.date_naive() + Duration::days(1);
+                            let tomorrow_local_dt = tomorrow_local.and_time(naive_time);
+                            if let Some(tomorrow_utc) = Local.from_local_datetime(&tomorrow_local_dt).single() {
+                                Some(tomorrow_utc.with_timezone(&Utc))
+                            } else {
+                                error!("Failed to create tomorrow's datetime");
+                                None
+                            }
+                        }
                     } else {
-                        // Schedule for tomorrow
-                        Some(today_utc + Duration::days(1))
+                        error!("Failed to create local datetime");
+                        None
                     }
                 } else {
                     error!("Invalid time format: {}", time);
@@ -194,22 +211,37 @@ impl TaskScheduler {
             },
             TriggerTime::Weekly { day_of_week, time } => {
                 if let Ok(naive_time) = NaiveTime::parse_from_str(time, "%H:%M") {
-                    let current_weekday = now.weekday().num_days_from_sunday() as u8;
+                    use chrono::Local;
+                    let local_now = Local::now();
+                    let current_weekday = local_now.weekday().num_days_from_sunday() as u8;
                     let days_until_target = if *day_of_week >= current_weekday {
                         (*day_of_week - current_weekday) as i64
                     } else {
                         (7 - current_weekday + *day_of_week) as i64
                     };
                     
-                    let target_date = now.date_naive() + Duration::days(days_until_target);
+                    let target_date = local_now.date_naive() + Duration::days(days_until_target);
                     let target_datetime = target_date.and_time(naive_time);
-                    let target_utc = DateTime::<Utc>::from_naive_utc_and_offset(target_datetime, Utc);
                     
-                    if target_utc > now {
-                        Some(target_utc)
+                    if let Some(target_local) = Local.from_local_datetime(&target_datetime).single() {
+                        let target_utc = target_local.with_timezone(&Utc);
+                        
+                        if target_utc > now {
+                            Some(target_utc)
+                        } else {
+                            // Schedule for next week
+                            let next_week_date = target_date + Duration::weeks(1);
+                            let next_week_datetime = next_week_date.and_time(naive_time);
+                            if let Some(next_week_utc) = Local.from_local_datetime(&next_week_datetime).single() {
+                                Some(next_week_utc.with_timezone(&Utc))
+                            } else {
+                                error!("Failed to create next week's datetime");
+                                None
+                            }
+                        }
                     } else {
-                        // Schedule for next week
-                        Some(target_utc + Duration::weeks(1))
+                        error!("Failed to create local datetime");
+                        None
                     }
                 } else {
                     error!("Invalid time format: {}", time);
@@ -218,34 +250,40 @@ impl TaskScheduler {
             },
             TriggerTime::Monthly { day_of_month, time } => {
                 if let Ok(naive_time) = NaiveTime::parse_from_str(time, "%H:%M") {
+                    use chrono::Local;
+                    let local_now = Local::now();
                     let target_day = *day_of_month;
                     
                     // Calculate target date in current month
-                    let current_month_date = now.date_naive()
+                    let current_month_date = local_now.date_naive()
                         .with_day(target_day as u32)
                         .and_then(|d| Some(d.and_time(naive_time)));
                     
                     if let Some(target_datetime) = current_month_date {
-                        let target_utc = DateTime::<Utc>::from_naive_utc_and_offset(target_datetime, Utc);
-                        
-                        if target_utc > now {
-                            return Some(target_utc);
+                        if let Some(target_local) = Local.from_local_datetime(&target_datetime).single() {
+                            let target_utc = target_local.with_timezone(&Utc);
+                            
+                            if target_utc > now {
+                                return Some(target_utc);
+                            }
                         }
                     }
                     
                     // Schedule for next month
-                    let next_month = if now.month() == 12 {
-                        now.date_naive()
-                            .with_year(now.year() + 1)
+                    let next_month = if local_now.month() == 12 {
+                        local_now.date_naive()
+                            .with_year(local_now.year() + 1)
                             .and_then(|d| d.with_month(1))
                     } else {
-                        now.date_naive().with_month(now.month() + 1)
+                        local_now.date_naive().with_month(local_now.month() + 1)
                     };
                     
                     if let Some(next_month_date) = next_month {
                         if let Some(target_date) = next_month_date.with_day(target_day as u32) {
                             let target_datetime = target_date.and_time(naive_time);
-                            return Some(DateTime::<Utc>::from_naive_utc_and_offset(target_datetime, Utc));
+                            if let Some(next_month_utc) = Local.from_local_datetime(&target_datetime).single() {
+                                return Some(next_month_utc.with_timezone(&Utc));
+                            }
                         }
                     }
                     
@@ -677,9 +715,18 @@ pub async fn start_task_scheduler(app_handle: AppHandle) {
         Ok(storage) => {
             let mut sched = scheduler.lock().unwrap();
             for task in storage.tasks.values() {
-                sched.add_task(task.clone());
+                // Recalculate next_run with correct timezone logic
+                let mut task = task.clone();
+                task.next_run = sched.calculate_next_run(&task);
+                sched.add_task(task);
             }
             info!("Loaded {} tasks", storage.tasks.len());
+            
+            // Save updated tasks with recalculated next_run times
+            let storage = TaskStorage {
+                tasks: sched.get_all_tasks().into_iter().map(|t| (t.id.clone(), t)).collect(),
+            };
+            let _ = save_tasks_to_file(&storage);
         },
         Err(e) => {
             error!("Failed to load tasks: {}", e);

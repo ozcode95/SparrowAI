@@ -1,5 +1,5 @@
 use tauri_plugin_autostart::ManagerExt;
-use tauri::{Manager, Runtime, State};
+use tauri::Runtime;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AutostartError {
