@@ -111,6 +111,11 @@ export interface ChatMessage {
   timestamp: number;
   thinking?: string;
   toolCalls?: any[];
+  attachments?: Array<{
+    file_path: string;
+    file_name: string;
+    file_type: string;
+  }>;
   [key: string]: any;
 }
 

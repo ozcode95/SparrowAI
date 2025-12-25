@@ -2,10 +2,19 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { PageContainer } from "../layout";
-import { Card, Button } from "../ui";
+import { Card, Button, Input } from "../ui";
 import { MessageContent } from "./MessageContent";
 import { useAppStore } from "@/store";
-import { Send, Bot, User, Loader2, Wrench, StopCircle } from "lucide-react";
+import {
+  Send,
+  Bot,
+  User,
+  Loader2,
+  Wrench,
+  StopCircle,
+  Paperclip,
+  X,
+} from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { ChatMessage as ChatMessageType } from "@/store/types";
 import {
@@ -20,6 +29,12 @@ interface ToolCall {
   tool_name: string;
   arguments: string;
   result: string;
+}
+
+interface AttachmentInfo {
+  file_path: string;
+  file_name: string;
+  file_type: string;
 }
 
 export const ChatPage = () => {
@@ -50,6 +65,20 @@ export const ChatPage = () => {
   const [localTopP, setLocalTopP] = useState<number | null>(null);
   const [localMaxTokens, setLocalMaxTokens] = useState<number | null>(null);
   const [showConfigPanel, setShowConfigPanel] = useState(false);
+  const [attachments, setAttachments] = useState<AttachmentInfo[]>([]);
+  const [showAttachmentPanel, setShowAttachmentPanel] = useState(false);
+  const [availableFiles, setAvailableFiles] = useState<
+    Array<{
+      file_path: string;
+      file_name: string;
+      file_type: string;
+      chunk_count: number;
+    }>
+  >([]);
+  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
+  const [isLoadingFiles, setIsLoadingFiles] = useState(false);
+  const [isUploadingFile, setIsUploadingFile] = useState(false);
+  const [fileSearchQuery, setFileSearchQuery] = useState("");
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -57,6 +86,106 @@ export const ChatPage = () => {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [currentChatMessages, currentStreamingMessage]);
+
+  // Load files when attachment panel opens
+  useEffect(() => {
+    if (showAttachmentPanel && availableFiles.length === 0) {
+      loadAvailableFiles();
+    }
+  }, [showAttachmentPanel]);
+
+  const loadAvailableFiles = async () => {
+    setIsLoadingFiles(true);
+    try {
+      const files = await invoke<
+        Array<{
+          file_path: string;
+          file_name: string;
+          file_type: string;
+          chunk_count: number;
+        }>
+      >("get_all_files");
+      setAvailableFiles(files);
+      // Pre-select currently attached files
+      const currentPaths = new Set(attachments.map((a) => a.file_path));
+      setSelectedFiles(currentPaths);
+    } catch (error) {
+      logError("Failed to load files", error as Error);
+    } finally {
+      setIsLoadingFiles(false);
+    }
+  };
+
+  const handleFileUpload = async () => {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({
+        multiple: true,
+        filters: [
+          {
+            name: "Documents",
+            extensions: ["pdf", "docx", "xlsx", "xls"],
+          },
+        ],
+      });
+
+      if (!selected || (Array.isArray(selected) && selected.length === 0)) {
+        return;
+      }
+
+      const filePaths = Array.isArray(selected) ? selected : [selected];
+      setIsUploadingFile(true);
+
+      for (const filePath of filePaths) {
+        try {
+          const documents = await invoke<any[]>("process_document", {
+            filePath,
+          });
+          const embeddedDocs = await invoke<any[]>(
+            "create_document_embeddings",
+            { documents }
+          );
+          await invoke("store_documents", { documents: embeddedDocs });
+          logInfo(`Successfully processed and stored ${filePath}`);
+          // Auto-select newly uploaded file
+          setSelectedFiles((prev) => new Set(prev).add(filePath));
+        } catch (error) {
+          logError(`Failed to process ${filePath}`, error as Error);
+          alert(`Failed to process ${filePath.split("\\").pop()}: ${error}`);
+        }
+      }
+
+      await loadAvailableFiles();
+    } catch (error) {
+      console.error("Upload failed:", error);
+    } finally {
+      setIsUploadingFile(false);
+    }
+  };
+
+  const toggleFileSelection = (filePath: string) => {
+    setSelectedFiles((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(filePath)) {
+        newSet.delete(filePath);
+      } else {
+        newSet.add(filePath);
+      }
+      return newSet;
+    });
+  };
+
+  const applyAttachments = () => {
+    const newAttachments: AttachmentInfo[] = availableFiles
+      .filter((f) => selectedFiles.has(f.file_path))
+      .map((f) => ({
+        file_path: f.file_path,
+        file_name: f.file_name,
+        file_type: f.file_type,
+      }));
+    setAttachments(newAttachments);
+    setShowAttachmentPanel(false);
+  };
 
   // Clear input when session changes (new chat)
   useEffect(() => {
@@ -289,11 +418,14 @@ export const ChatPage = () => {
       return;
     }
 
+    const currentAttachments = [...attachments]; // Store current attachments
     const userMessage: ChatMessageType = {
       id: crypto.randomUUID(),
       role: "user",
       content: input.trim(),
       timestamp: Date.now(),
+      attachments:
+        currentAttachments.length > 0 ? currentAttachments : undefined,
     };
 
     // Add user message to UI immediately
@@ -301,6 +433,7 @@ export const ChatPage = () => {
 
     const messageContent = input.trim();
     setInput("");
+    setAttachments([]); // Clear attachments after sending
     setIsStreaming(true);
     setToolCalls([]);
 
@@ -330,6 +463,8 @@ export const ChatPage = () => {
           content: messageContent,
           tokensPerSecond: null,
           isError: false,
+          attachments:
+            currentAttachments.length > 0 ? currentAttachments : null,
         });
         logDebug("User message added to new session");
 
@@ -355,6 +490,8 @@ export const ChatPage = () => {
             content: messageContent,
             tokensPerSecond: null,
             isError: false,
+            attachments:
+              currentAttachments.length > 0 ? currentAttachments : null,
           });
           logDebug("User message added to existing session", {
             sessionId: activeChatSessionId,
@@ -378,6 +515,8 @@ export const ChatPage = () => {
             content: messageContent,
             tokensPerSecond: null,
             isError: false,
+            attachments:
+              currentAttachments.length > 0 ? currentAttachments : null,
           });
           logDebug("User message added to new session");
 
@@ -415,6 +554,7 @@ export const ChatPage = () => {
 
       logDebug(`Using chat command: ${chatCommand}`, {
         useRAG: settings.useRAG,
+        hasAttachments: currentAttachments.length > 0,
       });
 
       await invoke(chatCommand, {
@@ -429,8 +569,12 @@ export const ChatPage = () => {
         maxTokens: effectiveMaxTokens,
         maxCompletionTokens: settings.maxCompletionTokens,
         // RAG-specific parameters (only used if chatCommand is chat_with_rag_streaming)
-        useRag: settings.useRAG,
-        ragLimit: 5,
+        useRag: settings.useRAG || currentAttachments.length > 0, // Use RAG if enabled OR if there are attachments
+        ragLimit: currentAttachments.length > 0 ? null : 5, // null means use only attached documents
+        attachedFilePaths:
+          currentAttachments.length > 0
+            ? currentAttachments.map((a) => a.file_path)
+            : null,
       });
     } catch (error) {
       logError("Failed to send message", error as Error, {
@@ -517,14 +661,20 @@ export const ChatPage = () => {
             value={loadedModel || ""}
             onChange={(e) => e.target.value && handleLoadModel(e.target.value)}
             disabled={isLoadingModel || isStreaming}
-            className="px-3 py-1.5 border rounded-lg bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-3 py-1.5 border rounded-lg bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-sm disabled:opacity-50 disabled:cursor-not-allowed w-64 truncate"
           >
             <option value="">Select a model...</option>
-            {Array.from(downloadedModels).map((modelId) => (
-              <option key={modelId} value={modelId}>
-                {modelId}
-              </option>
-            ))}
+            {Array.from(downloadedModels)
+              .filter(
+                (modelId) =>
+                  !modelId.toLowerCase().includes("embedding") &&
+                  !modelId.toLowerCase().includes("reranker")
+              )
+              .map((modelId) => (
+                <option key={modelId} value={modelId}>
+                  {modelId}
+                </option>
+              ))}
           </select>
           {isLoadingModel && <Loader2 className="w-4 h-4 animate-spin" />}
         </div>
@@ -597,6 +747,39 @@ export const ChatPage = () => {
                 ) : (
                   <div className="prose prose-sm max-w-none dark:prose-invert">
                     <ReactMarkdown>{message.content}</ReactMarkdown>
+                  </div>
+                )}
+
+                {/* Display attachments */}
+                {message.attachments && message.attachments.length > 0 && (
+                  <div
+                    className={`mt-3 pt-3 ${
+                      message.role === "user"
+                        ? "border-t border-white/20"
+                        : "border-t border-gray-200 dark:border-gray-700"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-2 text-xs opacity-70">
+                      <Paperclip className="w-3 h-3" />
+                      <span>Attached documents:</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {message.attachments.map((attachment, idx) => (
+                        <div
+                          key={idx}
+                          className={`text-xs px-2 py-1 rounded flex items-center gap-1.5 ${
+                            message.role === "user"
+                              ? "bg-white/20"
+                              : "bg-gray-100 dark:bg-gray-800"
+                          }`}
+                        >
+                          <Paperclip className="w-3 h-3" />
+                          <span className="max-w-[150px] truncate">
+                            {attachment.file_name}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
 
@@ -745,7 +928,173 @@ export const ChatPage = () => {
               </div>
             )}
 
+            {/* Attachment Panel */}
+            {showAttachmentPanel && (
+              <div className="flex flex-col gap-3 pb-3 border-b border-gray-200 dark:border-gray-700">
+                <div className="flex items-center justify-between">
+                  <div className="text-sm font-medium">Attach Documents</div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      onClick={handleFileUpload}
+                      disabled={isUploadingFile}
+                      size="sm"
+                      variant="outline"
+                      className="text-xs"
+                    >
+                      {isUploadingFile ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        "Upload New"
+                      )}
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Search */}
+                <Input
+                  value={fileSearchQuery}
+                  onChange={(e) => setFileSearchQuery(e.target.value)}
+                  placeholder="Search documents..."
+                  className="text-sm"
+                />
+
+                {/* File List */}
+                <div className="border border-gray-200 dark:border-gray-700 rounded-lg max-h-64 overflow-y-auto">
+                  {isLoadingFiles ? (
+                    <div className="flex items-center justify-center p-4">
+                      <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
+                    </div>
+                  ) : availableFiles.filter((f) =>
+                      f.file_name
+                        .toLowerCase()
+                        .includes(fileSearchQuery.toLowerCase())
+                    ).length === 0 ? (
+                    <div className="p-4 text-center text-sm text-gray-500 dark:text-gray-400">
+                      {fileSearchQuery
+                        ? "No documents match your search"
+                        : "No documents available. Upload some documents first."}
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-gray-200 dark:divide-gray-700">
+                      {availableFiles
+                        .filter((f) =>
+                          f.file_name
+                            .toLowerCase()
+                            .includes(fileSearchQuery.toLowerCase())
+                        )
+                        .map((file) => (
+                          <div
+                            key={file.file_path}
+                            className={`p-2 hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer transition-colors text-sm ${
+                              selectedFiles.has(file.file_path)
+                                ? "bg-primary/5 dark:bg-primary/10"
+                                : ""
+                            }`}
+                            onClick={() => toggleFileSelection(file.file_path)}
+                          >
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                checked={selectedFiles.has(file.file_path)}
+                                onChange={() =>
+                                  toggleFileSelection(file.file_path)
+                                }
+                                className="w-3.5 h-3.5 rounded border-gray-300 text-primary focus:ring-primary"
+                                onClick={(e) => e.stopPropagation()}
+                              />
+                              <Paperclip className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                              <div className="flex-1 min-w-0">
+                                <div className="font-medium truncate">
+                                  {file.file_name}
+                                </div>
+                                <div className="text-xs text-gray-500 dark:text-gray-400">
+                                  {file.file_type.toUpperCase()} •{" "}
+                                  {file.chunk_count} chunks
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Selected Count & Actions */}
+                <div className="flex items-center justify-between">
+                  <div className="text-xs text-gray-600 dark:text-gray-400">
+                    {selectedFiles.size > 0
+                      ? `${selectedFiles.size} document${
+                          selectedFiles.size !== 1 ? "s" : ""
+                        } selected`
+                      : "No documents selected"}
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={() => {
+                        setShowAttachmentPanel(false);
+                        setFileSearchQuery("");
+                      }}
+                      size="sm"
+                      variant="outline"
+                      className="text-xs"
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      onClick={applyAttachments}
+                      disabled={selectedFiles.size === 0}
+                      size="sm"
+                      className="text-xs"
+                    >
+                      Apply ({selectedFiles.size})
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Attached Documents */}
+            {attachments.length > 0 && (
+              <div className="flex flex-wrap gap-2 pb-3 border-b border-gray-200 dark:border-gray-700">
+                {attachments.map((attachment) => (
+                  <div
+                    key={attachment.file_path}
+                    className="flex items-center gap-2 px-3 py-1.5 bg-primary/10 dark:bg-primary/20 rounded-lg text-sm"
+                  >
+                    <Paperclip className="w-3.5 h-3.5" />
+                    <span className="max-w-[200px] truncate">
+                      {attachment.file_name}
+                    </span>
+                    <button
+                      onClick={() =>
+                        setAttachments((prev) =>
+                          prev.filter(
+                            (a) => a.file_path !== attachment.file_path
+                          )
+                        )
+                      }
+                      disabled={isStreaming}
+                      className="hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
             <div className="flex gap-3">
+              <div className="flex items-end">
+                <Button
+                  onClick={() => setShowAttachmentPanel(!showAttachmentPanel)}
+                  disabled={isStreaming}
+                  size="icon"
+                  variant="outline"
+                  title="Attach Documents"
+                >
+                  <Paperclip className="w-5 h-5" />
+                </Button>
+              </div>
               <textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
@@ -756,7 +1105,7 @@ export const ChatPage = () => {
                     : "Select a model to start chatting"
                 }
                 disabled={isStreaming || !loadedModel}
-                className="flex-1 resize-none bg-transparent border-none outline-none min-h-[44px] max-h-[200px] text-gray-900 dark:text-white placeholder:text-gray-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex-1 resize-none bg-transparent border-none outline-none min-h-[44px] max-h-[200px] text-gray-900 dark:text-white placeholder:text-gray-400 disabled:opacity-50 disabled:cursor-not-allowed flex items-center py-2"
                 rows={1}
                 style={{
                   height: "auto",

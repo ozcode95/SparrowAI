@@ -255,6 +255,79 @@ impl VectorStore {
         Ok(results)
     }
     
+    pub fn search_similar_in_files(
+        &self, 
+        query_embedding: &[f32], 
+        file_paths: &[String],
+        limit: usize
+    ) -> Result<Vec<SearchResult>, String> {
+        let mut results = Vec::new();
+        
+        tracing::debug!(
+            file_count = file_paths.len(),
+            files = ?file_paths,
+            "Searching for similar documents in specific files"
+        );
+        
+        for item_result in self.db.iter() {
+            match item_result {
+                Ok((key, value)) => {
+                    // Skip metadata keys
+                    if key.starts_with(b"__") {
+                        continue;
+                    }
+                    
+                    match bincode::deserialize::<Document>(&value) {
+                        Ok(document) => {
+                            // Only include documents from the specified files
+                            if !file_paths.contains(&document.file_path) {
+                                continue;
+                            }
+                            
+                            if let Some(embedding) = &document.embedding {
+                                let similarity = cosine_similarity(query_embedding, embedding);
+                                // Only add if similarity is valid (not NaN)
+                                if similarity.is_finite() {
+                                    results.push(SearchResult {
+                                        document,
+                                        score: similarity,
+                                        rerank_score: None,
+                                    });
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            // Skip corrupted documents
+                            continue;
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Skip database iteration errors
+                    continue;
+                }
+            }
+        }
+        
+        tracing::debug!(
+            results_found = results.len(),
+            "Found documents in specified files"
+        );
+        
+        // Sort by similarity score (highest first) with safe comparison
+        results.sort_by(|a, b| {
+            match (a.score.is_finite(), b.score.is_finite()) {
+                (true, true) => b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal),
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                (false, false) => std::cmp::Ordering::Equal,
+            }
+        });
+        results.truncate(limit);
+        
+        Ok(results)
+    }
+    
     pub fn delete_document(&self, id: &str) -> Result<bool, String> {
         let key = id.as_bytes();
         let result = self.db.remove(key)

@@ -24,6 +24,13 @@ lazy_static::lazy_static! {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachmentInfo {
+    pub file_path: String,
+    pub file_name: String,
+    pub file_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub id: String,
     pub role: String, // "user" or "assistant"
@@ -34,6 +41,7 @@ pub struct ChatMessage {
     pub prompt_tokens: Option<u32>,
     pub completion_tokens: Option<u32>,
     pub total_tokens: Option<u32>,
+    pub attachments: Option<Vec<AttachmentInfo>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -303,13 +311,15 @@ pub async fn add_message_to_session(
     is_error: Option<bool>,
     prompt_tokens: Option<u32>,
     completion_tokens: Option<u32>,
-    total_tokens: Option<u32>
+    total_tokens: Option<u32>,
+    attachments: Option<Vec<AttachmentInfo>>
 ) -> Result<ChatMessage, String> {
     tracing::debug!(
         session_id = %session_id,
         role = %role,
         content_length = content.len(),
         tokens_per_second = ?tokens_per_second,
+        has_attachments = attachments.is_some(),
         "Adding message to session"
     );
     
@@ -335,6 +345,7 @@ pub async fn add_message_to_session(
         prompt_tokens,
         completion_tokens,
         total_tokens,
+        attachments,
     };
 
     session.messages.push(message.clone());
@@ -391,7 +402,8 @@ pub async fn add_message_to_temporary_session(
     is_error: Option<bool>,
     prompt_tokens: Option<u32>,
     completion_tokens: Option<u32>,
-    total_tokens: Option<u32>
+    total_tokens: Option<u32>,
+    attachments: Option<Vec<AttachmentInfo>>
 ) -> Result<(ChatSession, ChatMessage), String> {
     let message_id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp_millis();
@@ -406,6 +418,7 @@ pub async fn add_message_to_temporary_session(
         prompt_tokens,
         completion_tokens,
         total_tokens,
+        attachments,
     };
 
     session.messages.push(message.clone());
@@ -1234,14 +1247,21 @@ pub async fn chat_with_rag_streaming(
     max_tokens: Option<u32>,
     max_completion_tokens: Option<u32>,
     use_rag: Option<bool>,
-    rag_limit: Option<usize>
+    rag_limit: Option<usize>,
+    attached_file_paths: Option<Vec<String>>
 ) -> Result<String, String> {
     let mut context_content = String::new();
 
-    // RAG retrieval if enabled
-    if use_rag.unwrap_or(false) {
-        tracing::info!("RAG is enabled, performing document retrieval");
-        match perform_rag_retrieval(&message, rag_limit.unwrap_or(5)).await {
+    // RAG retrieval if enabled OR if there are attached files
+    let should_use_rag = use_rag.unwrap_or(false) || attached_file_paths.is_some();
+    
+    if should_use_rag {
+        tracing::info!(
+            has_attached_files = attached_file_paths.is_some(), 
+            attached_count = attached_file_paths.as_ref().map(|f| f.len()),
+            "RAG is enabled, performing document retrieval"
+        );
+        match perform_rag_retrieval(&message, rag_limit, attached_file_paths.as_ref()).await {
             Ok(context) => {
                 if !context.is_empty() {
                     tracing::info!(context_length = context.len(), "RAG context retrieved successfully");
@@ -1300,8 +1320,18 @@ pub async fn chat_with_rag_streaming(
     ).await
 }
 
-async fn perform_rag_retrieval(query: &str, limit: usize) -> Result<String, String> {
-    tracing::info!(query_length = query.len(), limit = limit, "Starting RAG retrieval");
+async fn perform_rag_retrieval(
+    query: &str, 
+    limit: Option<usize>,
+    attached_file_paths: Option<&Vec<String>>
+) -> Result<String, String> {
+    tracing::info!(
+        query_length = query.len(), 
+        limit = ?limit,
+        has_attached_files = attached_file_paths.is_some(),
+        attached_count = attached_file_paths.map(|f| f.len()),
+        "Starting RAG retrieval"
+    );
     
     // Create query embedding
     let embedding_service = crate::rag::embeddings::EmbeddingService::new();
@@ -1314,7 +1344,16 @@ async fn perform_rag_retrieval(query: &str, limit: usize) -> Result<String, Stri
 
     // Search similar documents
     let vector_store = crate::rag::vector_store::VectorStore::new()?;
-    let search_results = vector_store.search_similar(&query_embedding, limit * 2)?; // Get more for reranking
+    
+    // If attached files are specified, search only in those files
+    let search_results = if let Some(file_paths) = attached_file_paths {
+        tracing::info!(file_count = file_paths.len(), "Searching only in attached files");
+        vector_store.search_similar_in_files(&query_embedding, file_paths, limit.unwrap_or(100))?
+    } else {
+        // Otherwise, search all documents with the specified limit
+        let search_limit = limit.unwrap_or(5) * 2; // Get more for reranking
+        vector_store.search_similar(&query_embedding, search_limit)?
+    };
     
     tracing::info!(results_found = search_results.len(), "Vector search completed");
 
@@ -1334,8 +1373,12 @@ async fn perform_rag_retrieval(query: &str, limit: usize) -> Result<String, Stri
     tracing::info!(reranked_count = reranked_results.len(), "Results reranked");
 
     // Build context from top results
-    // Increased from 3 to 5 chunks for better coverage
-    let top_results_count = std::cmp::min(5, limit);
+    // Use a higher count if filtering by specific files
+    let default_top_results = if attached_file_paths.is_some() { 10 } else { 5 };
+    let top_results_count = std::cmp::min(
+        default_top_results, 
+        limit.unwrap_or(default_top_results)
+    );
     let context_content = reranked_results
         .iter()
         .take(top_results_count)
