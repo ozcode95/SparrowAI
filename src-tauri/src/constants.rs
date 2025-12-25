@@ -1,8 +1,10 @@
 /// Default text chunk size for document processing
-pub const DEFAULT_CHUNK_SIZE: usize = 1000;
+/// Increased from 1000 to 1500 for better context retention
+pub const DEFAULT_CHUNK_SIZE: usize = 1500;
 
 /// Default text chunk overlap for document processing
-pub const DEFAULT_CHUNK_OVERLAP: usize = 200;
+/// Increased from 200 to 300 (20% overlap) for better continuity
+pub const DEFAULT_CHUNK_OVERLAP: usize = 300;
 
 /// Default search result limit
 #[allow(dead_code)]
@@ -38,7 +40,7 @@ pub const OVMS_API_BASE: &str = "http://localhost:1114";
 pub const OVMS_OPENAI_PATH: &str = "/v3";
 
 /// Default embedding model name
-pub const DEFAULT_EMBEDDING_MODEL: &str = "bge-base-en-v1.5-int8-ov";
+pub const DEFAULT_EMBEDDING_MODEL: &str = "Qwen3-Embedding-0.6B-int8-ov";
 
 /// OpenVINO organization name on HuggingFace
 pub const OPENVINO_ORG: &str = "OpenVINO";

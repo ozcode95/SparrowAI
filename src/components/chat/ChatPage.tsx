@@ -408,7 +408,16 @@ export const ChatPage = () => {
         ? loadedModel.substring("OpenVINO/".length)
         : loadedModel;
 
-      await invoke("chat_with_loaded_model_streaming", {
+      // Choose the appropriate chat function based on RAG setting
+      const chatCommand = settings.useRAG
+        ? "chat_with_rag_streaming"
+        : "chat_with_loaded_model_streaming";
+
+      logDebug(`Using chat command: ${chatCommand}`, {
+        useRAG: settings.useRAG,
+      });
+
+      await invoke(chatCommand, {
         sessionId: sessionToUse,
         message: messageContent,
         modelName: modelNameForChat,
@@ -419,6 +428,9 @@ export const ChatPage = () => {
         seed: settings.seed,
         maxTokens: effectiveMaxTokens,
         maxCompletionTokens: settings.maxCompletionTokens,
+        // RAG-specific parameters (only used if chatCommand is chat_with_rag_streaming)
+        useRag: settings.useRAG,
+        ragLimit: 5,
       });
     } catch (error) {
       logError("Failed to send message", error as Error, {

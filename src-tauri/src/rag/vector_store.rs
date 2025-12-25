@@ -14,13 +14,18 @@ impl VectorStore {
     pub fn new() -> Result<Self, String> {
         let data_dir = paths::get_vector_store_path().map_err(|e| e.to_string())?;
         
-        // Try to open the database, with fallback for corruption or schema mismatch
+        tracing::debug!(path = %data_dir.display(), "Opening vector store database");
+        
+        // Try to open the database, with retry for lock errors
         let db = match sled::open(&data_dir) {
             Ok(db) => {
+                tracing::debug!("Database opened successfully, validating schema");
                 // Check if we can deserialize existing data
                 if Self::validate_database_schema(&db) {
+                    tracing::debug!("Schema validation passed - using existing database");
                     db
                 } else {
+                    tracing::warn!("Schema validation failed - recreating database");
                     // Schema mismatch - remove old database and create new one
                     drop(db); // Close the database first
                     
@@ -28,6 +33,7 @@ impl VectorStore {
                         if let Err(remove_err) = std::fs::remove_dir_all(&data_dir) {
                             return Err(format!("Failed to remove incompatible database: {}", remove_err));
                         }
+                        tracing::info!("Removed incompatible database");
                     }
                     
                     // Create parent directory again
@@ -36,52 +42,89 @@ impl VectorStore {
                             .map_err(|e| format!("Failed to recreate data directory: {}", e))?;
                     }
                     
+                    tracing::info!("Creating fresh database after schema validation failure");
                     sled::open(&data_dir)
                         .map_err(|e| format!("Failed to create new database after schema migration: {}", e))?
                 }
             }
-            Err(_) => {
-                // If the database is corrupted, try to remove it and create a new one
-                if data_dir.exists() {
-                    if let Err(remove_err) = std::fs::remove_dir_all(&data_dir) {
-                        return Err(format!("Failed to remove corrupted database: {}", remove_err));
+            Err(e) => {
+                let error_msg = e.to_string();
+                
+                // Check if this is a lock error (concurrent access)
+                if error_msg.contains("could not acquire lock") || error_msg.contains("lock") {
+                    tracing::warn!("Database is locked by another instance - this is normal for concurrent access");
+                    // Retry opening after a short delay
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    sled::open(&data_dir)
+                        .map_err(|retry_err| {
+                            tracing::error!(error = %retry_err, "Failed to open database after retry");
+                            format!("Database is busy, please try again: {}", retry_err)
+                        })?
+                } else {
+                    // Real corruption - remove and recreate
+                    tracing::error!(error = %e, "Database corruption detected");
+                    
+                    if data_dir.exists() {
+                        if let Err(remove_err) = std::fs::remove_dir_all(&data_dir) {
+                            return Err(format!("Failed to remove corrupted database: {}", remove_err));
+                        }
+                        tracing::warn!("Removed corrupted database");
                     }
+                    
+                    // Create parent directory again
+                    if let Some(parent) = data_dir.parent() {
+                        std::fs::create_dir_all(parent)
+                            .map_err(|e| format!("Failed to recreate data directory: {}", e))?;
+                    }
+                    
+                    // Try to open a fresh database
+                    tracing::info!("Creating fresh database after corruption");
+                    sled::open(&data_dir)
+                        .map_err(|e| format!("Failed to create new vector store after corruption recovery: {}", e))?
                 }
-                
-                // Create parent directory again
-                if let Some(parent) = data_dir.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| format!("Failed to recreate data directory: {}", e))?;
-                }
-                
-                // Try to open a fresh database
-                sled::open(&data_dir)
-                    .map_err(|e| format!("Failed to create new vector store after corruption recovery: {}", e))?
             }
         };
         
-        // Store schema version for future migrations
-        let _ = db.insert("__schema_version__", DB_SCHEMA_VERSION.as_bytes());
+        // Store schema version for future migrations and FLUSH immediately
+        db.insert("__schema_version__", DB_SCHEMA_VERSION.as_bytes())
+            .map_err(|e| format!("Failed to insert schema version: {}", e))?;
+        db.flush()
+            .map_err(|e| format!("Failed to flush schema version: {}", e))?;
+        tracing::debug!("Schema version written and flushed");
         
         Ok(Self { db })
     }
     
     /// Validate that existing database entries can be deserialized with current Document schema
     fn validate_database_schema(db: &Db) -> bool {
-        // Check schema version first
-        if let Ok(Some(version_bytes)) = db.get("__schema_version__") {
+        // Check schema version first - this is critical
+        let has_valid_schema_version = if let Ok(Some(version_bytes)) = db.get("__schema_version__") {
             if let Ok(version_str) = std::str::from_utf8(&version_bytes) {
                 if version_str != DB_SCHEMA_VERSION {
-                    return false;
+                    tracing::warn!(expected = DB_SCHEMA_VERSION, found = %version_str, "Schema version mismatch");
+                    false
+                } else {
+                    tracing::debug!(version = %version_str, "Schema version matches");
+                    true
                 }
+            } else {
+                tracing::warn!("Schema version is not valid UTF-8");
+                false
             }
         } else {
-            // No version found - this means old database format
+            tracing::warn!("No schema version found - old database format");
+            false
+        };
+        
+        // If schema version is missing or wrong, database is invalid
+        if !has_valid_schema_version {
             return false;
         }
         
+        // Schema version is correct - now validate document entries
         let mut tested_count = 0;
-        let max_test_entries = 5; // Only test a few entries for performance
+        let mut successful_count = 0;
+        let max_test_entries = 10; // Test more entries to be thorough
         
         for item_result in db.iter() {
             if tested_count >= max_test_entries {
@@ -100,27 +143,45 @@ impl VectorStore {
                         Ok(doc) => {
                             // Additional validation - check if fields make sense
                             if doc.id.is_empty() || doc.content.is_empty() {
-                                return false;
+                                tracing::warn!("Found document with empty fields");
+                                continue; // Skip but don't fail entirely
                             }
                             // Check if created_at is reasonable (not negative, not too far in future)
                             let now = chrono::Utc::now().timestamp_millis();
                             if doc.created_at < 0 || doc.created_at > now + 86400000 { // Allow 1 day in future
-                                return false;
+                                tracing::warn!(created_at = doc.created_at, "Found document with invalid timestamp");
+                                continue; // Skip but don't fail entirely
                             }
+                            successful_count += 1;
                         }
-                        Err(_) => {
-                            return false;
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Failed to deserialize document");
+                            // Don't immediately fail - corruption in some entries is okay
                         }
                     }
                     tested_count += 1;
                 }
-                Err(_) => {
-                    return false;
+                Err(e) => {
+                    tracing::warn!(error = %e, "Database iteration error");
+                    // Sled can have corruption in snapshot file but still work
+                    // Don't fail validation for iteration errors
+                    tested_count += 1;
                 }
             }
         }
         
-        true
+        // Schema is valid if:
+        // 1. We have correct schema version (already checked above) AND
+        // 2. Either database is empty OR we successfully deserialized some documents
+        let is_valid = tested_count == 0 || successful_count > 0;
+        
+        if is_valid {
+            tracing::debug!(tested = tested_count, successful = successful_count, "Schema validation passed");
+        } else {
+            tracing::error!(tested = tested_count, successful = successful_count, "Schema validation failed - no valid documents found despite correct schema version");
+        }
+        
+        is_valid
     }
     
     pub fn store_document(&self, document: &Document) -> Result<(), String> {
@@ -131,6 +192,13 @@ impl VectorStore {
         self.db.insert(key, value)
             .map_err(|e| format!("Failed to store document: {}", e))?;
         
+        Ok(())
+    }
+    
+    pub fn flush(&self) -> Result<(), String> {
+        self.db.flush()
+            .map_err(|e| format!("Failed to flush database: {}", e))?;
+        tracing::debug!("Database flushed successfully");
         Ok(())
     }
     
@@ -415,11 +483,16 @@ pub async fn store_documents(documents: Vec<Document>) -> Result<String, String>
         return Ok("No documents to store".to_string());
     }
 
+    tracing::info!(count = documents.len(), "Storing documents to vector store");
     let vector_store = VectorStore::new()?;
     
     for document in &documents {
         vector_store.store_document(document)?;
     }
+    
+    // Flush to ensure data is written to disk immediately
+    vector_store.flush()?;
+    tracing::info!(count = documents.len(), "Documents stored and flushed successfully");
     
     Ok(format!("Successfully stored {} documents", documents.len()))
 }
@@ -459,15 +532,18 @@ pub async fn clear_all_documents() -> Result<String, String> {
 
 #[tauri::command]
 pub async fn get_all_files() -> Result<Vec<FileInfoSummary>, String> {
+    tracing::debug!("Getting all files from vector store");
     let vector_store = VectorStore::new()?;
     let files = vector_store.list_files()?;
+    
+    tracing::info!(file_count = files.len(), "Retrieved files from vector store");
     
     // Convert FileInfo to FileInfoSummary to avoid serializing large document arrays
     let summaries: Vec<FileInfoSummary> = files.into_iter().map(|file| {
         FileInfoSummary {
-            file_path: file.file_path,
-            file_name: file.file_name,
-            file_type: file.file_type,
+            file_path: file.file_path.clone(),
+            file_name: file.file_name.clone(),
+            file_type: file.file_type.clone(),
             chunk_count: file.chunk_count,
             created_at: file.created_at,
         }
@@ -526,6 +602,24 @@ pub async fn get_file_chunks(#[allow(non_snake_case)] filePath: String) -> Resul
 pub async fn delete_file_by_path(#[allow(non_snake_case)] filePath: String) -> Result<usize, String> {
     let vector_store = VectorStore::new()?;
     vector_store.delete_file(&filePath)
+}
+
+#[tauri::command]
+pub async fn clear_vector_store() -> Result<String, String> {
+    tracing::info!("Clearing vector store database");
+    
+    let data_dir = paths::get_vector_store_path().map_err(|e| e.to_string())?;
+    
+    if data_dir.exists() {
+        std::fs::remove_dir_all(&data_dir)
+            .map_err(|e| format!("Failed to remove vector store: {}", e))?;
+        
+        tracing::info!("Vector store database cleared successfully");
+        Ok("Vector store cleared successfully".to_string())
+    } else {
+        tracing::warn!("Vector store database does not exist");
+        Ok("Vector store already empty".to_string())
+    }
 }
 
 #[cfg(test)]

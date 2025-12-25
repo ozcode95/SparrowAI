@@ -1240,30 +1240,48 @@ pub async fn chat_with_rag_streaming(
 
     // RAG retrieval if enabled
     if use_rag.unwrap_or(false) {
+        tracing::info!("RAG is enabled, performing document retrieval");
         match perform_rag_retrieval(&message, rag_limit.unwrap_or(5)).await {
             Ok(context) => {
-                context_content = context;
+                if !context.is_empty() {
+                    tracing::info!(context_length = context.len(), "RAG context retrieved successfully");
+                    context_content = context;
+                } else {
+                    tracing::warn!("RAG retrieval returned empty context - no relevant documents found");
+                }
             }
             Err(e) => {
                 error!(error = %e, "RAG retrieval failed");
                 // Continue without RAG context rather than failing completely
             }
         }
+    } else {
+        tracing::debug!("RAG is disabled for this request");
     }
 
     // Enhanced system prompt with context
     let enhanced_system_prompt = if !context_content.is_empty() {
-        format!(
-            "{}\n\nRelevant context from documents:\n{}\n\nUse this context to answer the user's question when relevant. If the context doesn't contain relevant information, answer based on your general knowledge.",
-            system_prompt.unwrap_or_else(||
-                "You're an AI assistant that provides helpful responses.".to_string()
-            ),
+        let prompt = format!(
+            "You are a helpful AI assistant with access to document content. CRITICAL INSTRUCTIONS:\n\
+            - You MUST use the document excerpts provided below to answer questions\n\
+            - Quote specific details from the documents when relevant\n\
+            - If information is in the documents, cite it explicitly (e.g., \"According to Source 1...\")\n\
+            - If the answer isn't in the provided excerpts, say so clearly\n\
+            - DO NOT claim you cannot analyze documents - the content is right here\n\
+            - Synthesize information across multiple sources when needed\n\n\
+            DOCUMENT EXCERPTS:\n\
+            {}\n\n\
+            Answer the user's question using the above document content. Be specific and cite your sources.",
             context_content
-        )
+        );
+        tracing::info!(prompt_length = prompt.len(), has_context = true, "Enhanced system prompt with RAG context");
+        prompt
     } else {
-        system_prompt.unwrap_or_else(||
+        let prompt = system_prompt.unwrap_or_else(||
             "You're an AI assistant that provides helpful responses.".to_string()
-        )
+        );
+        tracing::debug!(has_context = false, "Using standard system prompt without RAG");
+        prompt
     };
 
     // Use existing chat function with enhanced prompt
@@ -1283,38 +1301,70 @@ pub async fn chat_with_rag_streaming(
 }
 
 async fn perform_rag_retrieval(query: &str, limit: usize) -> Result<String, String> {
+    tracing::info!(query_length = query.len(), limit = limit, "Starting RAG retrieval");
+    
     // Create query embedding
     let embedding_service = crate::rag::embeddings::EmbeddingService::new();
-    let query_embedding = embedding_service.create_single_embedding(query.to_string()).await?;
+    let query_embedding = embedding_service.create_single_embedding(query.to_string()).await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to create query embedding");
+            e
+        })?;
+    tracing::debug!(embedding_dim = query_embedding.len(), "Query embedding created");
 
     // Search similar documents
     let vector_store = crate::rag::vector_store::VectorStore::new()?;
     let search_results = vector_store.search_similar(&query_embedding, limit * 2)?; // Get more for reranking
+    
+    tracing::info!(results_found = search_results.len(), "Vector search completed");
 
     if search_results.is_empty() {
+        tracing::warn!("No similar documents found in vector store");
         return Ok(String::new());
     }
 
     // Rerank results
     let reranker = crate::rag::reranker::RerankerService::new();
-    let reranked_results = reranker.rerank(query, search_results).await?;
+    let reranked_results = reranker.rerank(query, search_results).await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to rerank results");
+            e
+        })?;
+    
+    tracing::info!(reranked_count = reranked_results.len(), "Results reranked");
 
     // Build context from top results
+    // Increased from 3 to 5 chunks for better coverage
+    let top_results_count = std::cmp::min(5, limit);
     let context_content = reranked_results
         .iter()
-        .take(std::cmp::min(3, limit)) // Use top 3 results or limit, whichever is smaller
+        .take(top_results_count)
         .enumerate()
         .map(|(i, result)| {
+            tracing::debug!(
+                chunk_index = i,
+                score = result.score,
+                rerank_score = ?result.rerank_score,
+                content_length = result.document.content.len(),
+                file_path = %result.document.file_path,
+                "Including document chunk in context"
+            );
             format!(
                 "Source {}: {}\nContent: {}\nRelevance Score: {:.2}\n---",
                 i + 1,
                 result.document.title,
-                truncate_content(&result.document.content, 500), // Limit content length
+                &result.document.content, // Use full content instead of truncating
                 result.rerank_score.unwrap_or(result.score)
             )
         })
         .collect::<Vec<_>>()
         .join("\n");
+    
+    tracing::info!(
+        context_length = context_content.len(),
+        chunks_included = top_results_count,
+        "RAG context built successfully"
+    );
 
     Ok(context_content)
 }

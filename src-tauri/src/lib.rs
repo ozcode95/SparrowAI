@@ -382,6 +382,7 @@ pub fn run() {
                 rag::vector_store::get_all_files,
                 rag::vector_store::get_file_chunks,
                 rag::vector_store::delete_file_by_path,
+                rag::vector_store::clear_vector_store,
                 rag::reranker::rerank_search_results,
                 rag::reranker::rerank_search_results_simple,
                 rag::search::search_documents_by_query,

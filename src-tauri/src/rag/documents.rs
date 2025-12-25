@@ -171,7 +171,27 @@ fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<String> {
     
     let mut start = 0;
     while start < chars.len() {
-        let end = std::cmp::min(start + chunk_size, chars.len());
+        let mut end = std::cmp::min(start + chunk_size, chars.len());
+        
+        // Try to break at paragraph boundary (double newline) for better semantic coherence
+        if end < chars.len() {
+            // Look back up to 150 chars for a paragraph break
+            let search_start = std::cmp::max(end.saturating_sub(150), start);
+            if let Some(para_pos) = chars[search_start..end]
+                .windows(2)
+                .rposition(|w| w[0] == '\n' && w[1] == '\n')
+            {
+                end = search_start + para_pos + 2; // Include both newlines
+            } 
+            // If no paragraph break, try sentence boundary
+            else if let Some(sent_pos) = chars[search_start..end]
+                .iter()
+                .rposition(|&c| c == '.' || c == '!' || c == '?')
+            {
+                end = search_start + sent_pos + 1;
+            }
+        }
+        
         let chunk: String = chars[start..end].iter().collect();
         
         if !chunk.trim().is_empty() {

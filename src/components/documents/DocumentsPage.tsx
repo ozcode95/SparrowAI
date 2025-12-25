@@ -45,28 +45,25 @@ export const DocumentsPage = () => {
   const [modelsChecked, setModelsChecked] = useState(false);
 
   useEffect(() => {
-    checkBGEModels();
+    checkRAGModels();
   }, []);
 
-  const checkBGEModels = async () => {
+  const checkRAGModels = async () => {
     if (modelsChecked) return;
 
     try {
-      const modelsExist = await invoke<boolean>("check_bge_models_exist", {
+      const modelsExist = await invoke<boolean>("check_rag_models_exist", {
         downloadPath: null,
       });
 
       if (!modelsExist) {
         setShowModelDownload(true);
-      } else {
-        // Models exist, load files
-        loadFiles();
       }
+      // Don't load files here - let the useEffect handle it
       setModelsChecked(true);
     } catch (error) {
-      console.error("Failed to check BGE models:", error);
+      console.error("Failed to check RAG models:", error);
       // Continue anyway, user can still try to use the features
-      loadFiles();
       setModelsChecked(true);
     }
   };
@@ -85,10 +82,14 @@ export const DocumentsPage = () => {
   const loadFiles = async () => {
     setIsLoading(true);
     try {
+      logInfo("Loading documents from vector store");
       const result = await invoke<FileInfo[]>("get_all_files");
+      logInfo(`Loaded ${result.length} document files`);
       setFiles(result);
     } catch (error) {
+      logError("Failed to load files from vector store", error as Error);
       console.error("Failed to load files:", error);
+      // Don't clear files on error - keep showing what we had
     } finally {
       setIsLoading(false);
     }
@@ -120,28 +121,24 @@ export const DocumentsPage = () => {
             filePath,
           });
 
-          // Create embeddings for each chunk
-          const embeddedDocs: Document[] = [];
-          for (const doc of documents) {
-            const embedding = await invoke<number[]>(
-              "create_document_embeddings",
-              {
-                text: doc.content,
-              }
-            );
-
-            embeddedDocs.push({
-              ...doc,
-              embedding,
-            });
-          }
+          // Create embeddings for all chunks at once
+          const embeddedDocs = await invoke<Document[]>(
+            "create_document_embeddings",
+            {
+              documents,
+            }
+          );
 
           // Store documents in vector store
           await invoke("store_documents", {
             documents: embeddedDocs,
           });
+
+          logInfo(`Successfully processed and stored ${filePath}`);
         } catch (error) {
+          logError(`Failed to process ${filePath}`, error);
           console.error(`Failed to process ${filePath}:`, error);
+          alert(`Failed to process ${filePath.split("\\").pop()}: ${error}`);
         }
       }
 
@@ -183,6 +180,33 @@ export const DocumentsPage = () => {
     } catch (error) {
       console.error("Delete failed:", error);
       alert(`Failed to delete file: ${error}`);
+    }
+  };
+
+  const handleClearVectorStore = async () => {
+    if (
+      !confirm(
+        "Are you sure you want to clear the entire vector store? This will delete ALL documents and cannot be undone."
+      )
+    ) {
+      return;
+    }
+
+    try {
+      setIsLoading(true);
+      await invoke("clear_vector_store");
+      await loadFiles();
+
+      // Clear all UI state
+      setExpandedFiles(new Set());
+      setFileChunks({});
+
+      logInfo("Vector store cleared successfully");
+    } catch (error) {
+      logError("Failed to clear vector store", error as Error);
+      alert(`Failed to clear vector store: ${error}`);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -248,23 +272,35 @@ export const DocumentsPage = () => {
                 indexed
               </p>
             </div>
-            <Button
-              onClick={handleFileUpload}
-              disabled={isUploading}
-              className="flex items-center gap-2"
-            >
-              {isUploading ? (
-                <>
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  Processing...
-                </>
-              ) : (
-                <>
-                  <Upload className="w-5 h-5" />
-                  Upload Documents
-                </>
+            <div className="flex items-center gap-2">
+              {files.length > 0 && (
+                <Button
+                  onClick={handleClearVectorStore}
+                  variant="ghost"
+                  className="flex items-center gap-2 text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950"
+                >
+                  <Trash2 className="w-5 h-5" />
+                  Clear All
+                </Button>
               )}
-            </Button>
+              <Button
+                onClick={handleFileUpload}
+                disabled={isUploading}
+                className="flex items-center gap-2"
+              >
+                {isUploading ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <Upload className="w-5 h-5" />
+                    Upload Documents
+                  </>
+                )}
+              </Button>
+            </div>
           </div>
         </Card>
 
