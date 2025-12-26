@@ -41,23 +41,33 @@ struct ModelInfo {
 // Global OVMS process management
 static OVMS_PROCESS: std::sync::OnceLock<Arc<Mutex<Option<Child>>>> = std::sync::OnceLock::new();
 
-// Global loaded model state
-pub static LOADED_MODEL: std::sync::OnceLock<Arc<Mutex<Option<String>>>> = std::sync::OnceLock::new();
-
-pub fn get_sparrow_dir(_app_handle: Option<&AppHandle>) -> PathBuf {
-    paths::get_sparrow_dir().unwrap_or_else(|_| PathBuf::from(".sparrow"))
-}
-
-pub fn get_ovms_dir(app_handle: Option<&AppHandle>) -> PathBuf {
-    paths::get_ovms_dir(app_handle).unwrap_or_else(|_| get_sparrow_dir(app_handle).join("ovms"))
-}
-
-pub fn get_ovms_config_path(app_handle: Option<&AppHandle>) -> PathBuf {
-    paths::get_ovms_config_path(app_handle).unwrap_or_else(|_| get_ovms_dir(app_handle).join(constants::OVMS_CONFIG_FILE))
-}
-
-pub fn get_ovms_exe_path(app_handle: Option<&AppHandle>) -> PathBuf {
-    paths::get_ovms_exe_path(app_handle).unwrap_or_else(|_| get_ovms_dir(app_handle).join(constants::OVMS_EXE_NAME))
+// Get loaded models from models_config.json
+#[tauri::command]
+pub async fn get_loaded_models(app_handle: AppHandle) -> Result<Vec<String>, String> {
+    let config_path = paths::get_ovms_config_path(Some(&app_handle))
+        .map_err(|e| e.to_string())?;
+    
+    if !config_path.exists() {
+        return Ok(Vec::new());
+    }
+    
+    let config_str = fs::read_to_string(&config_path)
+        .map_err(|e| format!("Failed to read config file: {}", e))?;
+    
+    let config: Value = serde_json::from_str(&config_str)
+        .map_err(|e| format!("Failed to parse config file: {}", e))?;
+    
+    let mut loaded_models = Vec::new();
+    
+    if let Some(model_list) = config["mediapipe_config_list"].as_array() {
+        for model in model_list {
+            if let Some(name) = model["name"].as_str() {
+                loaded_models.push(name.to_string());
+            }
+        }
+    }
+    
+    Ok(loaded_models)
 }
 
 #[allow(dead_code)]
@@ -134,8 +144,10 @@ pub fn validate_ovms_config(config_path: &PathBuf) -> Result<(), String> {
 pub async fn download_ovms(app_handle: AppHandle) -> Result<String, String> {
     log_operation_start!("Downloading OVMS");
     
-    let sparrow_dir = get_sparrow_dir(Some(&app_handle));
-    let ovms_dir = get_ovms_dir(Some(&app_handle));
+    let sparrow_dir = paths::get_sparrow_dir()
+        .map_err(|e| e.to_string())?;
+    let ovms_dir = paths::get_ovms_dir(Some(&app_handle))
+        .map_err(|e| e.to_string())?;
 
     // Create both directories if they don't exist
     if !sparrow_dir.exists() {
@@ -153,7 +165,8 @@ pub async fn download_ovms(app_handle: AppHandle) -> Result<String, String> {
     let zip_path = sparrow_dir.join(constants::OVMS_ZIP_FILE);
 
     // Check if OVMS executable already exists
-    let ovms_exe = get_ovms_exe_path(Some(&app_handle));
+    let ovms_exe = paths::get_ovms_exe_path(Some(&app_handle))
+        .map_err(|e| e.to_string())?;
     if ovms_exe.exists() {
         log_operation_success!("OVMS already present", 
             path = %ovms_exe.display()
@@ -380,49 +393,12 @@ pub fn extract_ovms(zip_path: &PathBuf, extract_to: &PathBuf) -> Result<(), Stri
 #[tauri::command]
 pub async fn create_ovms_config(
     app_handle: AppHandle,
-    model_name: String,
-    model_path: String
+    _model_name: String,
+    _model_path: String
 ) -> Result<String, String> {
-    // Always include both RAG models (Qwen3) as the first entries
-    let home_dir = std::env
-        ::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".to_string());
-    let qwen3_reranker_path = PathBuf::from(&home_dir)
-        .join(".sparrow")
-        .join("models")
-        .join("OpenVINO")
-        .join("Qwen3-Reranker-0.6B-fp16-ov");
-    let qwen3_embedding_path = PathBuf::from(&home_dir)
-        .join(".sparrow")
-        .join("models")
-        .join("OpenVINO")
-        .join("Qwen3-Embedding-0.6B-int8-ov");
-
-    let mut mediapipe_configs = vec![
-        json!({
-            "name": "Qwen3-Reranker-0.6B-fp16-ov",
-            "base_path": qwen3_reranker_path.to_string_lossy().replace('\\', "/")
-        }),
-        json!({
-            "name": "Qwen3-Embedding-0.6B-int8-ov",
-            "base_path": qwen3_embedding_path.to_string_lossy().replace('\\', "/")
-        })
-    ];
-
-    // Add the provided model if it's not one of the RAG models
-    if model_name != "Qwen3-Reranker-0.6B-fp16-ov" && model_name != "Qwen3-Embedding-0.6B-int8-ov" {
-        mediapipe_configs.push(
-            json!({
-            "name": model_name,
-            "base_path": model_path.replace('\\', "/")
-        })
-        );
-    }
-
-    let config =
-        json!({
-        "mediapipe_config_list": mediapipe_configs,
+    // Create an empty configuration
+    let config = json!({
+        "mediapipe_config_list": [],
         "model_config_list": []
     });
 
@@ -430,7 +406,8 @@ pub async fn create_ovms_config(
         ::to_string_pretty(&config)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
 
-    let config_path = get_ovms_config_path(Some(&app_handle));
+    let config_path = paths::get_ovms_config_path(Some(&app_handle))
+        .map_err(|e| e.to_string())?;
     fs::write(&config_path, config_str).map_err(|e| format!("Failed to write config file: {}", e))?;
 
     Ok("OVMS configuration file created successfully".to_string())
@@ -442,7 +419,10 @@ pub async fn update_ovms_config(
     model_name: String,
     model_path: String
 ) -> Result<String, String> {
-    let config_path = get_ovms_config_path(Some(&app_handle));
+    use crate::huggingface::{ get_model_type, ModelType };
+    
+    let config_path = paths::get_ovms_config_path(Some(&app_handle))
+        .map_err(|e| e.to_string())?;
 
     // Read existing config or create new one
     let mut config: Value = if config_path.exists() {
@@ -461,96 +441,130 @@ pub async fn update_ovms_config(
 
     // Normalize the model_path to use forward slashes for OVMS
     let normalized_model_path = model_path.replace('\\', "/");
-
-    // Always ensure both RAG models (Qwen3) are present
-    let home_dir = std::env
-        ::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".to_string());
-    let qwen3_reranker_path = PathBuf::from(&home_dir)
-        .join(".sparrow")
-        .join("models")
-        .join("OpenVINO")
-        .join("Qwen3-Reranker-0.6B-fp16-ov");
-    let qwen3_embedding_path = PathBuf::from(&home_dir)
-        .join(".sparrow")
-        .join("models")
-        .join("OpenVINO")
-        .join("Qwen3-Embedding-0.6B-int8-ov");
+    
+    // Extract model ID from model_name (e.g., "Qwen2.5-VL-7B-Instruct-int4-ov" from full path)
+    let model_id = if model_name.starts_with("OpenVINO/") {
+        model_name.clone()
+    } else {
+        format!("OpenVINO/{}", model_name)
+    };
+    
+    // Get the model type from metadata
+    let model_type = get_model_type(&model_id).await.ok().flatten();
+    
+    tracing::info!(
+        model_id = %model_id,
+        model_type = ?model_type,
+        "Updating OVMS config with model"
+    );
 
     if let Some(model_list) = config["mediapipe_config_list"].as_array_mut() {
-        // Check which RAG models already exist and find the third model index
-        let mut has_qwen3_reranker = false;
-        let mut has_qwen3_embedding = false;
-        let mut third_model_index = None;
-        let mut found_target_model = false;
-
-        for (index, model) in model_list.iter_mut().enumerate() {
+        // Build a map of existing models by type
+        let mut models_by_type: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut rag_models: Vec<usize> = Vec::new();
+        
+        for (index, model) in model_list.iter().enumerate() {
             if let Some(name) = model["name"].as_str() {
-                if name == "Qwen3-Reranker-0.6B-fp16-ov" {
-                    has_qwen3_reranker = true;
-                    // Update the path in case it changed
-                    model["base_path"] = json!(
-                        qwen3_reranker_path.to_string_lossy().replace('\\', "/")
-                    );
-                } else if name == "Qwen3-Embedding-0.6B-int8-ov" {
-                    has_qwen3_embedding = true;
-                    // Update the path in case it changed
-                    model["base_path"] = json!(qwen3_embedding_path.to_string_lossy().replace('\\', "/"));
-                } else if name == model_name {
-                    // Target model already exists, just update its path
-                    model["base_path"] = json!(normalized_model_path);
-                    found_target_model = true;
+                let full_model_id = if name.starts_with("OpenVINO/") {
+                    name.to_string()
                 } else {
-                    // This is a third model (not RAG models)
-                    if third_model_index.is_none() {
-                        third_model_index = Some(index);
+                    format!("OpenVINO/{}", name)
+                };
+                
+                // Get model type for this model
+                if let Ok(Some(mtype)) = get_model_type(&full_model_id).await {
+                    let type_str = mtype.as_str().to_string();
+                    
+                    // Track RAG models separately (embedding and reranker)
+                    if matches!(mtype, ModelType::Embedding | ModelType::Reranker) {
+                        rag_models.push(index);
+                    } else {
+                        // For non-RAG models, track by type
+                        models_by_type.insert(type_str, index);
                     }
                 }
             }
         }
-
-        // Add missing RAG models (always as first entries)
-        let mut insert_index = 0;
-        if !has_qwen3_reranker {
-            model_list.insert(
-                insert_index,
-                json!({
-                "name": "Qwen3-Reranker-0.6B-fp16-ov",
-                "base_path": qwen3_reranker_path.to_string_lossy().replace('\\', "/")
-            })
-            );
-            insert_index += 1;
-        }
-        if !has_qwen3_embedding {
-            model_list.insert(
-                insert_index,
-                json!({
-                "name": "Qwen3-Embedding-0.6B-int8-ov",
-                "base_path": qwen3_embedding_path.to_string_lossy().replace('\\', "/")
-            })
-            );
-        }
-
-        // Handle the third model if the target model is not one of the RAG models
-        if
-            !found_target_model &&
-            model_name != "Qwen3-Reranker-0.6B-fp16-ov" &&
-            model_name != "Qwen3-Embedding-0.6B-int8-ov"
-        {
-            let new_model_config =
-                json!({
-                "name": model_name,
-                "base_path": normalized_model_path
-            });
-
-            if let Some(third_index) = third_model_index {
-                // Replace the existing third model
-                model_list[third_index] = new_model_config;
+        
+        // Determine what to do with the new model
+        if let Some(new_model_type) = model_type {
+            let type_str = new_model_type.as_str().to_string();
+            
+            // Check if this is a RAG model
+            if matches!(new_model_type, ModelType::Embedding | ModelType::Reranker) {
+                // For RAG models, just update or add them without replacing
+                let mut found = false;
+                for i in 0..model_list.len() {
+                    if let Some(name) = model_list[i]["name"].as_str() {
+                        if name == model_name {
+                            // Update existing model
+                            model_list[i]["base_path"] = json!(normalized_model_path);
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if !found {
+                    // Add new RAG model
+                    model_list.push(json!({
+                        "name": model_name,
+                        "base_path": normalized_model_path
+                    }));
+                }
             } else {
-                // No third model exists, add it
-                model_list.push(new_model_config);
+                // For non-RAG models, enforce one-per-type
+                if let Some(&existing_index) = models_by_type.get(&type_str) {
+                    // Replace the existing model of this type
+                    model_list[existing_index] = json!({
+                        "name": model_name,
+                        "base_path": normalized_model_path
+                    });
+                    
+                    tracing::info!(
+                        model_type = %type_str,
+                        replaced_index = existing_index,
+                        "Replaced existing model of same type"
+                    );
+                } else {
+                    // No model of this type exists, add it
+                    model_list.push(json!({
+                        "name": model_name,
+                        "base_path": normalized_model_path
+                    }));
+                    
+                    tracing::info!(
+                        model_type = %type_str,
+                        "Added new model of type"
+                    );
+                }
             }
+        } else {
+            // No type metadata available, just update or add the model
+            let mut found = false;
+            for i in 0..model_list.len() {
+                if let Some(name) = model_list[i]["name"].as_str() {
+                    if name == model_name {
+                        // Update existing model
+                        model_list[i]["base_path"] = json!(normalized_model_path);
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            
+            if !found {
+                // Add new model
+                model_list.push(json!({
+                    "name": model_name,
+                    "base_path": normalized_model_path
+                }));
+            }
+            
+            tracing::warn!(
+                model_id = %model_id,
+                "No type metadata found for model, added without type enforcement"
+            );
         }
     }
 
@@ -588,7 +602,13 @@ pub async fn check_ovms_present(app_handle: AppHandle) -> Result<bool, String> {
 
 // Check if OVMS is present on the system (internal function)
 pub fn is_ovms_present(app_handle: Option<&AppHandle>) -> bool {
-    let ovms_exe = get_ovms_exe_path(app_handle);
+    let ovms_exe = match paths::get_ovms_exe_path(app_handle) {
+        Ok(path) => path,
+        Err(e) => {
+            error!("Failed to get OVMS exe path: {}", e);
+            return false;
+        }
+    };
     info!(ovms_path = %ovms_exe.display(), "Checking for OVMS");
 
     if !ovms_exe.exists() || !ovms_exe.is_file() {
@@ -600,11 +620,12 @@ pub fn is_ovms_present(app_handle: Option<&AppHandle>) -> bool {
         Ok(is_valid) => {
             if !is_valid {
                 // Version is too low, delete the OVMS folder
-                let ovms_dir = get_ovms_dir(app_handle);
-                if let Err(e) = fs::remove_dir_all(&ovms_dir) {
-                    warn!(error = %e, ovms_dir = %ovms_dir.display(), "Failed to remove outdated OVMS directory");
-                } else {
-                    info!(ovms_dir = %ovms_dir.display(), "Removed outdated OVMS directory");
+                if let Ok(ovms_dir) = crate::paths::get_ovms_dir(app_handle) {
+                    if let Err(e) = fs::remove_dir_all(&ovms_dir) {
+                        warn!(error = %e, ovms_dir = %ovms_dir.display(), "Failed to remove outdated OVMS directory");
+                    } else {
+                        info!(ovms_dir = %ovms_dir.display(), "Removed outdated OVMS directory");
+                    }
                 }
                 return false;
             }
@@ -690,8 +711,10 @@ pub async fn start_ovms_server(app_handle: AppHandle) -> Result<String, String> 
         }
     }
 
-    let ovms_exe = get_ovms_exe_path(Some(&app_handle));
-    let config_path = get_ovms_config_path(Some(&app_handle));
+    let ovms_exe = paths::get_ovms_exe_path(Some(&app_handle))
+        .map_err(|e| e.to_string())?;
+    let config_path = paths::get_ovms_config_path(Some(&app_handle))
+        .map_err(|e| e.to_string())?;
 
     // Validate config
     validate_ovms_config(&config_path)?;
@@ -830,17 +853,8 @@ pub fn stop_ovms_server() -> Result<(), String> {
 // Load a model into OVMS
 #[tauri::command]
 pub async fn load_model(app_handle: AppHandle, model_id: String) -> Result<String, String> {
-    // Check if a model is already loaded
-    let loaded_model_mutex = LOADED_MODEL.get_or_init(|| Arc::new(Mutex::new(None)));
-
-    // Check current state and release lock immediately
-    {
-        let loaded_model_guard = loaded_model_mutex.lock().unwrap();
-        if loaded_model_guard.is_some() {
-            return Err("A model is already loaded. Please unload it first.".to_string());
-        }
-    }
-
+    log_operation_start!("Loading model", model_id = %model_id);
+    
     // Ensure we're working with an OpenVINO model
     let normalized_model_id = if model_id.starts_with("OpenVINO/") {
         model_id.clone()
@@ -848,26 +862,18 @@ pub async fn load_model(app_handle: AppHandle, model_id: String) -> Result<Strin
         format!("OpenVINO/{}", model_id)
     };
 
-    // Get the model path using .sparrow/models as default
-    // Use the original model_id for path construction to preserve backslashes
-    let home_dir = match std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
-        Ok(home) => home,
-        Err(_) => {
-            return Err("Failed to get user home directory".to_string());
-        }
-    };
+    // Get the model path
+    let models_dir = paths::get_models_dir()
+        .map_err(|e| e.to_string())?;
 
-    // Build the path using the original model_id structure (with backslashes on Windows)
+    // Build the path using the original model_id structure
     let original_model_id = if model_id.starts_with("OpenVINO") {
         model_id.clone()
     } else {
         format!("OpenVINO/{}", model_id)
     };
 
-    let model_path = PathBuf::from(home_dir)
-        .join(".sparrow")
-        .join("models")
-        .join(&original_model_id);
+    let model_path = models_dir.join(&original_model_id);
 
     if !model_path.exists() {
         return Err(
@@ -878,58 +884,35 @@ pub async fn load_model(app_handle: AppHandle, model_id: String) -> Result<Strin
         );
     }
 
-    // Extract model name from the full ID (use forward slash version for model name)
+    // Extract model name from the full ID
     let model_name = normalized_model_id.split('/').next_back().unwrap_or(&normalized_model_id);
 
-    // Update OVMS config with the model (use the actual Windows path)
+    log_progress!("Updating OVMS configuration", model_name = %model_name);
+    
+    // Update OVMS config with the model
     update_ovms_config(
         app_handle.clone(),
         model_name.to_string(),
         model_path.to_string_lossy().to_string()
     ).await?;
 
-    // Reload OVMS config
+    log_progress!("Reloading OVMS configuration");
+    
+    // Reload OVMS config to apply changes
     reload_ovms_config().await?;
 
-    // Mark the model as loaded (use the forward slash version for consistency)
-    {
-        let mut loaded_model_guard = loaded_model_mutex.lock().unwrap();
-        *loaded_model_guard = Some(normalized_model_id.clone());
-    }
-
+    log_operation_success!("Model loaded", model_id = %normalized_model_id);
     Ok(format!("Model '{}' loaded successfully", normalized_model_id))
 }
 
-// Unload the currently loaded model
+
+
+// Get the currently loaded model from config file
 #[tauri::command]
-pub async fn unload_model(_app_handle: AppHandle) -> Result<String, String> {
-    let loaded_model_mutex = LOADED_MODEL.get_or_init(|| Arc::new(Mutex::new(None)));
-
-    // Get the model ID and clear it
-    let model_id = {
-        let mut loaded_model_guard = loaded_model_mutex.lock().unwrap();
-        loaded_model_guard.take()
-    };
-
-    if let Some(model_id) = model_id {
-        // Create empty config
-        // create_minimal_test_config(&get_ovms_config_path(Some(&app_handle)))?;
-
-        // Reload OVMS config
-        reload_ovms_config().await?;
-
-        Ok(format!("Model '{}' unloaded successfully", model_id))
-    } else {
-        Err("No model is currently loaded".to_string())
-    }
-}
-
-// Get the currently loaded model
-#[tauri::command]
-pub async fn get_loaded_model() -> Result<Option<String>, String> {
-    let loaded_model_mutex = LOADED_MODEL.get_or_init(|| Arc::new(Mutex::new(None)));
-    let loaded_model_guard = loaded_model_mutex.lock().unwrap();
-    Ok(loaded_model_guard.clone())
+pub async fn get_loaded_model(app_handle: AppHandle) -> Result<Option<String>, String> {
+    let loaded_models = get_loaded_models(app_handle).await?;
+    // Return the first loaded model, or None if no models are loaded
+    Ok(loaded_models.into_iter().next())
 }
 
 #[tauri::command]

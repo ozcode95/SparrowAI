@@ -5,10 +5,21 @@ import { logUserAction, logError, logInfo, logDebug } from "@/lib/logger";
 import { PageContainer } from "../layout";
 import { Card, Button, Input } from "../ui";
 import { useAppStore } from "@/store";
+import type { ModelCategory } from "@/store/types";
 import { useDebounce } from "@/hooks";
+import {
+  categorizeModel,
+  getCategoryDisplayName,
+  getCategoryColor,
+} from "@/lib/modelUtils";
 import { ModelDownloadDialog } from "./ModelDownloadDialog";
 import { DownloadedModelsDialog } from "./DownloadedModelsDialog";
-import { ModelInfo, SearchResult, DownloadProgress } from "@/types/models";
+import {
+  ModelInfo,
+  SearchResult,
+  DownloadProgress,
+  ModelMetadata,
+} from "@/types/models";
 import {
   Search,
   Download,
@@ -48,6 +59,8 @@ export const ModelsPage = () => {
     setDownloadedModels,
     loadedModel,
     setLoadedModel,
+    loadedModelsByType,
+    setLoadedModelByType,
   } = useAppStore();
   const [searchResults, setSearchResults] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState<ModelInfo | null>(null);
@@ -55,6 +68,9 @@ export const ModelsPage = () => {
   const [modelInfoCache, setModelInfoCache] = useState<Map<string, ModelInfo>>(
     new Map()
   );
+  const [modelMetadata, setModelMetadata] = useState<
+    Record<string, ModelMetadata>
+  >({});
   const [currentLimit, setCurrentLimit] = useState(10);
   const [hasMoreResults, setHasMoreResults] = useState(false);
   const [downloadDialogOpen, setDownloadDialogOpen] = useState(false);
@@ -67,22 +83,36 @@ export const ModelsPage = () => {
   // Load downloaded models on mount
   useEffect(() => {
     loadDownloadedModels();
+    loadModelMetadata();
   }, []);
 
   const loadDownloadedModels = async () => {
     try {
-      // Get the models directory path
-      const homeDir = await invoke<string>("get_home_dir");
-      const modelsPath = `${homeDir}\\.sparrow\\models`;
-
-      // Check if directory exists and list models
-      const models = await invoke<string[]>("list_directory_names", {
-        path: modelsPath,
-      }).catch(() => []);
+      // Use check_downloaded_models which now reads from metadata
+      const models = await invoke<string[]>("check_downloaded_models", {
+        downloadPath: null,
+      });
 
       setDownloadedModels(models);
+      logDebug("Loaded downloaded models from metadata", {
+        count: models.length,
+      });
     } catch (error) {
       logError("Failed to load downloaded models", error as Error);
+    }
+  };
+
+  const loadModelMetadata = async () => {
+    try {
+      const metadata = await invoke<Record<string, ModelMetadata>>(
+        "get_all_model_metadata"
+      );
+      setModelMetadata(metadata);
+      logDebug("Loaded model metadata", {
+        count: Object.keys(metadata).length,
+      });
+    } catch (error) {
+      logError("Failed to load model metadata", error as Error);
     }
   };
 
@@ -190,6 +220,7 @@ export const ModelsPage = () => {
     addDownloadedModel(selectedModelForDownload);
     setModelDownloading(selectedModelForDownload, false);
     await loadDownloadedModels();
+    await loadModelMetadata(); // Reload metadata to get the new model's info
   };
 
   const handleDelete = async (modelId: string) => {
@@ -214,10 +245,18 @@ export const ModelsPage = () => {
     }
   };
 
-  const handleLoadModel = async (modelId: string) => {
+  const handleLoadModel = async (
+    modelId: string,
+    modelType: import("@/store/types").ModelCategory
+  ) => {
     try {
       await invoke("load_model", { modelId });
-      setLoadedModel(modelId);
+      setLoadedModelByType(modelType, modelId);
+
+      // Also set as the primary loaded model if it's a text model
+      if (modelType === "text") {
+        setLoadedModel(modelId);
+      }
     } catch (error) {
       console.error("Failed to load model:", error);
     }
@@ -311,6 +350,7 @@ export const ModelsPage = () => {
                   const modelInfo = modelInfoCache.get(modelId);
                   const isLoadingInfo = loadingModelInfo === modelId;
                   const isSelected = selectedModel?.id === modelId;
+                  const category = categorizeModel(modelId);
 
                   return (
                     <Card
@@ -322,35 +362,46 @@ export const ModelsPage = () => {
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex-1 min-w-0">
-                          <h3 className="font-semibold text-base truncate">
-                            {modelId}
-                          </h3>
-                          {modelInfo && modelInfo.pipeline_tag && (
-                            <span className="inline-block px-2 py-1 mt-1 text-xs rounded-full bg-primary/10 text-primary">
-                              {modelInfo.pipeline_tag}
-                            </span>
-                          )}
+                          <div className="flex items-center gap-2">
+                            <h3 className="font-semibold text-base truncate">
+                              {modelId}
+                            </h3>
+                            {downloaded && (
+                              <CheckCircle className="w-4 h-4 text-green-600 dark:text-green-400 shrink-0" />
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1.5 mt-1">
+                            {category && (
+                              <span
+                                className={`inline-block px-2 py-0.5 text-xs rounded-full ${getCategoryColor(
+                                  category
+                                )}`}
+                              >
+                                {getCategoryDisplayName(category)}
+                              </span>
+                            )}
+                            {modelInfo && modelInfo.pipeline_tag && (
+                              <span className="inline-block px-2 py-0.5 text-xs rounded-full bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300">
+                                {modelInfo.pipeline_tag}
+                              </span>
+                            )}
+                          </div>
                         </div>
 
                         <div className="flex flex-col gap-1">
                           {downloaded ? (
-                            <>
-                              <div className="flex items-center gap-1 text-xs text-green-600">
-                                <CheckCircle className="w-3 h-3" />
-                                <span>Downloaded</span>
-                              </div>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDelete(modelId);
-                                }}
-                              >
-                                <Trash2 className="w-3 h-3 mr-1" />
-                                Delete
-                              </Button>
-                            </>
+                            <Button
+                              variant="primary"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDelete(modelId);
+                              }}
+                              className="bg-red-600 hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700 w-28"
+                            >
+                              <Trash2 className="w-3 h-3 mr-1" />
+                              Delete
+                            </Button>
                           ) : downloading ? (
                             <div className="space-y-2 min-w-[120px]">
                               <div className="flex items-center gap-1 text-xs text-primary">
@@ -381,6 +432,7 @@ export const ModelsPage = () => {
                                 handleDownload(modelId);
                               }}
                               disabled={hasAnyDownloading()}
+                              className="w-28"
                             >
                               <Download className="w-3 h-3 mr-1" />
                               Download
@@ -403,6 +455,7 @@ export const ModelsPage = () => {
               const modelInfo = modelInfoCache.get(modelId);
               const isLoadingInfo = loadingModelInfo === modelId;
               const isSelected = selectedModel?.id === modelId;
+              const category = categorizeModel(modelId);
 
               return (
                 <Card
@@ -414,35 +467,46 @@ export const ModelsPage = () => {
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1 min-w-0">
-                      <h3 className="font-semibold text-base truncate">
-                        {modelId}
-                      </h3>
-                      {modelInfo && modelInfo.pipeline_tag && (
-                        <span className="inline-block px-2 py-1 mt-1 text-xs rounded-full bg-primary/10 text-primary">
-                          {modelInfo.pipeline_tag}
-                        </span>
-                      )}
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-semibold text-base truncate">
+                          {modelId}
+                        </h3>
+                        {downloaded && (
+                          <CheckCircle className="w-4 h-4 text-green-600 dark:text-green-400 shrink-0" />
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1.5 mt-1">
+                        {category && (
+                          <span
+                            className={`inline-block px-2 py-0.5 text-xs rounded-full ${getCategoryColor(
+                              category
+                            )}`}
+                          >
+                            {getCategoryDisplayName(category)}
+                          </span>
+                        )}
+                        {modelInfo && modelInfo.pipeline_tag && (
+                          <span className="inline-block px-2 py-0.5 text-xs rounded-full bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300">
+                            {modelInfo.pipeline_tag}
+                          </span>
+                        )}
+                      </div>
                     </div>
 
                     <div className="flex flex-col gap-1">
                       {downloaded ? (
-                        <>
-                          <div className="flex items-center gap-1 text-xs text-green-600">
-                            <CheckCircle className="w-3 h-3" />
-                            <span>Downloaded</span>
-                          </div>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDelete(modelId);
-                            }}
-                          >
-                            <Trash2 className="w-3 h-3 mr-1" />
-                            Delete
-                          </Button>
-                        </>
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDelete(modelId);
+                          }}
+                          className="bg-red-600 hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700 w-28"
+                        >
+                          <Trash2 className="w-3 h-3 mr-1" />
+                          Delete
+                        </Button>
                       ) : downloading ? (
                         <div className="space-y-1 min-w-[120px]">
                           <div className="flex items-center gap-1 text-xs text-primary">
@@ -473,6 +537,7 @@ export const ModelsPage = () => {
                             handleDownload(modelId);
                           }}
                           disabled={hasAnyDownloading()}
+                          className="w-28"
                         >
                           <Download className="w-3 h-3 mr-1" />
                           Download
@@ -661,6 +726,8 @@ export const ModelsPage = () => {
         onOpenFolder={handleOpenModelFolder}
         onLoadModel={handleLoadModel}
         loadedModel={loadedModel}
+        loadedModelsByType={loadedModelsByType}
+        modelMetadata={modelMetadata}
       />
     </PageContainer>
   );

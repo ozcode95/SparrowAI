@@ -7,7 +7,52 @@ use tokio::io::AsyncWriteExt;
 use std::fs;
 use std::collections::HashMap;
 
-use crate::constants;
+use crate::{ constants, paths };
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
+pub enum ModelType {
+    #[serde(rename = "text")]
+    Text,
+    #[serde(rename = "image-to-text")]
+    ImageToText,
+    #[serde(rename = "embedding")]
+    Embedding,
+    #[serde(rename = "reranker")]
+    Reranker,
+    #[serde(rename = "image-generation")]
+    ImageGeneration,
+    #[serde(rename = "speech-to-text")]
+    SpeechToText,
+    #[serde(rename = "text-to-speech")]
+    TextToSpeech,
+}
+
+impl ModelType {
+    pub fn as_str(&self) -> &str {
+        match self {
+            ModelType::Text => "text",
+            ModelType::ImageToText => "image-to-text",
+            ModelType::Embedding => "embedding",
+            ModelType::Reranker => "reranker",
+            ModelType::ImageGeneration => "image-generation",
+            ModelType::SpeechToText => "speech-to-text",
+            ModelType::TextToSpeech => "text-to-speech",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModelMetadata {
+    pub model_id: String,
+    pub model_type: ModelType,
+    pub pipeline_tag: String,
+    pub commit_sha: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct ModelMetadataStore {
+    models: HashMap<String, ModelMetadata>,
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ModelSibling {
@@ -415,39 +460,241 @@ pub struct GraphGenerationParams {
     pub max_num_inference_steps: Option<u32>,
 }
 
-// Function to write commit SHA to .commit_id file
-async fn write_commit_id(model_dir: &PathBuf, commit_sha: &str) -> Result<(), String> {
-    let commit_file = model_dir.join(".commit_id");
-    tokio::fs
-        ::write(&commit_file, commit_sha).await
-        .map_err(|e|
-            format!("Failed to write commit ID to {}: {}", commit_file.to_string_lossy(), e)
-        )?;
+// Load model metadata from disk
+async fn load_model_metadata() -> Result<ModelMetadataStore, String> {
+    let metadata_path = paths::get_model_metadata_path()
+        .map_err(|e| e.to_string())?;
+    
+    if !metadata_path.exists() {
+        return Ok(ModelMetadataStore::default());
+    }
+    
+    let content = tokio::fs::read_to_string(&metadata_path)
+        .await
+        .map_err(|e| format!("Failed to read metadata file: {}", e))?;
+    
+    let store: ModelMetadataStore = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse metadata file: {}", e))?;
+    
+    Ok(store)
+}
 
-    info!(
-        model_dir = %model_dir.to_string_lossy(),
-        commit_sha = %commit_sha,
-        "Wrote commit ID to .commit_id file"
-    );
-
+// Save model metadata to disk
+async fn save_model_metadata(store: &ModelMetadataStore) -> Result<(), String> {
+    let metadata_path = paths::get_model_metadata_path()
+        .map_err(|e| e.to_string())?;
+    
+    // Ensure parent directory exists
+    if let Some(parent) = metadata_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("Failed to create metadata directory: {}", e))?;
+    }
+    
+    let content = serde_json::to_string_pretty(store)
+        .map_err(|e| format!("Failed to serialize metadata: {}", e))?;
+    
+    tokio::fs::write(&metadata_path, content)
+        .await
+        .map_err(|e| format!("Failed to write metadata file: {}", e))?;
+    
     Ok(())
 }
 
-// Function to read commit SHA from .commit_id file
-async fn read_commit_id(model_dir: &PathBuf) -> Result<String, String> {
-    let commit_file = model_dir.join(".commit_id");
+// Add or update model metadata
+async fn save_model_type(model_id: String, model_type: ModelType, pipeline_tag: String, commit_sha: Option<String>) -> Result<(), String> {
+    let mut store = load_model_metadata().await?;
+    
+    let metadata = ModelMetadata {
+        model_id: model_id.clone(),
+        model_type,
+        pipeline_tag,
+        commit_sha,
+    };
+    
+    store.models.insert(model_id, metadata);
+    save_model_metadata(&store).await?;
+    
+    Ok(())
+}
 
-    if !commit_file.exists() {
-        return Err("No .commit_id file found".to_string());
+// Get model type from metadata
+pub async fn get_model_type(model_id: &str) -> Result<Option<ModelType>, String> {
+    let store = load_model_metadata().await?;
+    Ok(store.models.get(model_id).map(|m| m.model_type.clone()))
+}
+
+// Remove model from metadata
+pub async fn remove_model_metadata(model_id: &str) -> Result<(), String> {
+    let mut store = load_model_metadata().await?;
+    
+    if store.models.remove(model_id).is_some() {
+        save_model_metadata(&store).await?;
+        tracing::info!(model_id = %model_id, "Removed model from metadata");
+    } else {
+        tracing::debug!(model_id = %model_id, "Model not found in metadata");
+    }
+    
+    Ok(())
+}
+
+// Get all models grouped by type
+#[tauri::command]
+pub async fn get_models_by_type() -> Result<HashMap<String, Vec<String>>, String> {
+    let store = load_model_metadata().await?;
+    
+    let mut models_by_type: HashMap<String, Vec<String>> = HashMap::new();
+    
+    for (model_id, metadata) in store.models.iter() {
+        let type_key = metadata.model_type.as_str().to_string();
+        models_by_type
+            .entry(type_key)
+            .or_insert_with(Vec::new)
+            .push(model_id.clone());
+    }
+    
+    Ok(models_by_type)
+}
+
+// Get all model metadata
+#[tauri::command]
+pub async fn get_all_model_metadata() -> Result<HashMap<String, ModelMetadata>, String> {
+    let store = load_model_metadata().await?;
+    Ok(store.models)
+}
+
+// Manually set model type for a model (useful for existing models or manual corrections)
+#[tauri::command]
+pub async fn set_model_type(model_id: String, model_type_str: String) -> Result<(), String> {
+    let model_type = match model_type_str.as_str() {
+        "text" => ModelType::Text,
+        "image-to-text" => ModelType::ImageToText,
+        "embedding" => ModelType::Embedding,
+        "reranker" => ModelType::Reranker,
+        "image-generation" => ModelType::ImageGeneration,
+        "speech-to-text" => ModelType::SpeechToText,
+        "text-to-speech" => ModelType::TextToSpeech,
+        _ => return Err(format!("Invalid model type: {}", model_type_str)),
+    };
+    
+    save_model_type(model_id, model_type, String::new(), None).await
+}
+
+// Initialize metadata for all downloaded models by fetching from HuggingFace
+#[tauri::command]
+pub async fn initialize_model_metadata(models_dir: Option<String>) -> Result<String, String> {
+    log_operation_start!("Initialize model metadata");
+    
+    let downloads_dir = if let Some(path) = models_dir {
+        PathBuf::from(path)
+    } else {
+        paths::get_models_dir()
+            .map_err(|e| e.to_string())?
+    };
+
+    if !downloads_dir.exists() {
+        return Err("Models directory does not exist".to_string());
     }
 
-    let commit_sha = tokio::fs
-        ::read_to_string(&commit_file).await
-        .map_err(|e|
-            format!("Failed to read commit ID from {}: {}", commit_file.to_string_lossy(), e)
-        )?;
+    // Look for OpenVINO models
+    let openvino_dir = downloads_dir.join("OpenVINO");
+    if !openvino_dir.exists() {
+        return Ok("No OpenVINO models found".to_string());
+    }
 
-    Ok(commit_sha.trim().to_string())
+    let mut initialized_count = 0;
+    let mut failed_count = 0;
+
+    // Iterate through model directories
+    let entries = fs::read_dir(&openvino_dir)
+        .map_err(|e| format!("Failed to read OpenVINO directory: {}", e))?;
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let model_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name,
+            None => continue,
+        };
+
+        let model_id = format!("OpenVINO/{}", model_name);
+
+        // Check if metadata already exists
+        if let Ok(Some(_)) = get_model_type(&model_id).await {
+            tracing::debug!(model_id = %model_id, "Metadata already exists, skipping");
+            continue;
+        }
+
+        // Fetch model info from HuggingFace
+        match get_model_info(model_id.clone()).await {
+            Ok(model_info) => {
+                if let Some(pipeline_tag) = &model_info.pipeline_tag {
+                    if let Some(model_type) = map_pipeline_tag_to_model_type(pipeline_tag) {
+                        match save_model_type(model_id.clone(), model_type, pipeline_tag.clone(), model_info.sha.clone()).await {
+                            Ok(_) => {
+                                tracing::info!(model_id = %model_id, pipeline_tag = %pipeline_tag, "Initialized metadata");
+                                initialized_count += 1;
+                            }
+                            Err(e) => {
+                                tracing::error!(model_id = %model_id, error = %e, "Failed to save metadata");
+                                failed_count += 1;
+                            }
+                        }
+                    } else {
+                        tracing::warn!(model_id = %model_id, pipeline_tag = %pipeline_tag, "Unknown pipeline_tag, skipping");
+                        failed_count += 1;
+                    }
+                } else {
+                    tracing::warn!(model_id = %model_id, "No pipeline_tag found, skipping");
+                    failed_count += 1;
+                }
+            }
+            Err(e) => {
+                tracing::error!(model_id = %model_id, error = %e, "Failed to fetch model info");
+                failed_count += 1;
+            }
+        }
+    }
+
+    let message = if failed_count > 0 {
+        format!("Initialized metadata for {} models ({} failed)", initialized_count, failed_count)
+    } else {
+        format!("Initialized metadata for {} models", initialized_count)
+    };
+
+    log_operation_success!("Initialize model metadata", count = initialized_count);
+    Ok(message)
+}
+
+// Map HuggingFace pipeline_tag to our ModelType
+fn map_pipeline_tag_to_model_type(pipeline_tag: &str) -> Option<ModelType> {
+    match pipeline_tag {
+        "text-generation" => Some(ModelType::Text),
+        "image-text-to-text" => Some(ModelType::ImageToText),
+        "feature-extraction" => Some(ModelType::Embedding),
+        "reranking" => Some(ModelType::Reranker),
+        "text-to-image" => Some(ModelType::ImageGeneration),
+        "automatic-speech-recognition" => Some(ModelType::SpeechToText),
+        "text-to-speech" => Some(ModelType::TextToSpeech),
+        _ => None,
+    }
+}
+
+// Get commit SHA from metadata
+async fn get_commit_sha_from_metadata(model_id: &str) -> Option<String> {
+    if let Ok(store) = load_model_metadata().await {
+        store.models.get(model_id).and_then(|m| m.commit_sha.clone())
+    } else {
+        None
+    }
 }
 
 #[tauri::command]
@@ -466,11 +713,9 @@ pub async fn check_model_update_status(
     let model_dir = if let Some(dir) = models_dir {
         PathBuf::from(dir).join(&normalized_model_id)
     } else {
-        let home_dir = std::env
-            ::var("USERPROFILE")
-            .or_else(|_| std::env::var("HOME"))
-            .map_err(|e| format!("Failed to get user home directory: {}", e))?;
-        PathBuf::from(home_dir).join(".sparrow").join("models").join(&normalized_model_id)
+        paths::get_models_dir()
+            .map_err(|e| e.to_string())?
+            .join(&normalized_model_id)
     };
 
     // Check if model directory exists
@@ -478,17 +723,8 @@ pub async fn check_model_update_status(
         return Err(format!("Model directory not found: {}", model_dir.to_string_lossy()));
     }
 
-    // Read local commit SHA
-    let local_commit = match read_commit_id(&model_dir).await {
-        Ok(sha) => Some(sha),
-        Err(_) => {
-            warn!(
-                model_id = %normalized_model_id,
-                "No .commit_id file found for model"
-            );
-            None
-        }
-    };
+    // Read local commit SHA from metadata
+    let local_commit = get_commit_sha_from_metadata(&normalized_model_id).await;
 
     // Get remote model info to check latest commit
     let remote_model_info = get_model_info(normalized_model_id.clone()).await?;
@@ -549,14 +785,12 @@ pub async fn download_entire_model(
         PathBuf::from(path).join(&normalized_model_id)
     } else {
         // Use .sparrow/models as default
-        let home_dir = std::env
-            ::var("USERPROFILE")
-            .or_else(|_| std::env::var("HOME"))
+        paths::get_models_dir()
             .map_err(|e| {
-                log_operation_error!("Get home directory", &e);
-                format!("Failed to get user home directory: {}", e)
-            })?;
-        PathBuf::from(home_dir).join(".sparrow").join("models").join(&normalized_model_id)
+                log_operation_error!("Get models directory", &e);
+                e.to_string()
+            })?
+            .join(&normalized_model_id)
     };
 
     // Create target directory
@@ -657,22 +891,6 @@ pub async fn download_entire_model(
         return Err(format!("Failed to download model files. {}", error_details));
     }
 
-    // Write commit ID to .commit_id file after successful download
-    if let Some(commit_sha) = &model_info.sha {
-        if let Err(e) = write_commit_id(&target_dir, commit_sha).await {
-            warn!(
-                error = %e,
-                model_id = %normalized_model_id,
-                "Failed to write commit ID file"
-            );
-        }
-    } else {
-        warn!(
-            model_id = %normalized_model_id,
-            "No commit SHA available for model"
-        );
-    }
-
     let total_size_mb = (total_downloaded_size as f64) / (1024.0 * 1024.0);
     let success_msg = format!(
         "Successfully downloaded {} files ({:.2} MB) to:\n{}\n\nDownloaded files:\n• {}",
@@ -689,6 +907,62 @@ pub async fn download_entire_model(
     } else {
         detect_task_type(&model_info)
     };
+    
+    // Save model type metadata - always save even if we can't determine the type
+    let save_result = if let Some(pipeline_tag) = &model_info.pipeline_tag {
+        if let Some(model_type) = map_pipeline_tag_to_model_type(pipeline_tag) {
+            // We have a recognized pipeline_tag, save with type
+            save_model_type(
+                normalized_model_id.clone(), 
+                model_type, 
+                pipeline_tag.clone(),
+                model_info.sha.clone()
+            ).await
+        } else {
+            // Unknown pipeline_tag, but still save with Text as default
+            warn!(
+                model_id = %normalized_model_id,
+                pipeline_tag = %pipeline_tag,
+                "Unknown pipeline_tag, saving as Text type"
+            );
+            save_model_type(
+                normalized_model_id.clone(), 
+                ModelType::Text, 
+                pipeline_tag.clone(),
+                model_info.sha.clone()
+            ).await
+        }
+    } else {
+        // No pipeline_tag, save with Text as default
+        warn!(
+            model_id = %normalized_model_id,
+            "No pipeline_tag found, saving as Text type"
+        );
+        save_model_type(
+            normalized_model_id.clone(), 
+            ModelType::Text, 
+            String::new(),
+            model_info.sha.clone()
+        ).await
+    };
+    
+    match save_result {
+        Ok(_) => {
+            info!(
+                model_id = %normalized_model_id,
+                pipeline_tag = ?model_info.pipeline_tag,
+                commit_sha = ?model_info.sha,
+                "Saved model metadata"
+            );
+        }
+        Err(e) => {
+            error!(
+                error = %e,
+                model_id = %normalized_model_id,
+                "Failed to save model metadata - this will affect model updates and type tracking"
+            );
+        }
+    }
     
     if let Some(task_type) = task_type {
         info!(
@@ -734,14 +1008,11 @@ pub async fn check_rag_models_exist(download_path: Option<String>) -> Result<boo
         PathBuf::from(path)
     } else {
         // Use .sparrow/models as default
-        let home_dir = match std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
-            Ok(home) => home,
-            Err(_) => {
-                log_operation_error!("Check RAG models", "Failed to get home directory");
-                return Err("Failed to get user home directory".to_string());
-            }
-        };
-        PathBuf::from(home_dir).join(".sparrow").join("models")
+        paths::get_models_dir()
+            .map_err(|e| {
+                log_operation_error!("Check RAG models", &e);
+                e.to_string()
+            })?
     };
 
     // Check for both RAG models (Qwen3 embedding and reranker)
@@ -986,8 +1257,8 @@ fn generate_graph_for_task(
     template_params.insert("target_device".to_string(), target_device.to_string());
     
     let graph_content = match task_type {
-        "text_generation" => {
-            // Build plugin config for text generation
+        "text_generation" | "image_text" => {
+            // Build plugin config for text generation (and vision models which use same graph)
             let mut plugin_config = HashMap::new();
             
             // Add cache_dir to plugin_config

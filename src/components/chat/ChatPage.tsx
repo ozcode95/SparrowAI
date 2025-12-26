@@ -1,13 +1,13 @@
 import { useState, useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { PageContainer } from "../layout";
 import { Card, Button, Input } from "../ui";
 import { MessageContent } from "./MessageContent";
 import { useAppStore } from "@/store";
+import type { ModelCategory } from "@/store/types";
 import {
   Send,
-  Bot,
   User,
   Loader2,
   Wrench,
@@ -35,7 +35,59 @@ interface AttachmentInfo {
   file_path: string;
   file_name: string;
   file_type: string;
+  is_image?: boolean;
 }
+
+// Helper function to categorize models by type
+const categorizeModel = (modelId: string): ModelCategory | null => {
+  const lowerModelId = modelId.toLowerCase();
+
+  if (lowerModelId.includes("embedding") || lowerModelId.includes("reranker")) {
+    return null;
+  }
+
+  if (
+    lowerModelId.includes("flux") ||
+    lowerModelId.includes("stable-diffusion") ||
+    lowerModelId.includes("sd-") ||
+    lowerModelId.includes("image-generation") ||
+    lowerModelId.includes("imagegen")
+  ) {
+    return "image-gen";
+  }
+
+  if (
+    lowerModelId.includes("vision") ||
+    lowerModelId.includes("llava") ||
+    lowerModelId.includes("minicpm-v") ||
+    lowerModelId.includes("phi-3-vision") ||
+    lowerModelId.includes("image-to-text") ||
+    lowerModelId.includes("vl-")
+  ) {
+    return "image-to-text";
+  }
+
+  if (
+    lowerModelId.includes("whisper") ||
+    lowerModelId.includes("speech-to-text") ||
+    lowerModelId.includes("speech2text") ||
+    lowerModelId.includes("stt")
+  ) {
+    return "speech-to-text";
+  }
+
+  if (
+    lowerModelId.includes("tts") ||
+    lowerModelId.includes("text-to-speech") ||
+    lowerModelId.includes("text2speech") ||
+    lowerModelId.includes("speecht5") ||
+    lowerModelId.includes("bark")
+  ) {
+    return "text-to-speech";
+  }
+
+  return "text";
+};
 
 export const ChatPage = () => {
   const {
@@ -44,21 +96,32 @@ export const ChatPage = () => {
     addMessageToCurrentChat,
     setCurrentChatMessages,
     temporarySession,
-    setTemporarySession,
     setActiveChatSessionId,
   } = useAppStore();
   const { settings } = useAppStore();
-  const { loadedModel, setLoadedModel, downloadedModels } = useAppStore();
+  const {
+    loadedModel,
+    setLoadedModel,
+    downloadedModels,
+    loadedModelsByType,
+    setLoadedModelByType,
+  } = useAppStore();
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [currentStreamingMessage, setCurrentStreamingMessage] = useState("");
   const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
-  const [isLoadingModel, setIsLoadingModel] = useState(false);
   const [usageData, setUsageData] = useState<{
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
   } | null>(null);
+  const [isLoadingModel, setIsLoadingModel] = useState<{
+    text: boolean;
+    "image-to-text": boolean;
+  }>({
+    text: false,
+    "image-to-text": false,
+  });
 
   // Local LLM configuration (optional overrides)
   const [localTemperature, setLocalTemperature] = useState<number | null>(null);
@@ -67,6 +130,7 @@ export const ChatPage = () => {
   const [showConfigPanel, setShowConfigPanel] = useState(false);
   const [attachments, setAttachments] = useState<AttachmentInfo[]>([]);
   const [showAttachmentPanel, setShowAttachmentPanel] = useState(false);
+  const [showFileSelector, setShowFileSelector] = useState(false);
   const [availableFiles, setAvailableFiles] = useState<
     Array<{
       file_path: string;
@@ -75,24 +139,45 @@ export const ChatPage = () => {
       chunk_count: number;
     }>
   >([]);
-  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [isLoadingFiles, setIsLoadingFiles] = useState(false);
   const [isUploadingFile, setIsUploadingFile] = useState(false);
   const [fileSearchQuery, setFileSearchQuery] = useState("");
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // Organize downloaded models by category
+  const modelsByCategory = useRef<{
+    text: string[];
+    "image-to-text": string[];
+  }>({
+    text: [],
+    "image-to-text": [],
+  });
+
+  // Update categorized models when downloadedModels changes
+  useEffect(() => {
+    const categorized: {
+      text: string[];
+      "image-to-text": string[];
+    } = {
+      text: [],
+      "image-to-text": [],
+    };
+
+    Array.from(downloadedModels).forEach((modelId) => {
+      const category = categorizeModel(modelId);
+      if (category === "text" || category === "image-to-text") {
+        categorized[category].push(modelId);
+      }
+    });
+
+    modelsByCategory.current = categorized;
+  }, [downloadedModels]);
+
   // Auto-scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [currentChatMessages, currentStreamingMessage]);
-
-  // Load files when attachment panel opens
-  useEffect(() => {
-    if (showAttachmentPanel && availableFiles.length === 0) {
-      loadAvailableFiles();
-    }
-  }, [showAttachmentPanel]);
 
   const loadAvailableFiles = async () => {
     setIsLoadingFiles(true);
@@ -106,9 +191,6 @@ export const ChatPage = () => {
         }>
       >("get_all_files");
       setAvailableFiles(files);
-      // Pre-select currently attached files
-      const currentPaths = new Set(attachments.map((a) => a.file_path));
-      setSelectedFiles(currentPaths);
     } catch (error) {
       logError("Failed to load files", error as Error);
     } finally {
@@ -123,8 +205,18 @@ export const ChatPage = () => {
         multiple: true,
         filters: [
           {
-            name: "Documents",
-            extensions: ["pdf", "docx", "xlsx", "xls"],
+            name: "Documents & Images",
+            extensions: [
+              "pdf",
+              "docx",
+              "xlsx",
+              "xls",
+              "png",
+              "jpg",
+              "jpeg",
+              "webp",
+              "gif",
+            ],
           },
         ],
       });
@@ -138,24 +230,50 @@ export const ChatPage = () => {
 
       for (const filePath of filePaths) {
         try {
-          const documents = await invoke<any[]>("process_document", {
-            filePath,
-          });
-          const embeddedDocs = await invoke<any[]>(
-            "create_document_embeddings",
-            { documents }
+          // Check if file is an image
+          const extension = filePath.split(".").pop()?.toLowerCase() || "";
+          const isImage = ["png", "jpg", "jpeg", "webp", "gif"].includes(
+            extension
           );
-          await invoke("store_documents", { documents: embeddedDocs });
-          logInfo(`Successfully processed and stored ${filePath}`);
-          // Auto-select newly uploaded file
-          setSelectedFiles((prev) => new Set(prev).add(filePath));
+
+          if (isImage) {
+            // Images don't go through RAG processing, just add directly to attachments
+            logInfo(`Added image file ${filePath} (skipping RAG processing)`);
+            const fileName = filePath.split(/[\\/]/).pop() || filePath;
+            setAttachments((prev) => [
+              ...prev,
+              {
+                file_path: filePath,
+                file_name: fileName,
+                file_type: extension,
+                is_image: true,
+              },
+            ]);
+          } else {
+            // Process document into chunks for RAG
+            const documents = await invoke<any[]>("process_document", {
+              filePath,
+            });
+            const embeddedDocs = await invoke<any[]>(
+              "create_document_embeddings",
+              { documents }
+            );
+            await invoke("store_documents", { documents: embeddedDocs });
+            logInfo(`Successfully processed and stored ${filePath}`);
+          }
         } catch (error) {
           logError(`Failed to process ${filePath}`, error as Error);
           alert(`Failed to process ${filePath.split("\\").pop()}: ${error}`);
         }
       }
 
-      await loadAvailableFiles();
+      // Reload files if we're in the file selector view
+      if (showFileSelector) {
+        await loadAvailableFiles();
+      }
+      // Close the panel after upload
+      setShowAttachmentPanel(false);
+      setShowFileSelector(false);
     } catch (error) {
       console.error("Upload failed:", error);
     } finally {
@@ -163,28 +281,33 @@ export const ChatPage = () => {
     }
   };
 
-  const toggleFileSelection = (filePath: string) => {
-    setSelectedFiles((prev) => {
-      const newSet = new Set(prev);
-      if (newSet.has(filePath)) {
-        newSet.delete(filePath);
-      } else {
-        newSet.add(filePath);
-      }
-      return newSet;
-    });
-  };
+  const toggleAttachment = (filePath: string) => {
+    setAttachments((prev) => {
+      // Check if already attached
+      const existingIndex = prev.findIndex((a) => a.file_path === filePath);
 
-  const applyAttachments = () => {
-    const newAttachments: AttachmentInfo[] = availableFiles
-      .filter((f) => selectedFiles.has(f.file_path))
-      .map((f) => ({
-        file_path: f.file_path,
-        file_name: f.file_name,
-        file_type: f.file_type,
-      }));
-    setAttachments(newAttachments);
-    setShowAttachmentPanel(false);
+      if (existingIndex !== -1) {
+        // Remove it
+        return prev.filter((a) => a.file_path !== filePath);
+      } else {
+        // Add it
+        const extension = filePath.split(".").pop()?.toLowerCase() || "";
+        const isImage = ["png", "jpg", "jpeg", "webp", "gif"].includes(
+          extension
+        );
+        const fileName = filePath.split(/[\\/]/).pop() || filePath;
+
+        return [
+          ...prev,
+          {
+            file_path: filePath,
+            file_name: fileName,
+            file_type: extension,
+            is_image: isImage,
+          },
+        ];
+      }
+    });
   };
 
   // Clear input when session changes (new chat)
@@ -412,9 +535,18 @@ export const ChatPage = () => {
   const handleSend = async () => {
     if (!input.trim() || isStreaming) return;
 
-    // Check if model is loaded
-    if (!loadedModel) {
-      alert("Please select a model first");
+    // Check if images are attached
+    const hasImageAttachments = attachments.some((a) => a.is_image);
+
+    // Check if vision model is loaded when images are attached
+    if (hasImageAttachments && !loadedModelsByType["image-to-text"]) {
+      alert("Please select a Vision (Image-to-Text) model to process images");
+      return;
+    }
+
+    // Check if text model is loaded (required for chat)
+    if (!loadedModelsByType.text) {
+      alert("Please select a Text Generation model first");
       return;
     }
 
@@ -437,9 +569,9 @@ export const ChatPage = () => {
     setIsStreaming(true);
     setToolCalls([]);
 
-    try {
-      let sessionToUse = activeChatSessionId;
+    let sessionToUse = activeChatSessionId; // Declare outside try block
 
+    try {
       console.log("handleSend - activeChatSessionId:", activeChatSessionId);
       console.log("handleSend - temporarySession:", temporarySession);
 
@@ -542,10 +674,16 @@ export const ChatPage = () => {
         localMaxTokens !== null ? localMaxTokens : settings.maxTokens;
 
       // Start streaming chat with all configuration
+      // Use vision model if images are attached, otherwise use text model
+      const hasImageAttachments = currentAttachments.some((a) => a.is_image);
+      const modelToUse = hasImageAttachments
+        ? loadedModelsByType["image-to-text"]!
+        : loadedModelsByType.text!;
+
       // Strip 'OpenVINO/' prefix from model name if present
-      const modelNameForChat = loadedModel.startsWith("OpenVINO/")
-        ? loadedModel.substring("OpenVINO/".length)
-        : loadedModel;
+      const modelNameForChat = modelToUse.startsWith("OpenVINO/")
+        ? modelToUse.substring("OpenVINO/".length)
+        : modelToUse;
 
       // Choose the appropriate chat function based on RAG setting
       const chatCommand = settings.useRAG
@@ -569,12 +707,10 @@ export const ChatPage = () => {
         maxTokens: effectiveMaxTokens,
         maxCompletionTokens: settings.maxCompletionTokens,
         // RAG-specific parameters (only used if chatCommand is chat_with_rag_streaming)
-        useRag: settings.useRAG || currentAttachments.length > 0, // Use RAG if enabled OR if there are attachments
-        ragLimit: currentAttachments.length > 0 ? null : 5, // null means use only attached documents
-        attachedFilePaths:
-          currentAttachments.length > 0
-            ? currentAttachments.map((a) => a.file_path)
-            : null,
+        useRag: settings.useRAG || currentAttachments.some((a) => !a.is_image), // Use RAG if enabled OR if there are document attachments
+        ragLimit: currentAttachments.some((a) => !a.is_image) ? null : 5, // null means use only attached documents
+        // Pass full attachment objects (includes both images and documents)
+        attachments: currentAttachments.length > 0 ? currentAttachments : null,
       });
     } catch (error) {
       logError("Failed to send message", error as Error, {
@@ -612,42 +748,28 @@ export const ChatPage = () => {
     }
   };
 
-  const handleLoadModel = async (modelId: string) => {
-    setIsLoadingModel(true);
+  const handleLoadModel = async (
+    modelId: string,
+    modelType: "text" | "image-to-text"
+  ) => {
+    setIsLoadingModel((prev) => ({ ...prev, [modelType]: true }));
     try {
-      // If a model is already loaded, try to unload it first
-      if (loadedModel) {
-        console.log(`Unloading current model: ${loadedModel}`);
-        try {
-          await invoke("unload_model");
-          console.log("Model unloaded successfully");
-        } catch (unloadError) {
-          // Log but continue - the backend might handle model switching internally
-          console.warn(
-            "Failed to unload model, continuing anyway:",
-            unloadError
-          );
-          logWarn("Failed to unload model", {
-            error: String(unloadError),
-            modelId: loadedModel,
-          });
-        }
-        // Clear the state regardless of unload success
-        setLoadedModel(null);
+      console.log(`Loading model: ${modelId} (type: ${modelType})`);
+      await invoke("load_model", { modelId });
+      setLoadedModelByType(modelType, modelId);
+
+      // Also set as the primary loaded model if it's a text model
+      if (modelType === "text") {
+        setLoadedModel(modelId);
       }
 
-      // Load the new model
-      console.log(`Loading new model: ${modelId}`);
-      await invoke("load_model", { modelId });
-      setLoadedModel(modelId);
       console.log(`Model loaded successfully: ${modelId}`);
     } catch (error) {
       console.error("Failed to load model:", error);
-      logError("Failed to load model", error as Error, { modelId });
-      // Show error to user
+      logError("Failed to load model", error as Error, { modelId, modelType });
       alert(`Failed to load model: ${error}`);
     } finally {
-      setIsLoadingModel(false);
+      setIsLoadingModel((prev) => ({ ...prev, [modelType]: false }));
     }
   };
 
@@ -657,26 +779,55 @@ export const ChatPage = () => {
       description="Conversation with AI assistant"
       actions={
         <div className="flex items-center gap-3 py-1 pr-2">
-          <select
-            value={loadedModel || ""}
-            onChange={(e) => e.target.value && handleLoadModel(e.target.value)}
-            disabled={isLoadingModel || isStreaming}
-            className="px-3 py-1.5 border rounded-lg bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-sm disabled:opacity-50 disabled:cursor-not-allowed w-64 truncate"
-          >
-            <option value="">Select a model...</option>
-            {Array.from(downloadedModels)
-              .filter(
-                (modelId) =>
-                  !modelId.toLowerCase().includes("embedding") &&
-                  !modelId.toLowerCase().includes("reranker")
-              )
-              .map((modelId) => (
+          {/* Text Generation Model */}
+          <div className="flex flex-col gap-1">
+            <label className="text-xs font-medium text-gray-600 dark:text-gray-400 px-1">
+              Text Generation *
+            </label>
+            <select
+              value={loadedModelsByType.text || ""}
+              onChange={(e) =>
+                e.target.value && handleLoadModel(e.target.value, "text")
+              }
+              disabled={isLoadingModel.text || isStreaming}
+              className="px-2 py-1.5 border rounded-lg bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-xs disabled:opacity-50 disabled:cursor-not-allowed w-56 truncate"
+            >
+              <option value="">Select model...</option>
+              {modelsByCategory.current.text.map((modelId) => (
                 <option key={modelId} value={modelId}>
                   {modelId}
                 </option>
               ))}
-          </select>
-          {isLoadingModel && <Loader2 className="w-4 h-4 animate-spin" />}
+            </select>
+          </div>
+
+          {/* Image-to-Text Model */}
+          <div className="flex flex-col gap-1">
+            <label className="text-xs font-medium text-gray-600 dark:text-gray-400 px-1">
+              Vision (Image-to-Text)
+            </label>
+            <select
+              value={loadedModelsByType["image-to-text"] || ""}
+              onChange={(e) =>
+                e.target.value &&
+                handleLoadModel(e.target.value, "image-to-text")
+              }
+              disabled={isLoadingModel["image-to-text"] || isStreaming}
+              className="px-2 py-1.5 border rounded-lg bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-xs disabled:opacity-50 disabled:cursor-not-allowed w-56 truncate"
+            >
+              <option value="">Select model...</option>
+              {modelsByCategory.current["image-to-text"].map((modelId) => (
+                <option key={modelId} value={modelId}>
+                  {modelId}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Loading indicators */}
+          {(isLoadingModel.text || isLoadingModel["image-to-text"]) && (
+            <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
+          )}
         </div>
       }
     >
@@ -694,9 +845,9 @@ export const ChatPage = () => {
                 Start a conversation
               </h2>
               <p className="text-gray-600 dark:text-gray-400">
-                {loadedModel
-                  ? `Using ${loadedModel}. Type a message below to begin.`
-                  : "Load a model in Settings to start chatting."}
+                {loadedModelsByType.text
+                  ? `Using ${loadedModelsByType.text}. Type a message below to begin.`
+                  : "Load a Text Generation model above to start chatting."}
               </p>
             </Card>
           )}
@@ -761,24 +912,48 @@ export const ChatPage = () => {
                   >
                     <div className="flex items-center gap-2 mb-2 text-xs opacity-70">
                       <Paperclip className="w-3 h-3" />
-                      <span>Attached documents:</span>
+                      <span>
+                        Attached{" "}
+                        {message.attachments.some((a) => a.is_image)
+                          ? "documents & images"
+                          : "documents"}
+                        :
+                      </span>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      {message.attachments.map((attachment, idx) => (
-                        <div
-                          key={idx}
-                          className={`text-xs px-2 py-1 rounded flex items-center gap-1.5 ${
-                            message.role === "user"
-                              ? "bg-white/20"
-                              : "bg-gray-100 dark:bg-gray-800"
-                          }`}
-                        >
-                          <Paperclip className="w-3 h-3" />
-                          <span className="max-w-[150px] truncate">
-                            {attachment.file_name}
-                          </span>
-                        </div>
-                      ))}
+                      {message.attachments.map((attachment, idx) =>
+                        attachment.is_image ? (
+                          <div
+                            key={idx}
+                            className={`rounded overflow-hidden ${
+                              message.role === "user"
+                                ? "border border-white/20"
+                                : "border border-gray-200 dark:border-gray-700"
+                            }`}
+                          >
+                            <img
+                              src={convertFileSrc(attachment.file_path)}
+                              alt={attachment.file_name}
+                              className="max-w-[200px] max-h-[200px] object-cover"
+                              title={attachment.file_name}
+                            />
+                          </div>
+                        ) : (
+                          <div
+                            key={idx}
+                            className={`text-xs px-2 py-1 rounded flex items-center gap-1.5 ${
+                              message.role === "user"
+                                ? "bg-white/20"
+                                : "bg-gray-100 dark:bg-gray-800"
+                            }`}
+                          >
+                            <Paperclip className="w-3 h-3" />
+                            <span className="max-w-[150px] truncate">
+                              {attachment.file_name}
+                            </span>
+                          </div>
+                        )
+                      )}
                     </div>
                   </div>
                 )}
@@ -867,7 +1042,7 @@ export const ChatPage = () => {
                     value={
                       localTemperature !== null
                         ? localTemperature
-                        : settings.temperature
+                        : settings.temperature ?? ""
                     }
                     onChange={(e) =>
                       setLocalTemperature(parseFloat(e.target.value))
@@ -885,7 +1060,7 @@ export const ChatPage = () => {
                     min="0"
                     max="1"
                     step="0.1"
-                    value={localTopP !== null ? localTopP : settings.topP}
+                    value={localTopP !== null ? localTopP : settings.topP ?? ""}
                     onChange={(e) => setLocalTopP(parseFloat(e.target.value))}
                     disabled={isStreaming}
                     className="px-2 py-1 border rounded text-sm w-20 bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600"
@@ -903,7 +1078,7 @@ export const ChatPage = () => {
                     value={
                       localMaxTokens !== null
                         ? localMaxTokens
-                        : settings.maxTokens
+                        : settings.maxTokens ?? ""
                     }
                     onChange={(e) =>
                       setLocalMaxTokens(parseInt(e.target.value))
@@ -931,129 +1106,178 @@ export const ChatPage = () => {
             {/* Attachment Panel */}
             {showAttachmentPanel && (
               <div className="flex flex-col gap-3 pb-3 border-b border-gray-200 dark:border-gray-700">
-                <div className="flex items-center justify-between">
-                  <div className="text-sm font-medium">Attach Documents</div>
+                {!showFileSelector ? (
+                  // Two button interface
                   <div className="flex items-center gap-2">
                     <Button
                       onClick={handleFileUpload}
                       disabled={isUploadingFile}
                       size="sm"
                       variant="outline"
-                      className="text-xs"
+                      className="flex-1"
                     >
                       {isUploadingFile ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <Loader2 className="w-4 h-4 animate-spin" />
                       ) : (
                         "Upload New"
                       )}
                     </Button>
-                  </div>
-                </div>
-
-                {/* Search */}
-                <Input
-                  value={fileSearchQuery}
-                  onChange={(e) => setFileSearchQuery(e.target.value)}
-                  placeholder="Search documents..."
-                  className="text-sm"
-                />
-
-                {/* File List */}
-                <div className="border border-gray-200 dark:border-gray-700 rounded-lg max-h-64 overflow-y-auto">
-                  {isLoadingFiles ? (
-                    <div className="flex items-center justify-center p-4">
-                      <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
-                    </div>
-                  ) : availableFiles.filter((f) =>
-                      f.file_name
-                        .toLowerCase()
-                        .includes(fileSearchQuery.toLowerCase())
-                    ).length === 0 ? (
-                    <div className="p-4 text-center text-sm text-gray-500 dark:text-gray-400">
-                      {fileSearchQuery
-                        ? "No documents match your search"
-                        : "No documents available. Upload some documents first."}
-                    </div>
-                  ) : (
-                    <div className="divide-y divide-gray-200 dark:divide-gray-700">
-                      {availableFiles
-                        .filter((f) =>
-                          f.file_name
-                            .toLowerCase()
-                            .includes(fileSearchQuery.toLowerCase())
-                        )
-                        .map((file) => (
-                          <div
-                            key={file.file_path}
-                            className={`p-2 hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer transition-colors text-sm ${
-                              selectedFiles.has(file.file_path)
-                                ? "bg-primary/5 dark:bg-primary/10"
-                                : ""
-                            }`}
-                            onClick={() => toggleFileSelection(file.file_path)}
-                          >
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="checkbox"
-                                checked={selectedFiles.has(file.file_path)}
-                                onChange={() =>
-                                  toggleFileSelection(file.file_path)
-                                }
-                                className="w-3.5 h-3.5 rounded border-gray-300 text-primary focus:ring-primary"
-                                onClick={(e) => e.stopPropagation()}
-                              />
-                              <Paperclip className="w-4 h-4 text-gray-400 flex-shrink-0" />
-                              <div className="flex-1 min-w-0">
-                                <div className="font-medium truncate">
-                                  {file.file_name}
-                                </div>
-                                <div className="text-xs text-gray-500 dark:text-gray-400">
-                                  {file.file_type.toUpperCase()} •{" "}
-                                  {file.chunk_count} chunks
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* Selected Count & Actions */}
-                <div className="flex items-center justify-between">
-                  <div className="text-xs text-gray-600 dark:text-gray-400">
-                    {selectedFiles.size > 0
-                      ? `${selectedFiles.size} document${
-                          selectedFiles.size !== 1 ? "s" : ""
-                        } selected`
-                      : "No documents selected"}
-                  </div>
-                  <div className="flex gap-2">
                     <Button
                       onClick={() => {
-                        setShowAttachmentPanel(false);
-                        setFileSearchQuery("");
+                        setShowFileSelector(true);
+                        loadAvailableFiles();
                       }}
                       size="sm"
                       variant="outline"
-                      className="text-xs"
+                      className="flex-1"
                     >
-                      Cancel
+                      Select from RAG
                     </Button>
                     <Button
-                      onClick={applyAttachments}
-                      disabled={selectedFiles.size === 0}
+                      onClick={() => {
+                        setShowAttachmentPanel(false);
+                        setShowFileSelector(false);
+                      }}
                       size="sm"
-                      className="text-xs"
+                      variant="ghost"
                     >
-                      Apply ({selectedFiles.size})
+                      <X className="w-4 h-4" />
                     </Button>
                   </div>
-                </div>
+                ) : (
+                  // File selector interface
+                  <>
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-medium">
+                        Select Documents from RAG
+                      </div>
+                      <Button
+                        onClick={() => {
+                          setShowFileSelector(false);
+                          setFileSearchQuery("");
+                        }}
+                        size="sm"
+                        variant="ghost"
+                      >
+                        <X className="w-4 h-4" />
+                      </Button>
+                    </div>
+
+                    {/* Search */}
+                    <Input
+                      value={fileSearchQuery}
+                      onChange={(e) => setFileSearchQuery(e.target.value)}
+                      placeholder="Search documents..."
+                      className="text-sm"
+                    />
+
+                    {/* File List */}
+                    <div className="border border-gray-200 dark:border-gray-700 rounded-lg max-h-64 overflow-y-auto">
+                      {isLoadingFiles ? (
+                        <div className="flex items-center justify-center p-4">
+                          <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
+                        </div>
+                      ) : availableFiles.filter((f) =>
+                          f.file_name
+                            .toLowerCase()
+                            .includes(fileSearchQuery.toLowerCase())
+                        ).length === 0 ? (
+                        <div className="p-4 text-center text-sm text-gray-500 dark:text-gray-400">
+                          {fileSearchQuery
+                            ? "No documents match your search"
+                            : "No documents available. Upload some documents first."}
+                        </div>
+                      ) : (
+                        <div className="divide-y divide-gray-200 dark:divide-gray-700">
+                          {availableFiles
+                            .filter((f) =>
+                              f.file_name
+                                .toLowerCase()
+                                .includes(fileSearchQuery.toLowerCase())
+                            )
+                            .map((file) => {
+                              const isAttached = attachments.some(
+                                (a) => a.file_path === file.file_path
+                              );
+                              return (
+                                <div
+                                  key={file.file_path}
+                                  className={`p-2 hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer transition-colors text-sm ${
+                                    isAttached
+                                      ? "bg-primary/5 dark:bg-primary/10"
+                                      : ""
+                                  }`}
+                                  onClick={() =>
+                                    toggleAttachment(file.file_path)
+                                  }
+                                >
+                                  <div className="flex items-center gap-2">
+                                    <input
+                                      type="checkbox"
+                                      checked={isAttached}
+                                      onChange={() =>
+                                        toggleAttachment(file.file_path)
+                                      }
+                                      className="w-3.5 h-3.5 rounded border-gray-300 text-primary focus:ring-primary"
+                                      onClick={(e) => e.stopPropagation()}
+                                    />
+                                    <Paperclip className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                                    <div className="flex-1 min-w-0">
+                                      <div className="font-medium truncate">
+                                        {file.file_name}
+                                      </div>
+                                      <div className="text-xs text-gray-500 dark:text-gray-400">
+                                        {file.file_type.toUpperCase()} •{" "}
+                                        {file.chunk_count} chunks
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Attached count */}
+                    <div className="text-xs text-gray-600 dark:text-gray-400">
+                      {attachments.length > 0
+                        ? `${attachments.length} document${
+                            attachments.length !== 1 ? "s" : ""
+                          } attached`
+                        : "No documents attached"}
+                    </div>
+                  </>
+                )}
               </div>
             )}
 
-            {/* Attached Documents */}
+            {/* Warning for images without vision model */}
+            {attachments.some((a) => a.is_image) &&
+              !loadedModelsByType["image-to-text"] && (
+                <div className="flex items-center gap-2 px-3 py-2 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg text-sm text-yellow-800 dark:text-yellow-200">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="w-4 h-4 flex-shrink-0"
+                  >
+                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                    <line x1="12" y1="9" x2="12" y2="13"></line>
+                    <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                  </svg>
+                  <span>
+                    Image attached. Please select a Vision (Image-to-Text) model
+                    above to process images.
+                  </span>
+                </div>
+              )}
+
+            {/* Attached Documents and Images */}
             {attachments.length > 0 && (
               <div className="flex flex-wrap gap-2 pb-3 border-b border-gray-200 dark:border-gray-700">
                 {attachments.map((attachment) => (
@@ -1061,10 +1285,25 @@ export const ChatPage = () => {
                     key={attachment.file_path}
                     className="flex items-center gap-2 px-3 py-1.5 bg-primary/10 dark:bg-primary/20 rounded-lg text-sm"
                   >
-                    <Paperclip className="w-3.5 h-3.5" />
-                    <span className="max-w-[200px] truncate">
-                      {attachment.file_name}
-                    </span>
+                    {attachment.is_image ? (
+                      <>
+                        <img
+                          src={convertFileSrc(attachment.file_path)}
+                          alt={attachment.file_name}
+                          className="w-8 h-8 object-cover rounded"
+                        />
+                        <span className="max-w-[200px] truncate">
+                          {attachment.file_name}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <Paperclip className="w-3.5 h-3.5" />
+                        <span className="max-w-[200px] truncate">
+                          {attachment.file_name}
+                        </span>
+                      </>
+                    )}
                     <button
                       onClick={() =>
                         setAttachments((prev) =>
@@ -1086,7 +1325,11 @@ export const ChatPage = () => {
             <div className="flex gap-3">
               <div className="flex items-end">
                 <Button
-                  onClick={() => setShowAttachmentPanel(!showAttachmentPanel)}
+                  onClick={() => {
+                    setShowAttachmentPanel(!showAttachmentPanel);
+                    setShowFileSelector(false);
+                    setFileSearchQuery("");
+                  }}
                   disabled={isStreaming}
                   size="icon"
                   variant="outline"
@@ -1100,11 +1343,11 @@ export const ChatPage = () => {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyPress}
                 placeholder={
-                  loadedModel
+                  loadedModelsByType.text
                     ? "Type your message... (Shift+Enter for new line)"
-                    : "Select a model to start chatting"
+                    : "Select a Text Generation model to start chatting"
                 }
-                disabled={isStreaming || !loadedModel}
+                disabled={isStreaming || !loadedModelsByType.text}
                 className="flex-1 resize-none bg-transparent border-none outline-none min-h-[44px] max-h-[200px] text-gray-900 dark:text-white placeholder:text-gray-400 disabled:opacity-50 disabled:cursor-not-allowed flex items-center py-2"
                 rows={1}
                 style={{
@@ -1151,7 +1394,12 @@ export const ChatPage = () => {
                 ) : (
                   <Button
                     onClick={handleSend}
-                    disabled={!input.trim() || !loadedModel}
+                    disabled={
+                      !input.trim() ||
+                      !loadedModelsByType.text ||
+                      (attachments.some((a) => a.is_image) &&
+                        !loadedModelsByType["image-to-text"])
+                    }
                     size="icon"
                   >
                     <Send className="w-5 h-5" />

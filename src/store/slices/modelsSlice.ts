@@ -16,6 +16,14 @@ export const createModelsSlice: StateCreator<AppState, [], [], ModelsSlice> = (
   downloadedModels: new Set(),
   isOvmsRunning: false,
   loadedModel: null,
+  loadedModels: [],
+  loadedModelsByType: {
+    text: null,
+    "image-to-text": null,
+    "image-gen": null,
+    "speech-to-text": null,
+    "text-to-speech": null,
+  },
 
   setSearchQuery: (query) => set({ searchQuery: query }),
   setSearchResults: (results) => set({ searchResults: results }),
@@ -80,35 +88,69 @@ export const createModelsSlice: StateCreator<AppState, [], [], ModelsSlice> = (
     set({ loadedModel: modelId });
   },
 
-  getLoadedModel: async () => {
-    const maxRetries = 5;
-    const retryDelay = 1000; // 1 second
+  setLoadedModels: (modelIds) => {
+    logStateChange("models", "setLoadedModels", { count: modelIds.length });
+    set({
+      loadedModels: modelIds,
+      loadedModel: modelIds.length > 0 ? modelIds[0] : null, // Set first as primary
+    });
+  },
 
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      try {
-        const ovmsStatus: any = await invoke("check_ovms_status");
-
-        if (ovmsStatus?.loaded_models?.length > 0) {
-          const sortedModels = ovmsStatus.loaded_models.sort();
-          const modelId = `OpenVINO/${sortedModels[0]}`;
-          logInfo("Model loaded in OVMS", { modelId });
-          set({ loadedModel: modelId });
-          return modelId;
-        } else {
-          // Wait before retrying (except on last attempt)
-          if (attempt < maxRetries - 1) {
-            await new Promise((resolve) => setTimeout(resolve, retryDelay));
-          }
-        }
-      } catch (error) {
-        logError("Failed to get loaded model", error as Error, {
-          attempt: attempt + 1,
-        });
-        break;
-      }
+  getLoadedModels: async () => {
+    try {
+      const modelNames: string[] = await invoke("get_loaded_models");
+      logInfo("Loaded models from config", {
+        count: modelNames.length,
+        models: modelNames,
+      });
+      set({
+        loadedModels: modelNames,
+        loadedModel: modelNames.length > 0 ? modelNames[0] : null,
+      });
+      return modelNames;
+    } catch (error) {
+      logError("Failed to get loaded models", error as Error);
+      return [];
     }
+  },
 
-    set({ loadedModel: null });
-    return null;
+  getLoadedModel: async () => {
+    try {
+      const modelNames: string[] = await invoke("get_loaded_models");
+
+      if (modelNames.length > 0) {
+        // Get first model from config
+        const modelId = modelNames[0].startsWith("OpenVINO/")
+          ? modelNames[0]
+          : `OpenVINO/${modelNames[0]}`;
+        logInfo("Model loaded from config", {
+          modelId,
+          total: modelNames.length,
+        });
+        set({ loadedModel: modelId, loadedModels: modelNames });
+        return modelId;
+      }
+
+      set({ loadedModel: null, loadedModels: [] });
+      return null;
+    } catch (error) {
+      logError("Failed to get loaded model", error as Error);
+      set({ loadedModel: null, loadedModels: [] });
+      return null;
+    }
+  },
+
+  setLoadedModelByType: (modelType, modelId) => {
+    logStateChange("models", "setLoadedModelByType", { modelType, modelId });
+    set((state) => ({
+      loadedModelsByType: {
+        ...state.loadedModelsByType,
+        [modelType]: modelId,
+      },
+    }));
+  },
+
+  getLoadedModelByType: (modelType) => {
+    return get().loadedModelsByType[modelType];
   },
 });

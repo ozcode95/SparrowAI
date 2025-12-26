@@ -1,9 +1,9 @@
 use crate::paths;
 use std::fs;
 use std::path::PathBuf;
-use tracing::error;
 
 /// Check if model files exist in a directory
+#[allow(dead_code)]
 pub fn has_model_files(dir: &PathBuf) -> bool {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -45,45 +45,17 @@ pub fn normalize_model_id(model_id: &str) -> String {
 }
 
 #[tauri::command]
-pub async fn check_downloaded_models(download_path: Option<String>) -> Result<Vec<String>, String> {
-    let downloads_dir = get_models_dir_from_option(download_path)?;
-    let mut downloaded_models = Vec::new();
-
-    if downloads_dir.exists() && downloads_dir.is_dir() {
-        match fs::read_dir(&downloads_dir) {
-            Ok(entries) => {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        if let Some(dir_name) = entry.file_name().to_str() {
-                            // Only look for OpenVINO organization
-                            if dir_name == "OpenVINO" {
-                                // Check if this is the OpenVINO org directory with models inside
-                                if let Ok(org_entries) = fs::read_dir(&path) {
-                                    for org_entry in org_entries.flatten() {
-                                        let model_path = org_entry.path();
-                                        if model_path.is_dir() {
-                                            if let Some(model_name) = org_entry.file_name().to_str() {
-                                                if has_model_files(&model_path) {
-                                                    // This is OpenVINO/model structure
-                                                    downloaded_models.push(format!("OpenVINO/{}", model_name));
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            // Skip non-OpenVINO directories
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                error!(error = %e, "Failed to read downloads directory");
-            }
-        }
-    }
-
+pub async fn check_downloaded_models(_download_path: Option<String>) -> Result<Vec<String>, String> {
+    use crate::huggingface::get_all_model_metadata;
+    
+    // Read from metadata file instead of scanning filesystem
+    let metadata = get_all_model_metadata().await?;
+    
+    // Return all model IDs from metadata
+    let downloaded_models: Vec<String> = metadata.keys()
+        .map(|id| id.to_string())
+        .collect();
+    
     Ok(downloaded_models)
 }
 
@@ -92,6 +64,8 @@ pub async fn delete_downloaded_model(
     model_id: String,
     download_path: Option<String>,
 ) -> Result<String, String> {
+    use crate::huggingface::remove_model_metadata;
+    
     let normalized_model_id = normalize_model_id(&model_id);
     let base_dir = get_models_dir_from_option(download_path)?;
     let model_dir = base_dir.join(&normalized_model_id);
@@ -116,6 +90,15 @@ pub async fn delete_downloaded_model(
                 }
             }
         }
+    }
+
+    // Remove from metadata
+    if let Err(e) = remove_model_metadata(&normalized_model_id).await {
+        tracing::warn!(
+            error = %e,
+            model_id = %normalized_model_id,
+            "Failed to remove model from metadata, but model files were deleted"
+        );
     }
 
     Ok(format!("Successfully deleted model: {}", normalized_model_id))

@@ -156,18 +156,19 @@ async fn initialize_ovms(app_handle: tauri::AppHandle) {
                 }
 
                 // Create initial OVMS config with BGE models
-                let home_dir = match
-                    std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME"))
-                {
-                    Ok(home) => home,
-                    Err(_) => {
-                        log_operation_error!("OVMS initialization", "Failed to get home directory");
+                let models_dir = match paths::get_models_dir() {
+                    Ok(dir) => dir,
+                    Err(e) => {
+                        log_operation_error!("OVMS initialization", &e);
                         return;
                     }
                 };
 
-                let bge_model_path =
-                    format!("{}/.sparrow/models/OpenVINO/bge-base-en-v1.5-int8-ov", home_dir);
+                let bge_model_path = models_dir
+                    .join("OpenVINO")
+                    .join("bge-base-en-v1.5-int8-ov")
+                    .to_string_lossy()
+                    .to_string();
 
                 match
                     ovms::create_ovms_config(
@@ -216,8 +217,13 @@ async fn initialize_ovms(app_handle: tauri::AppHandle) {
         }
 
         // Check if OVMS config already exists
-        let config_path = ovms::get_ovms_config_path(Some(&app_handle));
-        if !config_path.exists() {
+        let config_exists = if let Ok(config_path) = paths::get_ovms_config_path(Some(&app_handle)) {
+            config_path.exists()
+        } else {
+            false
+        };
+        
+        if !config_exists {
             log_progress!("Creating initial OVMS config...");
 
             // Update status: Creating config
@@ -234,9 +240,12 @@ async fn initialize_ovms(app_handle: tauri::AppHandle) {
             }
 
             // Create initial OVMS config with BGE models
-            if let Ok(home_dir) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
-                let bge_model_path =
-                    format!("{}/.sparrow/models/OpenVINO/bge-base-en-v1.5-int8-ov", home_dir);
+            if let Ok(models_dir) = paths::get_models_dir() {
+                let bge_model_path = models_dir
+                    .join("OpenVINO")
+                    .join("bge-base-en-v1.5-int8-ov")
+                    .to_string_lossy()
+                    .to_string();
 
                 tracing::debug!(model = "bge-base-en-v1.5-int8-ov", path = %bge_model_path, "Creating OVMS config for BGE model");
                 
@@ -335,6 +344,10 @@ pub fn run() {
                 huggingface::download_entire_model,
                 huggingface::check_model_update_status,
                 huggingface::check_rag_models_exist,
+                huggingface::get_models_by_type,
+                huggingface::get_all_model_metadata,
+                huggingface::set_model_type,
+                huggingface::initialize_model_metadata,
                 models::check_downloaded_models,
                 models::delete_downloaded_model,
                 models::open_model_folder,
@@ -351,8 +364,8 @@ pub fn run() {
                 ovms::update_ovms_config,
                 ovms::reload_ovms_config,
                 ovms::load_model,
-                ovms::unload_model,
                 ovms::get_loaded_model,
+                ovms::get_loaded_models,
                 chat::chat_with_loaded_model_streaming,
                 ovms::check_ovms_status,
                 ovms::get_ovms_model_metadata,

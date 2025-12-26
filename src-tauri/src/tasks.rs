@@ -335,8 +335,7 @@ impl TaskScheduler {
 
 // Task storage path
 fn get_tasks_path() -> Result<PathBuf, String> {
-    paths::get_sparrow_dir()
-        .map(|p| p.join("tasks.json"))
+    paths::get_tasks_path()
         .map_err(|e| e.to_string())
 }
 

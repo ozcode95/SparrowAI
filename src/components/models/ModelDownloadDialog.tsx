@@ -1,8 +1,70 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Dialog, Button, Input } from "../ui";
 import { Download, Settings, X } from "lucide-react";
 import { GraphGenerationParams, ModelTaskType } from "@/types/models";
+
+// Helper function to determine task type from model name
+const inferTaskTypeFromModelId = (modelId: string): ModelTaskType => {
+  const lowerModelId = modelId.toLowerCase();
+
+  // Check for embedding models
+  if (lowerModelId.includes("embedding") || lowerModelId.includes("embed")) {
+    return "embeddings_ov";
+  }
+
+  // Check for reranker models
+  if (lowerModelId.includes("reranker") || lowerModelId.includes("rerank")) {
+    return "rerank_ov";
+  }
+
+  // Check for image generation models
+  if (
+    lowerModelId.includes("flux") ||
+    lowerModelId.includes("stable-diffusion") ||
+    lowerModelId.includes("sd-") ||
+    lowerModelId.includes("image-generation") ||
+    lowerModelId.includes("imagegen")
+  ) {
+    return "image_generation";
+  }
+
+  // Check for vision/image-to-text models
+  if (
+    lowerModelId.includes("vision") ||
+    lowerModelId.includes("llava") ||
+    lowerModelId.includes("minicpm-v") ||
+    lowerModelId.includes("phi-3-vision") ||
+    lowerModelId.includes("image-to-text") ||
+    lowerModelId.includes("vl-")
+  ) {
+    return "image_text";
+  }
+
+  // Check for speech-to-text models
+  if (
+    lowerModelId.includes("whisper") ||
+    lowerModelId.includes("speech-to-text") ||
+    lowerModelId.includes("speech2text") ||
+    lowerModelId.includes("stt")
+  ) {
+    return "speech2text";
+  }
+
+  // Check for text-to-speech models
+  if (
+    lowerModelId.includes("tts") ||
+    lowerModelId.includes("text-to-speech") ||
+    lowerModelId.includes("text2speech") ||
+    lowerModelId.includes("speecht5") ||
+    lowerModelId.includes("bark")
+  ) {
+    return "text2speech";
+  }
+
+  // Default to text generation
+  return "text_generation";
+};
 
 interface ModelDownloadDialogProps {
   isOpen: boolean;
@@ -14,6 +76,7 @@ interface ModelDownloadDialogProps {
 
 const TASK_TYPES: { value: ModelTaskType; label: string }[] = [
   { value: "text_generation", label: "Text Generation" },
+  { value: "image_text", label: "Image-to-Text (Vision)" },
   { value: "embeddings_ov", label: "Embeddings" },
   { value: "rerank_ov", label: "Reranking" },
   { value: "text2speech", label: "Text-to-Speech" },
@@ -69,6 +132,14 @@ export const ModelDownloadDialog = ({
 
     setGraphParams(baseParams);
   };
+
+  // Auto-detect and set task type when dialog opens with a new modelId
+  useEffect(() => {
+    if (isOpen && modelId) {
+      const inferredType = inferTaskTypeFromModelId(modelId);
+      handleTaskTypeChange(inferredType);
+    }
+  }, [isOpen, modelId]);
 
   const handleDownload = async () => {
     setIsDownloading(true);

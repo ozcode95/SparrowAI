@@ -2,6 +2,7 @@
 
 export type ModelTaskType =
   | "text_generation"
+  | "image_text"
   | "embeddings_ov"
   | "rerank_ov"
   | "text2speech"
@@ -45,6 +46,15 @@ export interface GraphGenerationParams {
 
 export interface ModelSibling {
   rfilename: string;
+}
+
+export type ModelType = "text" | "vision" | "embedding" | "reranker" | "image";
+
+export interface ModelMetadata {
+  model_id: string;
+  model_type: ModelType;
+  pipeline_tag: string;
+  commit_sha: string | null;
 }
 
 export interface ModelInfo {

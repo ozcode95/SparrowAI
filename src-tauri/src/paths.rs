@@ -76,6 +76,17 @@ pub fn get_mcp_config_path(_app_handle: &AppHandle) -> Result<PathBuf> {
     Ok(config_dir.join("config.json"))
 }
 
+/// Get the model metadata file path
+pub fn get_model_metadata_path() -> Result<PathBuf> {
+    let models_dir = get_models_dir()?;
+    Ok(models_dir.join("model_metadata.json"))
+}
+
+/// Get the tasks file path
+pub fn get_tasks_path() -> Result<PathBuf> {
+    Ok(get_sparrow_dir()?.join("tasks.json"))
+}
+
 /// Get the OpenVINO model path for a specific model
 #[allow(dead_code)]
 pub fn get_openvino_model_path(model_name: &str) -> Result<PathBuf> {

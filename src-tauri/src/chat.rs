@@ -11,10 +11,19 @@ use async_openai::types::ChatCompletionRequestUserMessageArgs;
 use async_openai::types::ChatCompletionRequestSystemMessageArgs;
 use async_openai::types::ChatCompletionRequestAssistantMessageArgs;
 use async_openai::types::ChatCompletionStreamOptions;
+use async_openai::types::{
+    ChatCompletionRequestUserMessageContent,
+    ChatCompletionRequestUserMessageContentPart,
+    ChatCompletionRequestMessageContentPartText,
+    ChatCompletionRequestMessageContentPartImage,
+    ImageUrl,
+    ImageDetail,
+};
 use async_openai::{ types::CreateChatCompletionRequestArgs, Client };
 use async_openai::{ config::OpenAIConfig };
 use futures::StreamExt;
 use tauri::{ AppHandle, Emitter };
+use base64::Engine;
 
 use crate::{ mcp, paths, constants };
 
@@ -28,6 +37,8 @@ pub struct AttachmentInfo {
     pub file_path: String,
     pub file_name: String,
     pub file_type: String,
+    #[serde(default)]
+    pub is_image: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -492,7 +503,8 @@ pub async fn chat_with_loaded_model_streaming(
     top_p: Option<f64>,
     seed: Option<i64>,
     max_tokens: Option<u32>,
-    max_completion_tokens: Option<u32>
+    max_completion_tokens: Option<u32>,
+    attachments: Option<Vec<AttachmentInfo>>
 ) -> Result<String, String> {
     let config = OpenAIConfig::new()
         .with_api_key("unused")
@@ -663,10 +675,82 @@ For each function call, return a json object with function name and arguments wi
         "Preparing to send messages to LLM"
     );
 
+    // Build the current user message with potential image attachments
+    let user_message_content = if let Some(ref attachment_list) = attachments {
+        let image_attachments: Vec<&AttachmentInfo> = attachment_list
+            .iter()
+            .filter(|a| a.is_image)
+            .collect();
+
+        if !image_attachments.is_empty() {
+            // Build multimodal message with text + images
+            tracing::debug!(
+                image_count = image_attachments.len(),
+                "Building multimodal message with images"
+            );
+
+            let mut content_parts: Vec<ChatCompletionRequestUserMessageContentPart> = vec![
+                ChatCompletionRequestMessageContentPartText {
+                    text: message.clone(),
+                }.into()
+            ];
+
+            // Add each image as base64 data URL
+            for img_attachment in image_attachments {
+                match fs::read(&img_attachment.file_path) {
+                    Ok(image_data) => {
+                        let base64_data = base64::engine::general_purpose::STANDARD.encode(&image_data);
+                        
+                        // Determine MIME type from file extension
+                        let mime_type = match img_attachment.file_type.to_lowercase().as_str() {
+                            "png" => "image/png",
+                            "jpg" | "jpeg" => "image/jpeg",
+                            "gif" => "image/gif",
+                            "webp" => "image/webp",
+                            _ => "image/jpeg", // default
+                        };
+                        
+                        let data_url = format!("data:{};base64,{}", mime_type, base64_data);
+                        
+                        tracing::debug!(
+                            file_name = %img_attachment.file_name,
+                            data_url_length = data_url.len(),
+                            "Added image to message"
+                        );
+
+                        content_parts.push(
+                            ChatCompletionRequestMessageContentPartImage {
+                                image_url: ImageUrl {
+                                    url: data_url,
+                                    detail: Some(ImageDetail::Auto),
+                                }
+                            }.into()
+                        );
+                    }
+                    Err(e) => {
+                        log_warning!(
+                            "Failed to read image file",
+                            error = %e,
+                            file_path = %img_attachment.file_path
+                        );
+                    }
+                }
+            }
+
+            ChatCompletionRequestUserMessageContent::Array(content_parts)
+        } else {
+            // No images, just text
+            ChatCompletionRequestUserMessageContent::Text(message.clone())
+        }
+    } else {
+        // No attachments at all
+        ChatCompletionRequestUserMessageContent::Text(message.clone())
+    };
+
     // Always add the current user message
     messages.push(
         ChatCompletionRequestUserMessageArgs::default()
-            .content(message.clone())
+            .content(user_message_content)
             .build()
             .map_err(|e| format!("Failed to build user message: {}", e))?
             .into()
@@ -1248,20 +1332,44 @@ pub async fn chat_with_rag_streaming(
     max_completion_tokens: Option<u32>,
     use_rag: Option<bool>,
     rag_limit: Option<usize>,
-    attached_file_paths: Option<Vec<String>>
+    attachments: Option<Vec<AttachmentInfo>>
 ) -> Result<String, String> {
     let mut context_content = String::new();
 
-    // RAG retrieval if enabled OR if there are attached files
-    let should_use_rag = use_rag.unwrap_or(false) || attached_file_paths.is_some();
+    // Separate images from documents
+    let (_image_attachments, document_attachments): (Vec<AttachmentInfo>, Vec<AttachmentInfo>) = 
+        if let Some(attachment_list) = attachments.as_ref() {
+            let mut images = Vec::new();
+            let mut docs = Vec::new();
+            for attachment in attachment_list {
+                if attachment.is_image {
+                    images.push(attachment.clone());
+                } else {
+                    docs.push(attachment.clone());
+                }
+            }
+            (images, docs)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+
+    // Extract document file paths for RAG (excluding images)
+    let doc_file_paths: Option<Vec<String>> = if !document_attachments.is_empty() {
+        Some(document_attachments.iter().map(|a| a.file_path.clone()).collect())
+    } else {
+        None
+    };
+
+    // RAG retrieval if enabled OR if there are document attachments (not images)
+    let should_use_rag = use_rag.unwrap_or(false) || doc_file_paths.is_some();
     
     if should_use_rag {
         tracing::info!(
-            has_attached_files = attached_file_paths.is_some(), 
-            attached_count = attached_file_paths.as_ref().map(|f| f.len()),
+            has_attached_files = doc_file_paths.is_some(), 
+            attached_count = doc_file_paths.as_ref().map(|f| f.len()),
             "RAG is enabled, performing document retrieval"
         );
-        match perform_rag_retrieval(&message, rag_limit, attached_file_paths.as_ref()).await {
+        match perform_rag_retrieval(&message, rag_limit, doc_file_paths.as_ref()).await {
             Ok(context) => {
                 if !context.is_empty() {
                     tracing::info!(context_length = context.len(), "RAG context retrieved successfully");
@@ -1305,6 +1413,7 @@ pub async fn chat_with_rag_streaming(
     };
 
     // Use existing chat function with enhanced prompt
+    // Pass the full attachments list (including images) to the base chat function
     chat_with_loaded_model_streaming(
         app,
         model_name,
@@ -1316,7 +1425,8 @@ pub async fn chat_with_rag_streaming(
         top_p,
         seed,
         max_tokens,
-        max_completion_tokens
+        max_completion_tokens,
+        attachments // Pass all attachments, images will be handled separately
     ).await
 }
 
@@ -1479,6 +1589,7 @@ fn check_if_continuation_needed(text: &str) -> bool {
     text.contains("<tool_response>")
 }
 
+#[allow(dead_code)]
 fn truncate_content(content: &str, max_length: usize) -> String {
     if content.len() <= max_length {
         content.to_string()

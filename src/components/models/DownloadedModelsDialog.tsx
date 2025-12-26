@@ -1,6 +1,14 @@
 import { Dialog } from "../ui";
 import { Button } from "../ui";
 import { CheckCircle, Trash2, FolderOpen, X, Play } from "lucide-react";
+import type { ModelMetadata } from "@/types/models";
+import type { ModelCategory, LoadedModelsByType } from "@/store/types";
+import {
+  categorizeModel,
+  getCategoryFullName,
+  getCategoryDisplayName,
+  getCategoryColor,
+} from "@/lib/modelUtils";
 
 interface DownloadedModelsDialogProps {
   isOpen: boolean;
@@ -8,8 +16,10 @@ interface DownloadedModelsDialogProps {
   downloadedModels: Set<string>;
   onDelete: (modelId: string) => void;
   onOpenFolder: (modelId: string) => void;
-  onLoadModel?: (modelId: string) => void;
+  onLoadModel?: (modelId: string, modelType: ModelCategory) => void;
   loadedModel?: string | null;
+  loadedModelsByType?: LoadedModelsByType;
+  modelMetadata?: Record<string, ModelMetadata>;
 }
 
 export const DownloadedModelsDialog = ({
@@ -20,7 +30,33 @@ export const DownloadedModelsDialog = ({
   onOpenFolder,
   onLoadModel,
   loadedModel,
+  loadedModelsByType,
+  modelMetadata = {},
 }: DownloadedModelsDialogProps) => {
+  // Group models by category
+  const modelsByCategory: Record<ModelCategory, string[]> = {
+    text: [],
+    "image-to-text": [],
+    "image-gen": [],
+    "speech-to-text": [],
+    "text-to-speech": [],
+  };
+
+  Array.from(downloadedModels).forEach((modelId) => {
+    const category = categorizeModel(modelId);
+    if (category) {
+      modelsByCategory[category].push(modelId);
+    }
+  });
+
+  const isModelLoaded = (modelId: string): boolean => {
+    if (!loadedModelsByType) return loadedModel === modelId;
+
+    const category = categorizeModel(modelId);
+    if (!category) return false;
+
+    return loadedModelsByType[category] === modelId;
+  };
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
       <div className="bg-white dark:bg-gray-800 rounded-xl max-w-2xl w-full p-6 max-h-[80vh] flex flex-col">
@@ -59,59 +95,88 @@ export const DownloadedModelsDialog = ({
               </p>
             </div>
           ) : (
-            <div className="space-y-2">
-              {Array.from(downloadedModels).map((modelId) => (
-                <div
-                  key={modelId}
-                  className="flex items-center justify-between p-4 rounded-lg bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                >
-                  <div className="flex-1 min-w-0 mr-4">
-                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                      {modelId}
-                    </p>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                      {modelId.split("/")[0]} organization
-                      {loadedModel === modelId && (
-                        <span className="ml-2 text-green-600 dark:text-green-400">
-                          • Loaded
-                        </span>
-                      )}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {onLoadModel && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => onLoadModel(modelId)}
-                        disabled={loadedModel === modelId}
-                        className="shrink-0"
-                      >
-                        <Play className="w-4 h-4 mr-1" />
-                        {loadedModel === modelId ? "Loaded" : "Load"}
-                      </Button>
-                    )}
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => onOpenFolder(modelId)}
-                      className="shrink-0"
-                    >
-                      <FolderOpen className="w-4 h-4 mr-1" />
-                      Open
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => onDelete(modelId)}
-                      className="shrink-0 text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
-                    >
-                      <Trash2 className="w-4 h-4 mr-1" />
-                      Delete
-                    </Button>
-                  </div>
-                </div>
-              ))}
+            <div className="space-y-6">
+              {(
+                Object.entries(modelsByCategory) as [ModelCategory, string[]][]
+              ).map(
+                ([category, models]) =>
+                  models.length > 0 && (
+                    <div key={category}>
+                      <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3 px-1">
+                        {getCategoryFullName(category)}
+                      </h3>
+                      <div className="space-y-2">
+                        {models.map((modelId) => {
+                          const loaded = isModelLoaded(modelId);
+                          return (
+                            <div
+                              key={modelId}
+                              className="flex items-center justify-between p-4 rounded-lg bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                            >
+                              <div className="flex-1 min-w-0 mr-4">
+                                <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+                                  {modelId}
+                                </p>
+                                <div className="flex items-center gap-2 mt-0.5">
+                                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                                    {modelId.split("/")[0]} organization
+                                  </p>
+                                  <span
+                                    className={`inline-block px-2 py-0.5 text-xs rounded-full ${getCategoryColor(
+                                      category
+                                    )}`}
+                                  >
+                                    {getCategoryDisplayName(category)}
+                                  </span>
+                                  {loaded && (
+                                    <span className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
+                                      <span className="w-1.5 h-1.5 bg-green-500 rounded-full"></span>
+                                      Loaded
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                {onLoadModel && (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() =>
+                                      onLoadModel(modelId, category)
+                                    }
+                                    disabled={loaded}
+                                    className="shrink-0"
+                                  >
+                                    <Play className="w-4 h-4 mr-1" />
+                                    {loaded ? "Loaded" : "Load"}
+                                  </Button>
+                                )}
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => onOpenFolder(modelId)}
+                                  className="shrink-0"
+                                >
+                                  <FolderOpen className="w-4 h-4 mr-1" />
+                                  Open
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => onDelete(modelId)}
+                                  className="shrink-0 text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
+                                >
+                                  <Trash2 className="w-4 h-4 mr-1" />
+                                  Delete
+                                </Button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )
+              )}
             </div>
           )}
         </div>
