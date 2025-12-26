@@ -16,6 +16,7 @@ mod mcp;
 mod logging;
 mod autostart;
 mod tasks;
+mod gallery;
 
 #[tauri::command]
 async fn get_default_download_path() -> Result<String, String> {
@@ -428,7 +429,11 @@ pub fn run() {
                 tasks::delete_task,
                 tasks::toggle_task,
                 tasks::execute_task_manually,
-                tasks::get_task_logs
+                tasks::get_task_logs,
+                gallery::generate_image,
+                gallery::get_generated_images,
+                gallery::delete_generated_image,
+                gallery::copy_file
             ]
         )
         .setup(|app| {

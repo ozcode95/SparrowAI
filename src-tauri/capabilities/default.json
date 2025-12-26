@@ -4,8 +4,14 @@
   "description": "Capability for the main window",
   "windows": ["main"],
   "permissions": [
-    "core:default",
-    "opener:default",
+    {
+      "identifier": "core:default",
+      "allow": [
+        {
+          "path": "$HOME/**"
+        }
+      ]
+    },
     "dialog:allow-open",
     "dialog:allow-message",
     "dialog:default",
@@ -28,6 +34,14 @@
     "autostart:allow-disable",
     "autostart:allow-is-enabled",
     "log:default",
-    "notification:default"
+    "notification:default",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        {
+          "path": "$HOME/**"
+        }
+      ]
+    }
   ]
 }

@@ -6,6 +6,7 @@ import { createUiSlice } from "./slices/uiSlice";
 import { createModelsSlice } from "./slices/modelsSlice";
 import { createSettingsSlice } from "./slices/settingsSlice";
 import { createChatSlice } from "./slices/chatSlice";
+import { createGallerySlice } from "./slices/gallerySlice";
 import type { AppState } from "./types";
 
 export const useAppStore = create<AppState>()(
@@ -16,6 +17,7 @@ export const useAppStore = create<AppState>()(
       ...createModelsSlice(...a),
       ...createSettingsSlice(...a),
       ...createChatSlice(...a),
+      ...createGallerySlice(...a),
     }),
     {
       name: "sparrow-app-state",
@@ -135,6 +137,20 @@ export const useChat = () =>
       getActiveSession: state.getActiveSession,
       getChatSessionsArray: state.getChatSessionsArray,
       getRecentChatSessions: state.getRecentChatSessions,
+    }))
+  );
+
+export const useGallery = () =>
+  useAppStore(
+    useShallow((state) => ({
+      generatedImages: state.generatedImages,
+      isGenerating: state.isGenerating,
+      currentGeneratingImage: state.currentGeneratingImage,
+      setGeneratedImages: state.setGeneratedImages,
+      addGeneratedImage: state.addGeneratedImage,
+      setIsGenerating: state.setIsGenerating,
+      setCurrentGeneratingImage: state.setCurrentGeneratingImage,
+      clearGallery: state.clearGallery,
     }))
   );
 

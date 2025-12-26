@@ -8,6 +8,7 @@ import { ModelsPage } from "./components/models";
 import { DocumentsPage } from "./components/documents";
 import { McpPage } from "./components/mcp";
 import { TasksPage } from "./components/tasks";
+import { GalleryPage } from "./components/gallery";
 import { SettingsDialog } from "./components/settings";
 import {
   NotificationSnackbar,
@@ -227,6 +228,8 @@ function App() {
         return <McpPage />;
       case "tasks":
         return <TasksPage />;
+      case "gallery":
+        return <GalleryPage />;
       default:
         return <ChatPage />;
     }

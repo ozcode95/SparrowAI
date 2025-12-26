@@ -17,6 +17,7 @@ export type PageType =
   | "documents"
   | "mcp"
   | "tasks"
+  | "gallery"
   | "settings";
 
 export interface Notification {
@@ -173,9 +174,31 @@ export interface ChatSlice {
   getRecentChatSessions: (limit?: number) => ChatSession[];
 }
 
+export interface GallerySlice {
+  generatedImages: GeneratedImage[];
+  isGenerating: boolean;
+  currentGeneratingImage: GeneratedImage | null;
+  setGeneratedImages: (images: GeneratedImage[]) => void;
+  addGeneratedImage: (image: GeneratedImage) => void;
+  setIsGenerating: (isGenerating: boolean) => void;
+  setCurrentGeneratingImage: (image: GeneratedImage | null) => void;
+  clearGallery: () => void;
+}
+
+export interface GeneratedImage {
+  id: string;
+  prompt: string;
+  imagePath: string;
+  timestamp: number;
+  modelId: string;
+  size: string;
+  numInferenceSteps?: number;
+}
+
 export interface AppState
   extends ThemeSlice,
     UISlice,
     ModelsSlice,
     SettingsSlice,
-    ChatSlice {}
+    ChatSlice,
+    GallerySlice {}

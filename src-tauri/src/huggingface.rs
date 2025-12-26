@@ -688,6 +688,20 @@ fn map_pipeline_tag_to_model_type(pipeline_tag: &str) -> Option<ModelType> {
     }
 }
 
+// Map task_type string to our ModelType
+fn map_task_type_to_model_type(task_type: &str) -> Option<ModelType> {
+    match task_type {
+        "text_generation" => Some(ModelType::Text),
+        "image_text" => Some(ModelType::ImageToText),
+        "embeddings_ov" => Some(ModelType::Embedding),
+        "rerank_ov" => Some(ModelType::Reranker),
+        "image_generation" => Some(ModelType::ImageGeneration),
+        "speech2text" => Some(ModelType::SpeechToText),
+        "text2speech" => Some(ModelType::TextToSpeech),
+        _ => None,
+    }
+}
+
 // Get commit SHA from metadata
 async fn get_commit_sha_from_metadata(model_id: &str) -> Option<String> {
     if let Ok(store) = load_model_metadata().await {
@@ -908,10 +922,63 @@ pub async fn download_entire_model(
         detect_task_type(&model_info)
     };
     
-    // Save model type metadata - always save even if we can't determine the type
-    let save_result = if let Some(pipeline_tag) = &model_info.pipeline_tag {
+    // Save model type metadata - use detected/selected task_type, fallback to pipeline_tag
+    let save_result = if let Some(ref task_type_str) = task_type {
+        // Use the detected or user-selected task type
+        if let Some(model_type) = map_task_type_to_model_type(task_type_str) {
+            info!(
+                model_id = %normalized_model_id,
+                task_type = %task_type_str,
+                model_type = ?model_type,
+                "Saving model metadata from task type"
+            );
+            save_model_type(
+                normalized_model_id.clone(), 
+                model_type, 
+                model_info.pipeline_tag.clone().unwrap_or_else(|| task_type_str.clone()),
+                model_info.sha.clone()
+            ).await
+        } else {
+            // Fallback to pipeline_tag if task_type doesn't map
+            if let Some(pipeline_tag) = &model_info.pipeline_tag {
+                if let Some(model_type) = map_pipeline_tag_to_model_type(pipeline_tag) {
+                    save_model_type(
+                        normalized_model_id.clone(), 
+                        model_type, 
+                        pipeline_tag.clone(),
+                        model_info.sha.clone()
+                    ).await
+                } else {
+                    warn!(
+                        model_id = %normalized_model_id,
+                        pipeline_tag = %pipeline_tag,
+                        task_type = %task_type_str,
+                        "Unknown pipeline_tag and task_type, defaulting to Text"
+                    );
+                    save_model_type(
+                        normalized_model_id.clone(), 
+                        ModelType::Text, 
+                        pipeline_tag.clone(),
+                        model_info.sha.clone()
+                    ).await
+                }
+            } else {
+                warn!(
+                    model_id = %normalized_model_id,
+                    task_type = %task_type_str,
+                    "Unknown task_type and no pipeline_tag, defaulting to Text"
+                );
+                save_model_type(
+                    normalized_model_id.clone(), 
+                    ModelType::Text, 
+                    task_type_str.clone(),
+                    model_info.sha.clone()
+                ).await
+            }
+        }
+    } else if let Some(pipeline_tag) = &model_info.pipeline_tag {
+        // No task_type detected, use pipeline_tag
         if let Some(model_type) = map_pipeline_tag_to_model_type(pipeline_tag) {
-            // We have a recognized pipeline_tag, save with type
             save_model_type(
                 normalized_model_id.clone(), 
                 model_type, 
@@ -919,11 +986,10 @@ pub async fn download_entire_model(
                 model_info.sha.clone()
             ).await
         } else {
-            // Unknown pipeline_tag, but still save with Text as default
             warn!(
                 model_id = %normalized_model_id,
                 pipeline_tag = %pipeline_tag,
-                "Unknown pipeline_tag, saving as Text type"
+                "Unknown pipeline_tag, defaulting to Text"
             );
             save_model_type(
                 normalized_model_id.clone(), 
@@ -933,15 +999,15 @@ pub async fn download_entire_model(
             ).await
         }
     } else {
-        // No pipeline_tag, save with Text as default
+        // No task_type and no pipeline_tag
         warn!(
             model_id = %normalized_model_id,
-            "No pipeline_tag found, saving as Text type"
+            "No task_type or pipeline_tag found, defaulting to Text"
         );
         save_model_type(
             normalized_model_id.clone(), 
             ModelType::Text, 
-            String::new(),
+            "unknown".to_string(),
             model_info.sha.clone()
         ).await
     };
