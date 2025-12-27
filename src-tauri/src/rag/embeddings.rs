@@ -1,6 +1,6 @@
 use super::Document;
-use async_openai::{ types::CreateEmbeddingRequestArgs, Client };
-use async_openai::config::OpenAIConfig;
+use async_openai::{ Client, config::OpenAIConfig };
+use async_openai::types::embeddings::CreateEmbeddingRequestArgs;
 use crate::constants;
 
 pub struct EmbeddingService {

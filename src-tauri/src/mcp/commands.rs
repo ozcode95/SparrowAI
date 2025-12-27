@@ -351,9 +351,15 @@ pub async fn fetch_mcp_server_tools_details(
 #[tauri::command]
 pub async fn get_all_mcp_tools_for_chat(
     app_handle: AppHandle,
-) -> Result<Vec<async_openai::types::ChatCompletionTool>, String> {
+) -> Result<Vec<async_openai::types::chat::ChatCompletionTool>, String> {
     // Get built-in tools first
-    let mut all_tools = BUILTIN_TOOLS.to_openai_tools();
+    let mut all_tools = match BUILTIN_TOOLS.to_openai_tools() {
+        Ok(tools) => tools,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to convert built-in tools, continuing with empty built-in list");
+            Vec::new()
+        }
+    };
     
     tracing::debug!(builtin_count = all_tools.len(), "Added built-in tools for chat");
     

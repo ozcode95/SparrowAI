@@ -3,8 +3,16 @@ use tracing::{error, info, debug};
 use std::path::PathBuf;
 use std::fs;
 use uuid::Uuid;
-use base64::Engine;
-use reqwest;
+use async_openai::{
+    Client,
+    config::OpenAIConfig,
+    types::images::{
+        CreateImageRequestArgs,
+        ImageSize,
+        ImageResponseFormat,
+        ImageModel
+    },
+};
 
 use crate::paths;
 use crate::constants;
@@ -93,86 +101,77 @@ pub async fn generate_image(
     debug!("Prompt: {}", prompt);
     debug!("Reference images: {:?}", reference_images);
 
-    // Build request body
-    let mut request_body = serde_json::json!({
-        "model": "stable-diffusion-v1-5-int8-ov",
-        "prompt": prompt,
-        "size": size,
-        "n": 1,
-        "response_format": "b64_json"
-    });
-
-    // Add num_inference_steps to the request
-    if let Some(obj) = request_body.as_object_mut() {
-        obj.insert(
-            "num_inference_steps".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(num_inference_steps))
-        );
+    let mut model_id = model_id;
+    if model_id.starts_with("OpenVINO/") {
+        // remove OpenVINO/ prefix
+        model_id = model_id.trim_start_matches("OpenVINO/").to_string();
+        info!("Using OVMS model ID: {}", model_id);
     }
-
+    
     // Handle reference images if provided
     if !reference_images.is_empty() {
         info!("Reference images provided but not yet supported in current implementation");
     }
 
-    // Make direct HTTP request to OVMS
-    let url = format!("{}/v3/images/generations", constants::OVMS_API_BASE);
-    info!("Calling OVMS image generation API at: {}", url);
+    // Parse the size string (e.g., "512x512") into ImageSize
+    let image_size = match size.as_str() {
+        "256x256" => ImageSize::S256x256,
+        "512x512" => ImageSize::S512x512,
+        "1024x1024" => ImageSize::S1024x1024,
+        _ => ImageSize::S512x512, // default
+    };
 
-    let client = reqwest::Client::new();
-    let response = client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .json(&request_body)
-        .send()
-        .await
-        .map_err(|e| {
-            error!("Failed to send image generation request: {}", e);
-            format!("Failed to send image generation request: {}", e)
-        })?;
+    // Configure async_openai client to use OVMS endpoint
+    let config = OpenAIConfig::new()
+        .with_api_base(&format!("{}/v3", constants::OVMS_API_BASE))
+        .with_api_key(""); // OVMS doesn't require an API key
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-        error!("Image generation failed with status {}: {}", status, error_text);
-        return Err(format!("Image generation failed: {} - {}", status, error_text));
-    }
-
-    let response_json: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| {
-            error!("Failed to parse response: {}", e);
-            format!("Failed to parse response: {}", e)
-        })?;
-
-    // Get the base64 image data
-    let data_array = response_json["data"].as_array()
-        .ok_or("No data array in response")?;
+    let client = Client::with_config(config);
     
-    if data_array.is_empty() {
+    // Build the image generation request
+    let request = CreateImageRequestArgs::default()
+        .prompt(prompt.clone())
+        .model(ImageModel::Other(model_id.clone()))
+        .n(1)
+        .size(image_size)
+        .response_format(ImageResponseFormat::B64Json)
+        .build().map_err(|e| {
+            error!("Failed to generate image request: {}", e);
+            format!("Failed to generate image request: {}", e)
+        })?;
+
+    // Add num_inference_steps as extra parameter if needed
+    // Note: This might need to be handled differently depending on OVMS implementation
+    info!("Making image generation request to OVMS");
+
+    // Call the async_openai API
+    let response = client
+        .images()
+        .generate(request)
+        .await
+        .map_err(|e| {
+            error!("Failed to generate image: {}", e);
+            format!("Failed to generate image: {}", e)
+        })?;
+
+    // Get the base64 image data from the response
+    if response.data.is_empty() {
         return Err("No image data received from server".to_string());
     }
 
-    let image_b64 = data_array[0]["b64_json"].as_str()
-        .ok_or("No base64 image data in response")?;
-
-    // Decode base64 and save to file
-    let image_bytes = base64::engine::general_purpose::STANDARD
-        .decode(image_b64)
-        .map_err(|e| format!("Failed to decode base64 image: {}", e))?;
-
-    // Generate unique filename
+    // Generate metadata before saving
     let image_id = Uuid::new_v4().to_string();
     let timestamp = chrono::Utc::now().timestamp();
-    let filename = format!("{}_{}.png", timestamp, &image_id[..8]);
     
     let images_dir = get_images_dir()?;
-    let image_path = images_dir.join(&filename);
-
-    // Save the image
-    fs::write(&image_path, &image_bytes)
+    
+    // Save images using the response's save method
+    let paths = response.save(images_dir.to_str().ok_or("Invalid images directory path")?)
+        .await
         .map_err(|e| format!("Failed to save image: {}", e))?;
+
+    let image_path = paths.get(0)
+        .ok_or("No image path returned from save operation")?;
 
     info!("Image saved to: {}", image_path.display());
 

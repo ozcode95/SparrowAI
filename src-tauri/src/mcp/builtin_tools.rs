@@ -5,6 +5,7 @@ use sysinfo::System;
 use chrono::Local;
 use std::fs;
 use std::path::Path;
+use async_openai::types::chat::{ChatCompletionTool, FunctionObjectArgs};
 
 /// Represents a built-in MCP tool with its metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,23 +56,21 @@ impl BuiltinToolRegistry {
     }
 
     /// Convert built-in tools to OpenAI ChatCompletionTool format
-    pub fn to_openai_tools(&self) -> Vec<async_openai::types::ChatCompletionTool> {
-        use async_openai::types::{ChatCompletionTool, ChatCompletionToolType, FunctionObject};
+    pub fn to_openai_tools(&self) -> Result<Vec<ChatCompletionTool>, String> {
         
         self.tools.values().map(|tool| {
             let tool_name = format!("builtin_{}", tool.name);
             tracing::debug!("Registering builtin tool for chat: {} (hidden_from_task_creation: {})", 
                 tool_name, tool.hidden_from_task_creation);
             
-            ChatCompletionTool {
-                r#type: ChatCompletionToolType::Function,
-                function: FunctionObject {
-                    name: tool_name, // Prefix with "builtin_" to identify source
-                    description: Some(tool.description.clone()),
-                    parameters: Some(tool.input_schema.clone()),
-                    strict: None,
-                },
-            }
+            let function = FunctionObjectArgs::default()
+                .name(tool_name)
+                .description(tool.description.clone())
+                .parameters(tool.input_schema.clone())
+                .build()
+                .map_err(|e| format!("Failed to build function object: {}", e))?;
+            
+            Ok(ChatCompletionTool { function })
         }).collect()
     }
 

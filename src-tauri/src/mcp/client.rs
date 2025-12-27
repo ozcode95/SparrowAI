@@ -11,7 +11,7 @@ use serde::{ Deserialize, Serialize };
 use std::collections::HashMap;
 use std::process::Stdio;
 use tokio::process::Command;
-use async_openai::types::{ ChatCompletionTool, ChatCompletionToolType, FunctionObject };
+use async_openai::types::chat::{ ChatCompletionTool, FunctionObjectArgs };
 use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -226,26 +226,25 @@ impl McpManager {
                 Ok(tools_response) => {
                     for tool in tools_response.tools {
                         // Convert MCP tool to OpenAI ChatCompletionTool format
+                        let description = tool.description
+                            .as_ref()
+                            .map(|d| d.to_string())
+                            .unwrap_or_else(|| {
+                                format!(
+                                    "Tool '{}' from MCP server '{}'",
+                                    tool.name,
+                                    server_name
+                                )
+                            });
+                        
+                        let parameters = serde_json::Value::Object(tool.input_schema.as_ref().clone());
+                        
                         let openai_tool = ChatCompletionTool {
-                            r#type: ChatCompletionToolType::Function,
-                            function: FunctionObject {
-                                name: format!("{}_{}", server_name, tool.name), // Prefix with server name to avoid conflicts
-                                description: tool.description
-                                    .map(|d| d.to_string())
-                                    .or_else(||
-                                        Some(
-                                            format!(
-                                                "Tool '{}' from MCP server '{}'",
-                                                tool.name,
-                                                server_name
-                                            )
-                                        )
-                                    ),
-                                parameters: Some(
-                                    serde_json::Value::Object(tool.input_schema.as_ref().clone())
-                                ),
-                                strict: Some(false),
-                            },
+                            function: FunctionObjectArgs::default()
+                                .name(format!("{}_{}", server_name, tool.name))
+                                .description(description)
+                                .parameters(parameters)
+                                .build()?,  
                         };
                         all_tools.push(openai_tool);
                     }

@@ -7,20 +7,21 @@ use std::path::PathBuf;
 use uuid::Uuid;
 use std::sync::{ Arc, Mutex };
 use tokio::sync::broadcast;
-use async_openai::types::ChatCompletionRequestUserMessageArgs;
-use async_openai::types::ChatCompletionRequestSystemMessageArgs;
-use async_openai::types::ChatCompletionRequestAssistantMessageArgs;
-use async_openai::types::ChatCompletionStreamOptions;
-use async_openai::types::{
+use async_openai::{Client, config::OpenAIConfig};
+use async_openai::types::chat::{
+    CreateChatCompletionRequestArgs,
+    ChatCompletionRequestMessage,
+    ChatCompletionRequestSystemMessageArgs,
+    ChatCompletionRequestUserMessageArgs,
+    ChatCompletionRequestAssistantMessageArgs,
     ChatCompletionRequestUserMessageContent,
     ChatCompletionRequestUserMessageContentPart,
     ChatCompletionRequestMessageContentPartText,
     ChatCompletionRequestMessageContentPartImage,
+    ChatCompletionStreamOptions,
     ImageUrl,
     ImageDetail,
 };
-use async_openai::{ types::CreateChatCompletionRequestArgs, Client };
-use async_openai::{ config::OpenAIConfig };
 use futures::StreamExt;
 use tauri::{ AppHandle, Emitter };
 use base64::Engine;
@@ -766,7 +767,8 @@ For each function call, return a json object with function name and arguments wi
         .messages(messages.clone())
         .stream(true)
         .stream_options(ChatCompletionStreamOptions {
-            include_usage: true,
+            include_usage: Some(true),
+            include_obfuscation: None,
         })
         .temperature(temperature.unwrap_or(0.7) as f32)
         .top_p(top_p.unwrap_or(1.0) as f32);
@@ -1187,7 +1189,7 @@ async fn continue_conversation_after_tools(
     app: AppHandle,
     client: &Client<OpenAIConfig>,
     _system_message: &str,
-    previous_messages: &[async_openai::types::ChatCompletionRequestMessage],
+    previous_messages: &[ChatCompletionRequestMessage],
     assistant_response_with_tools: String,
     model_name: &str,
     temperature: Option<f64>,
