@@ -31,7 +31,6 @@ export const DownloadedModelsDialog = ({
   onLoadModel,
   loadedModel,
   loadedModelsByType,
-  modelMetadata = {},
 }: DownloadedModelsDialogProps) => {
   // Group models by category
   const modelsByCategory: Record<ModelCategory, string[]> = {

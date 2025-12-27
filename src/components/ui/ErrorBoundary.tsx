@@ -4,7 +4,7 @@
  * Catches React errors and logs them to the backend
  */
 
-import React, { Component, ErrorInfo, ReactNode } from "react";
+import { Component, ErrorInfo, ReactNode } from "react";
 import { logError } from "@/lib/logger";
 
 interface Props {

@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { logUserAction, logError, logInfo, logDebug } from "@/lib/logger";
+import { logUserAction, logError, logDebug } from "@/lib/logger";
 import { PageContainer } from "../layout";
 import { Card, Button, Input } from "../ui";
 import { useAppStore } from "@/store";
@@ -64,7 +64,7 @@ export const ModelsPage = () => {
   } = useAppStore();
   const [searchResults, setSearchResults] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState<ModelInfo | null>(null);
-  const [loadingModelInfo, setLoadingModelInfo] = useState<string | null>(null);
+  const [, setLoadingModelInfo] = useState<string | null>(null);
   const [modelInfoCache, setModelInfoCache] = useState<Map<string, ModelInfo>>(
     new Map()
   );
@@ -245,10 +245,7 @@ export const ModelsPage = () => {
     }
   };
 
-  const handleLoadModel = async (
-    modelId: string,
-    modelType: import("@/store/types").ModelCategory
-  ) => {
+  const handleLoadModel = async (modelId: string, modelType: ModelCategory) => {
     try {
       await invoke("load_model", { modelId });
       setLoadedModelByType(modelType, modelId);
@@ -348,7 +345,7 @@ export const ModelsPage = () => {
                   const progress = progressData.progress;
                   const currentFile = progressData.currentFile;
                   const modelInfo = modelInfoCache.get(modelId);
-                  const isLoadingInfo = loadingModelInfo === modelId;
+
                   const isSelected = selectedModel?.id === modelId;
                   const category = categorizeModel(modelId);
 
@@ -453,7 +450,7 @@ export const ModelsPage = () => {
               const progress = progressData.progress;
               const currentFile = progressData.currentFile;
               const modelInfo = modelInfoCache.get(modelId);
-              const isLoadingInfo = loadingModelInfo === modelId;
+
               const isSelected = selectedModel?.id === modelId;
               const category = categorizeModel(modelId);
 

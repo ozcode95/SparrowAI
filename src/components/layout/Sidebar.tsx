@@ -51,7 +51,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     updateChatSession,
     removeChatSession,
     temporarySession,
-    setTemporarySession,
     clearTemporarySession,
     clearCurrentChatMessages,
   } = useChat();

@@ -109,8 +109,8 @@ export const ChatPage = () => {
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [currentStreamingMessage, setCurrentStreamingMessage] = useState("");
-  const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
-  const [usageData, setUsageData] = useState<{
+  const [, setToolCalls] = useState<ToolCall[]>([]);
+  const [, setUsageData] = useState<{
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;

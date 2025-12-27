@@ -1,6 +1,6 @@
 import { StateCreator } from "zustand";
 import type { AppState, ChatSlice } from "../types";
-import { logStateChange, logDebug } from "../../lib/logger";
+import { logStateChange } from "../../lib/logger";
 
 export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (
   set,

@@ -5,7 +5,13 @@
  * All logs are sent to the Tauri backend and handled by the logging system.
  */
 
-import { trace, debug, info, warn, error } from "@tauri-apps/plugin-log";
+import {
+  trace,
+  debug,
+  info,
+  warn,
+  error as tauriLogError,
+} from "@tauri-apps/plugin-log";
 
 /**
  * Log levels matching backend logging levels
@@ -89,7 +95,7 @@ class Logger {
     }
 
     const logMessage = this.formatMessage(message + errorDetails, context);
-    await error(logMessage);
+    await tauriLogError(logMessage);
     console.error("[ERROR]", message, error, context);
   }
 

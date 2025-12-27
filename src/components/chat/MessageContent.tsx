@@ -11,12 +11,12 @@ interface MessageContentProps {
   content: string;
 }
 
-function extractToolName(jsonContent: string): string | null {
+function extractToolName(jsonContent: string): string | undefined {
   try {
     const parsed = JSON.parse(jsonContent);
-    return parsed.name || null;
+    return parsed.name || undefined;
   } catch {
-    return null;
+    return undefined;
   }
 }
 
@@ -178,11 +178,22 @@ export const MessageContent: React.FC<MessageContentProps> = ({ content }) => {
         // Clean the content
         const cleanedContent = cleanJsonString(segment.content);
 
+        // map internal segment types to Accordion variant names
+        const variantMap: Record<
+          MessageSegment["type"],
+          "default" | "tool-call" | "tool-response" | "think"
+        > = {
+          text: "default",
+          tool_call: "tool-call",
+          tool_response: "tool-response",
+          think: "think",
+        };
+
         return (
           <Accordion
             key={index}
             title={getAccordionTitle(segment.type, titleToolName)}
-            variant={segment.type}
+            variant={variantMap[segment.type]}
             defaultOpen={false}
           >
             <pre className="whitespace-pre-wrap font-mono text-xs overflow-x-auto">

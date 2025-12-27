@@ -13,7 +13,7 @@ import {
   ExternalLink,
   Trash2,
 } from "lucide-react";
-import { logUserAction, logError, logInfo } from "@/lib/logger";
+import { logUserAction, logInfo } from "@/lib/logger";
 
 interface AttachmentInfo {
   file_path: string;
@@ -282,7 +282,7 @@ export const GalleryPage = () => {
                     src={convertFileSrc(currentGeneratingImage.imagePath)}
                     alt={currentGeneratingImage.prompt}
                     className="w-full h-full object-cover"
-                    onError={(e) => {
+                    onError={() => {
                       console.error(
                         "Failed to load current image:",
                         currentGeneratingImage.imagePath

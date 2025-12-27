@@ -20,10 +20,11 @@
 
   <p align="center">
     <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License"/>
-    <img src="https://img.shields.io/badge/Tauri-2.0-24C8DB?logo=tauri" alt="Tauri"/>
-    <img src="https://img.shields.io/badge/React-18.3-61DAFB?logo=react" alt="React"/>
+   <img src="https://img.shields.io/badge/Tauri-2.0-24C8DB?logo=tauri" alt="Tauri"/>
+   <img src="https://img.shields.io/badge/React-19.2.3-61DAFB?logo=react" alt="React"/>
     <img src="https://img.shields.io/badge/Rust-2021-000000?logo=rust" alt="Rust"/>
-    <img src="https://img.shields.io/badge/OpenVINO Model Server-2025.2.1-0071C5" alt="OpenVINO"/>
+    <img src="https://img.shields.io/badge/OpenVINO Model Server-2025.4-
+cf82edc" alt="OpenVINO"/>
   </p>
 </div>
 
@@ -36,9 +37,18 @@ SparrowAI is a modern desktop application that brings powerful AI capabilities d
 - **🔒 100% Local** - All processing happens on your device
 - **⚡ Optimized Performance** - Powered by Intel OpenVINO for maximum efficiency
 - **🧠 RAG Support** - Upload documents for context-aware conversations
-- **🎨 Modern Interface** - Beautiful Material-UI design with dark/light themes
+- **🎨 Modern Interface** - Tailwind CSS and custom UI components with dark/light themes
 
 ## ✨ Features
+
+### ⚡ New in v0.5.0 release
+
+- **Autostart**: Add a platform-aware autostart toggle so SparrowAI can optionally launch minimized on login.
+- **Scheduled Tasks**: Create, edit, and run scheduled tasks (one-time or recurring) with triggers: DateTime, Daily, Weekly, Monthly, Every N minutes/hours. Actions include notifications and running MCP functions.
+- **MCP Improvements**: Full MCP server management (stdio/SSE/HTTP), auto-connect, tool discovery, and better OpenAI-style tool registration for built-in tools.
+- **Built-in Tools & Natural Task Creation**: Several built-in MCP tools (system info, time, directory listing) plus a `create_task` tool that can generate scheduled tasks from natural language.
+- **OVMS Reliability**: Improved OVMS download, validation, extraction and config validation for more robust local model server setup.
+- **Developer Test Script**: `test-builtin-tools.js` provides a quick browser-console check for built-in tools and MCP functionality.
 
 ### 💬 **Intelligent Conversations**
 
@@ -72,7 +82,7 @@ SparrowAI is a modern desktop application that brings powerful AI capabilities d
 
 ### 🎨 **Polished User Experience**
 
-- Material-UI design system with smooth animations
+- Tailwind CSS + custom component system with smooth animations
 - Collapsible sidebar with session management
 - Real-time initialization progress tracking
 - Comprehensive settings with theme customization
@@ -124,6 +134,7 @@ Make sure you have the following installed:
    - Download OpenVINO Model Server
    - Install required BGE models for RAG
    - Create configuration files
+   - Register built-in MCP tools, enable scheduled task execution, and offer an autostart option in Settings
 
 2. **Download Models** - Visit the Models page to:
 
@@ -137,10 +148,11 @@ Make sure you have the following installed:
 
 ### Frontend Stack
 
-- **React 18** - Modern UI with hooks and concurrent features
-- **Material-UI v7.2** - Comprehensive component library
-- **Zustand** - Lightweight state management
-- **Vite 6** - Lightning-fast development and builds
+- **React 19.2.3** - Modern UI with hooks and concurrent features
+- **Tailwind CSS v4.1.18** - Utility-first styling and design system
+- **Zustand (v5.x)** - Lightweight state management
+- **TypeScript 5.9.3** - Static types for safety
+- **Vite 7.3.0** - Lightning-fast development and builds
 
 ### Backend Stack
 

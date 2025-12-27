@@ -95,17 +95,7 @@ export const McpPage = () => {
     }
   };
 
-  const autoConnectServers = async () => {
-    try {
-      const connected = await invoke<string[]>("auto_connect_mcp_servers");
-      if (connected.length > 0) {
-        console.log("Auto-connected servers:", connected);
-        await loadServers();
-      }
-    } catch (error) {
-      console.error("Failed to auto-connect servers:", error);
-    }
-  };
+  // auto-connect helper removed (unused) — MCP auto-connect can be triggered via settings or explicit action
 
   const handleToggleAutoConnect = async (
     serverName: string,
@@ -144,7 +134,7 @@ export const McpPage = () => {
     }
 
     if (
-      (newServerType === "sse" || newServerType === "websocket") &&
+      (newServerType === "sse" || newServerType === "http") &&
       !newServerUrl.trim()
     ) {
       console.error("URL is required for this server type");
