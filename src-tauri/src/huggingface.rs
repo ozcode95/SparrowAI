@@ -681,6 +681,8 @@ fn map_pipeline_tag_to_model_type(pipeline_tag: &str) -> Option<ModelType> {
         "image-text-to-text" => Some(ModelType::ImageToText),
         "feature-extraction" => Some(ModelType::Embedding),
         "reranking" => Some(ModelType::Reranker),
+        // HuggingFace sometimes uses alternate tags for ranking
+        "text-ranking" => Some(ModelType::Reranker),
         "text-to-image" => Some(ModelType::ImageGeneration),
         "automatic-speech-recognition" => Some(ModelType::SpeechToText),
         "text-to-speech" => Some(ModelType::TextToSpeech),
@@ -1272,7 +1274,8 @@ fn detect_task_type(model_info: &ModelInfo) -> Option<String> {
         match pipeline_tag.as_str() {
             "text-generation" => return Some("text_generation".to_string()),
             "feature-extraction" | "sentence-similarity" => return Some("embeddings_ov".to_string()),
-            "text-classification" => {
+            // Some models use "text-ranking" or "text-classification" for ranking/reranker models
+            "text-ranking" | "text-classification" => {
                 // Check if it's a reranker by looking at tags or model name
                 if model_info.tags.iter().any(|t| t.contains("rerank")) ||
                    model_info.id.to_lowercase().contains("rerank") {

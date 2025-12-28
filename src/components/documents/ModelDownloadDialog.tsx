@@ -9,6 +9,8 @@ interface ModelDownloadDialogProps {
   isOpen: boolean;
   onClose: () => void;
   onSuccess: () => void;
+  modelId?: string;
+  setModelDownloading?: (modelId: string, downloading: boolean) => void;
 }
 
 interface DownloadProgress {
@@ -26,6 +28,8 @@ export const ModelDownloadDialog = ({
   isOpen,
   onClose,
   onSuccess,
+  modelId,
+  setModelDownloading,
 }: ModelDownloadDialogProps) => {
   const [isDownloading, setIsDownloading] = useState(false);
   const [currentModel, setCurrentModel] = useState<string>("");
@@ -35,7 +39,7 @@ export const ModelDownloadDialog = ({
     new Set()
   );
 
-  const BGE_MODELS = [
+  const RAG_MODELS = [
     {
       id: "OpenVINO/Qwen3-Embedding-0.6B-int8-ov",
       name: "Qwen3 Embedding Model",
@@ -60,13 +64,16 @@ export const ModelDownloadDialog = ({
     );
 
     try {
-      for (const model of BGE_MODELS) {
+      for (const model of RAG_MODELS) {
         setCurrentModel(model.name);
         setProgress(null);
 
+        // Mark model as downloading in the parent store if available
+        setModelDownloading && setModelDownloading(model.id, true);
+
         // Use default graph params optimized for embeddings/reranker models
         const graphParams: GraphGenerationParams = {
-          target_device: "CPU",
+          target_device: "GPU",
           num_streams: 1,
           normalize: true, // Important for embeddings
         };
@@ -78,6 +85,16 @@ export const ModelDownloadDialog = ({
         });
 
         setCompletedModels((prev) => new Set([...prev, model.id]));
+
+        // Attempt to load the model into the runtime after successful download
+        try {
+          await invoke("load_model", { modelId: model.id });
+        } catch (loadErr) {
+          console.error("Failed to load model after download:", loadErr);
+        }
+
+        // Mark model as no longer downloading in the parent store if available
+        setModelDownloading && setModelDownloading(model.id, false);
       }
 
       // All models downloaded successfully
@@ -145,7 +162,7 @@ export const ModelDownloadDialog = ({
                     The following models will be downloaded:
                   </p>
                   <ul className="list-disc list-inside space-y-1 ml-2">
-                    {BGE_MODELS.map((model) => (
+                    {RAG_MODELS.map((model) => (
                       <li key={model.id}>{model.name}</li>
                     ))}
                   </ul>
@@ -179,7 +196,7 @@ export const ModelDownloadDialog = ({
         {isDownloading && (
           <div className="space-y-4">
             <div className="space-y-3">
-              {BGE_MODELS.map((model) => {
+              {RAG_MODELS.map((model) => {
                 const isCompleted = completedModels.has(model.id);
                 const isCurrent = currentModel === model.name;
 
