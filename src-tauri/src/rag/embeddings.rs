@@ -1,6 +1,7 @@
 use super::Document;
-use async_openai::{ types::CreateEmbeddingRequestArgs, Client };
-use async_openai::config::OpenAIConfig;
+use async_openai::{ Client, config::OpenAIConfig };
+use async_openai::types::embeddings::CreateEmbeddingRequestArgs;
+use crate::constants;
 
 pub struct EmbeddingService {
     client: Client<OpenAIConfig>,
@@ -8,9 +9,10 @@ pub struct EmbeddingService {
 
 impl EmbeddingService {
     pub fn new() -> Self {
+        let api_base = format!("{}{}", constants::OVMS_API_BASE, constants::OVMS_OPENAI_PATH);
         let config = OpenAIConfig::new()
             .with_api_key("unused")
-            .with_api_base("http://localhost:1114/v3"); // Your OVMS endpoint
+            .with_api_base(api_base);
 
         Self {
             client: Client::with_config(config),
@@ -23,7 +25,7 @@ impl EmbeddingService {
         }
 
         let request = CreateEmbeddingRequestArgs::default()
-            .model("bge-base-en-v1.5-int8-ov") // or your local embedding model
+            .model(constants::DEFAULT_EMBEDDING_MODEL)
             .input(texts)
             .build()
             .map_err(|e| format!("Failed to build embedding request: {}", e))?;
@@ -53,8 +55,12 @@ impl EmbeddingService {
 #[tauri::command]
 pub async fn create_document_embeddings(documents: Vec<Document>) -> Result<Vec<Document>, String> {
     if documents.is_empty() {
+        tracing::trace!("No documents to create embeddings for");
         return Ok(documents);
     }
+
+    log_operation_start!("Create embeddings");
+    tracing::debug!(count = documents.len(), "Creating embeddings");
 
     let embedding_service = EmbeddingService::new();
 
@@ -63,7 +69,11 @@ pub async fn create_document_embeddings(documents: Vec<Document>) -> Result<Vec<
         .map(|doc| doc.content.clone())
         .collect();
 
-    let embeddings = embedding_service.create_embeddings(texts).await?;
+    let embeddings = embedding_service.create_embeddings(texts).await
+        .map_err(|e| {
+            log_operation_error!("Create embeddings", &e, count = documents.len());
+            e
+        })?;
 
     let mut updated_docs = documents;
     for (i, embedding) in embeddings.into_iter().enumerate() {
@@ -71,6 +81,9 @@ pub async fn create_document_embeddings(documents: Vec<Document>) -> Result<Vec<
             doc.embedding = Some(embedding);
         }
     }
+
+    log_operation_success!("Create embeddings");
+    tracing::debug!(count = updated_docs.len(), "Embeddings created for documents");
 
     Ok(updated_docs)
 }
@@ -87,7 +100,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_embedding_service_creation() {
-        let service = EmbeddingService::new();
+        let _service = EmbeddingService::new();
         // Just test that the service can be created
         assert!(true);
     }

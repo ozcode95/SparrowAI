@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "sparrow",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "identifier": "com.sparrow.app",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -15,12 +15,16 @@
         "title": "SparrowAI",
         "width": 1280,
         "height": 720,
-        "minWidth": 1280,
-        "minHeight": 720
+        "minWidth": 768,
+        "minHeight": 640
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data:",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
     }
   },
   "bundle": {

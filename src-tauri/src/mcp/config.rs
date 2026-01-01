@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use crate::paths;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
@@ -16,6 +17,10 @@ pub struct McpServerConfig {
     // For SSE and HTTP transports
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    
+    // Auto-connect on startup
+    #[serde(default)]
+    pub auto_connect: bool,
 }
 
 impl McpServerConfig {
@@ -97,15 +102,8 @@ impl McpConfig {
         Ok(())
     }
     
-    pub fn get_config_path(_app_handle: &tauri::AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>> {
-        let home_dir = match std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
-            Ok(home) => home,
-            Err(_) => {
-                return Err("Failed to get user home directory".into());
-            }
-        };
-        let sparrow_dir = PathBuf::from(home_dir).join(".sparrow");
-        Ok(sparrow_dir.join("mcp_config.json"))
+    pub fn get_config_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        Ok(paths::get_mcp_config_path(app_handle)?)
     }
     
     pub fn add_server(&mut self, name: String, server: McpServerConfig) {

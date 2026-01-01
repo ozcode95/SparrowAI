@@ -11,8 +11,14 @@ use serde::{ Deserialize, Serialize };
 use std::collections::HashMap;
 use std::process::Stdio;
 use tokio::process::Command;
-use async_openai::types::{ ChatCompletionTool, ChatCompletionToolType, FunctionObject };
+use async_openai::types::chat::{ ChatCompletionTool, FunctionObjectArgs };
 use serde_json::Value;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolInfo {
+    pub name: String,
+    pub description: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerInfo {
@@ -39,23 +45,31 @@ impl McpManager {
         &mut self,
         name: &str
     ) -> Result<(), Box<dyn std::error::Error>> {
-        info!(server_name = %name, "Attempting to connect to MCP server");
+        log_operation_start!("MCP server connection");
+        tracing::debug!(server = %name, "Connecting to MCP server");
+        
         let server_config = self.config
             .get_server(name)
-            .ok_or(format!("Server '{}' not found in configuration", name))?;
+            .ok_or_else(|| {
+                log_operation_error!("MCP server connection", "Server not found", server = %name);
+                format!("Server '{}' not found in configuration", name)
+            })?;
 
         // Validate configuration
-        server_config.validate().map_err(|e| format!("Invalid server configuration: {}", e))?;
+        server_config.validate().map_err(|e| {
+            log_operation_error!("MCP server connection", &e, server = %name, note = "invalid configuration");
+            format!("Invalid server configuration: {}", e)
+        })?;
 
         let transport_type = server_config.get_transport_type();
-        info!(server_name = %name, transport_type = ?transport_type, "Detected transport type");
+        tracing::debug!(server = %name, transport_type = ?transport_type, "Detected transport type");
 
         let client = match transport_type {
             TransportType::Stdio => {
                 let command = server_config.command.as_ref().unwrap();
                 let args = server_config.args.as_deref().unwrap_or(&[]);
 
-                info!(command = %command, args = ?args, "Starting MCP server via stdio");
+                tracing::debug!(command = %command, args = ?args, "Starting MCP server via stdio");
 
                 // Create the command - on Windows, we might need to handle .cmd extensions
                 let mut cmd = if
@@ -70,11 +84,11 @@ impl McpManager {
 
                     match test_cmd.output().await {
                         Ok(_) => {
-                            info!(original_command = %command, resolved_command = %cmd_with_extension, "Resolved Windows command with .cmd extension");
+                            tracing::trace!(original = %command, resolved = %cmd_with_extension, "Resolved Windows command with .cmd extension");
                             Command::new(cmd_with_extension)
                         }
                         Err(_) => {
-                            info!(command = %command, "Using original command without extension resolution");
+                            tracing::trace!(command = %command, "Using original command");
                             Command::new(command)
                         }
                     }
@@ -108,21 +122,21 @@ impl McpManager {
 
                 // Create transport and connect
                 let transport = TokioChildProcess::new(cmd).map_err(|e| {
-                    warn!(command = %command, args = ?args, error = %e, "Failed to create TokioChildProcess");
+                    log_operation_error!("MCP server start", &e, command = %command, args = ?args);
                     format!("Failed to start command '{}': {}", command, e)
                 })?;
                 ().serve(transport).await?
             }
             TransportType::Sse => {
                 let url = server_config.url.as_ref().unwrap();
-                info!(url = %url, "Connecting to MCP server via SSE");
+                tracing::debug!(url = %url, "Connecting to MCP server via SSE");
 
                 let transport = SseClientTransport::start(url.clone()).await?;
                 ().serve(transport).await?
             }
             TransportType::StreamableHttp => {
                 let url = server_config.url.as_ref().unwrap();
-                info!(url = %url, "Connecting to MCP server via Streamable HTTP");
+                tracing::debug!(url = %url, "Connecting to MCP server via Streamable HTTP");
 
                 let transport = StreamableHttpClientTransport::from_uri(url.clone());
                 ().serve(transport).await?
@@ -130,12 +144,13 @@ impl McpManager {
         };
 
         self.clients.insert(name.to_string(), client);
-        info!(server_name = %name, "Successfully connected to MCP server");
+        log_operation_success!("MCP server connection");
+        tracing::debug!(server = %name, "Successfully connected to MCP server");
         Ok(())
     }
 
     pub fn disconnect_from_server(&mut self, name: &str) {
-        info!(server_name = %name, "Disconnecting from MCP server");
+        tracing::debug!(server = %name, "Disconnecting from MCP server");
         self.clients.remove(name);
     }
 
@@ -145,9 +160,12 @@ impl McpManager {
     ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
         let client = self.clients
             .get(server_name)
-            .ok_or(format!("Server '{}' not connected", server_name))?;
+            .ok_or_else(|| {
+                log_operation_error!("Fetch MCP tools", "Server not connected", server = %server_name);
+                format!("Server '{}' not connected", server_name)
+            })?;
 
-        debug!(server_name = %server_name, "Fetching tools from MCP server");
+        tracing::debug!(server = %server_name, "Fetching tools from MCP server");
         let tools_response = client.list_tools(Default::default()).await?;
 
         let tool_names: Vec<String> = tools_response.tools
@@ -157,6 +175,29 @@ impl McpManager {
 
         info!(server_name = %server_name, tool_count = tool_names.len(), tools = ?tool_names, "Found tools from MCP server");
         Ok(tool_names)
+    }
+
+    pub async fn fetch_tools_with_details(
+        &self,
+        server_name: &str
+    ) -> Result<Vec<ToolInfo>, Box<dyn std::error::Error>> {
+        let client = self.clients
+            .get(server_name)
+            .ok_or(format!("Server '{}' not connected", server_name))?;
+
+        debug!(server_name = %server_name, "Fetching tools with details from MCP server");
+        let tools_response = client.list_tools(Default::default()).await?;
+
+        let tools: Vec<ToolInfo> = tools_response.tools
+            .iter()
+            .map(|tool| ToolInfo {
+                name: tool.name.to_string(),
+                description: tool.description.as_ref().map(|d| d.to_string()),
+            })
+            .collect();
+
+        info!(server_name = %server_name, tool_count = tools.len(), "Found tools with details from MCP server");
+        Ok(tools)
     }
 
     pub fn add_server(&mut self, name: String, config: McpServerConfig) {
@@ -185,26 +226,25 @@ impl McpManager {
                 Ok(tools_response) => {
                     for tool in tools_response.tools {
                         // Convert MCP tool to OpenAI ChatCompletionTool format
+                        let description = tool.description
+                            .as_ref()
+                            .map(|d| d.to_string())
+                            .unwrap_or_else(|| {
+                                format!(
+                                    "Tool '{}' from MCP server '{}'",
+                                    tool.name,
+                                    server_name
+                                )
+                            });
+                        
+                        let parameters = serde_json::Value::Object(tool.input_schema.as_ref().clone());
+                        
                         let openai_tool = ChatCompletionTool {
-                            r#type: ChatCompletionToolType::Function,
-                            function: FunctionObject {
-                                name: format!("{}_{}", server_name, tool.name), // Prefix with server name to avoid conflicts
-                                description: tool.description
-                                    .map(|d| d.to_string())
-                                    .or_else(||
-                                        Some(
-                                            format!(
-                                                "Tool '{}' from MCP server '{}'",
-                                                tool.name,
-                                                server_name
-                                            )
-                                        )
-                                    ),
-                                parameters: Some(
-                                    serde_json::Value::Object(tool.input_schema.as_ref().clone())
-                                ),
-                                strict: Some(false),
-                            },
+                            function: FunctionObjectArgs::default()
+                                .name(format!("{}_{}", server_name, tool.name))
+                                .description(description)
+                                .parameters(parameters)
+                                .build()?,  
                         };
                         all_tools.push(openai_tool);
                     }

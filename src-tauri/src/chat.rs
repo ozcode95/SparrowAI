@@ -1,19 +1,46 @@
 use serde::{ Deserialize, Serialize };
-use tracing::{ warn, error, debug, info }; // Add 'info' to the tracing import
+use tracing::{ error, debug, info };
 use serde_json;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
-use async_openai::types::ChatCompletionRequestUserMessageArgs;
-use async_openai::types::ChatCompletionRequestSystemMessageArgs;
-use async_openai::types::ChatCompletionRequestAssistantMessageArgs;
-// Removed unused tool choice imports since tools are now in system message
-use async_openai::{ types::CreateChatCompletionRequestArgs, Client };
-use async_openai::{ config::OpenAIConfig };
+use std::sync::{ Arc, Mutex };
+use tokio::sync::broadcast;
+use async_openai::{Client, config::OpenAIConfig};
+use async_openai::types::chat::{
+    CreateChatCompletionRequestArgs,
+    ChatCompletionRequestMessage,
+    ChatCompletionRequestSystemMessageArgs,
+    ChatCompletionRequestUserMessageArgs,
+    ChatCompletionRequestAssistantMessageArgs,
+    ChatCompletionRequestUserMessageContent,
+    ChatCompletionRequestUserMessageContentPart,
+    ChatCompletionRequestMessageContentPartText,
+    ChatCompletionRequestMessageContentPartImage,
+    ChatCompletionStreamOptions,
+    ImageUrl,
+    ImageDetail,
+};
 use futures::StreamExt;
 use tauri::{ AppHandle, Emitter };
-use crate::mcp;
+use base64::Engine;
+
+use crate::{ mcp, paths, constants };
+
+// Global state for managing streaming cancellation
+lazy_static::lazy_static! {
+    static ref ACTIVE_STREAMS: Arc<Mutex<HashMap<String, broadcast::Sender<()>>>> = Arc::new(Mutex::new(HashMap::new()));
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachmentInfo {
+    pub file_path: String,
+    pub file_name: String,
+    pub file_type: String,
+    #[serde(default)]
+    pub is_image: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -23,6 +50,10 @@ pub struct ChatMessage {
     pub timestamp: i64,
     pub tokens_per_second: Option<f64>,
     pub is_error: Option<bool>,
+    pub prompt_tokens: Option<u32>,
+    pub completion_tokens: Option<u32>,
+    pub total_tokens: Option<u32>,
+    pub attachments: Option<Vec<AttachmentInfo>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,41 +82,48 @@ impl Default for ChatSessionsStorage {
 }
 
 fn get_chat_sessions_path() -> Result<PathBuf, String> {
-    let home_dir = std::env
-        ::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .map_err(|_| "Failed to get user home directory".to_string())?;
-
-    let sparrow_dir = PathBuf::from(home_dir).join(".sparrow");
-
-    // Create .sparrow directory if it doesn't exist
-    if !sparrow_dir.exists() {
-        fs
-            ::create_dir_all(&sparrow_dir)
-            .map_err(|e| format!("Failed to create .sparrow directory: {}", e))?;
-    }
-
-    Ok(sparrow_dir.join("chat_sessions.json"))
+    paths::get_chat_sessions_path().map_err(|e| e.to_string())
 }
 
 fn load_chat_sessions() -> Result<ChatSessionsStorage, String> {
     debug!("Loading chat sessions");
     let path = get_chat_sessions_path()?;
+    
+    info!(path = %path.display(), exists = path.exists(), "Checking chat sessions file");
 
     if !path.exists() {
+        info!("Chat sessions file does not exist, returning empty storage");
         return Ok(ChatSessionsStorage::default());
     }
 
     let contents = fs
         ::read_to_string(&path)
-        .map_err(|e| format!("Failed to read chat sessions file: {}", e))?;
+        .map_err(|e| {
+            error!(path = %path.display(), error = %e, "Failed to read chat sessions file");
+            format!("Failed to read chat sessions file: {}", e)
+        })?;
+
+    info!(path = %path.display(), size = contents.len(), "Chat sessions file read successfully");
 
     let result = serde_json
         ::from_str::<ChatSessionsStorage>(&contents)
-        .map_err(|e| format!("Failed to parse chat sessions: {}", e));
+        .map_err(|e| {
+            error!(error = %e, content_preview = %&contents[..contents.len().min(200)], "Failed to parse chat sessions");
+            format!("Failed to parse chat sessions: {}", e)
+        });
+    
     match &result {
-        Ok(sessions) =>
-            debug!(session_count = sessions.sessions.len(), "Chat sessions loaded successfully"),
+        Ok(sessions) => {
+            info!(
+                session_count = sessions.sessions.len(),
+                active_session = ?sessions.active_session_id,
+                "Chat sessions loaded successfully"
+            );
+            // Log all session IDs for debugging
+            for (id, session) in &sessions.sessions {
+                debug!(session_id = %id, title = %session.title, message_count = session.messages.len(), "Loaded session");
+            }
+        }
         Err(e) => error!(error = %e, "Failed to load chat sessions"),
     }
     result
@@ -95,11 +133,29 @@ fn save_chat_sessions(storage: &ChatSessionsStorage) -> Result<(), String> {
     debug!(session_count = storage.sessions.len(), "Saving chat sessions");
     let path = get_chat_sessions_path()?;
 
+    info!(path = %path.display(), "Saving chat sessions to file");
+
     let contents = serde_json
         ::to_string_pretty(storage)
-        .map_err(|e| format!("Failed to serialize chat sessions: {}", e))?;
+        .map_err(|e| {
+            error!(error = %e, "Failed to serialize chat sessions");
+            format!("Failed to serialize chat sessions: {}", e)
+        })?;
 
-    fs::write(&path, contents).map_err(|e| format!("Failed to write chat sessions file: {}", e))
+    fs::write(&path, &contents).map_err(|e| {
+        error!(path = %path.display(), error = %e, "Failed to write chat sessions file");
+        format!("Failed to write chat sessions file: {}", e)
+    })?;
+
+    info!(
+        path = %path.display(),
+        session_count = storage.sessions.len(),
+        active_session = ?storage.active_session_id,
+        file_size = contents.len(),
+        "Chat sessions saved successfully"
+    );
+
+    Ok(())
 }
 
 fn generate_chat_title(content: &str) -> String {
@@ -107,13 +163,13 @@ fn generate_chat_title(content: &str) -> String {
     let cleaned = content.trim();
 
     // Remove common question words and make it more title-like
-    let title = if cleaned.len() <= 60 {
+    let title = if cleaned.len() <= constants::MAX_CHAT_TITLE_LENGTH {
         cleaned.to_string()
     } else {
-        // Find a good break point near 60 characters
-        let mut break_point = 60;
-        if let Some(space_pos) = cleaned[..60].rfind(' ') {
-            if space_pos > 40 {
+        // Find a good break point near max length
+        let mut break_point = constants::MAX_CHAT_TITLE_LENGTH;
+        if let Some(space_pos) = cleaned[..constants::MAX_CHAT_TITLE_LENGTH].rfind(' ') {
+            if space_pos > constants::MIN_CHAT_TITLE_LENGTH {
                 // Only use space if it's not too early
                 break_point = space_pos;
             }
@@ -146,6 +202,9 @@ pub async fn get_chat_sessions() -> Result<ChatSessionsStorage, String> {
 
 #[tauri::command]
 pub async fn create_chat_session(title: Option<String>) -> Result<ChatSession, String> {
+    let session_title = title.clone().unwrap_or_else(|| constants::DEFAULT_CHAT_TITLE.to_string());
+    log_operation_start!("Creating chat session", title = %session_title);
+    
     let mut storage = load_chat_sessions()?;
 
     let session_id = Uuid::new_v4().to_string();
@@ -153,17 +212,24 @@ pub async fn create_chat_session(title: Option<String>) -> Result<ChatSession, S
 
     let session = ChatSession {
         id: session_id.clone(),
-        title: title.unwrap_or_else(|| "New Chat".to_string()),
+        title: session_title,
         created_at: now,
         updated_at: now,
         model_id: None,
         messages: Vec::new(),
     };
 
+    log_debug_details!(
+        session_id = %session_id,
+        title = %session.title,
+        "Chat session created"
+    );
+    
     storage.sessions.insert(session_id.clone(), session.clone());
-    storage.active_session_id = Some(session_id);
+    storage.active_session_id = Some(session_id.clone());
 
     save_chat_sessions(&storage)?;
+    log_operation_success!("Chat session created", session_id = %session_id);
 
     Ok(session)
 }
@@ -175,7 +241,7 @@ pub async fn create_temporary_chat_session(title: Option<String>) -> Result<Chat
 
     let session = ChatSession {
         id: session_id.clone(),
-        title: title.unwrap_or_else(|| "New Chat".to_string()),
+        title: title.unwrap_or_else(|| constants::DEFAULT_CHAT_TITLE.to_string()),
         created_at: now,
         updated_at: now,
         model_id: None,
@@ -254,36 +320,75 @@ pub async fn add_message_to_session(
     role: String,
     content: String,
     tokens_per_second: Option<f64>,
-    is_error: Option<bool>
+    is_error: Option<bool>,
+    prompt_tokens: Option<u32>,
+    completion_tokens: Option<u32>,
+    total_tokens: Option<u32>,
+    attachments: Option<Vec<AttachmentInfo>>
 ) -> Result<ChatMessage, String> {
+    tracing::debug!(
+        session_id = %session_id,
+        role = %role,
+        content_length = content.len(),
+        tokens_per_second = ?tokens_per_second,
+        has_attachments = attachments.is_some(),
+        "Adding message to session"
+    );
+    
     let mut storage = load_chat_sessions()?;
 
     let session = storage.sessions
         .get_mut(&session_id)
-        .ok_or_else(|| format!("Chat session not found: {}", session_id))?;
+        .ok_or_else(|| {
+            log_operation_error!("Add message to session", "Session not found", session_id = %session_id);
+            format!("Chat session not found: {}", session_id)
+        })?;
 
     let message_id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp_millis();
 
     let message = ChatMessage {
-        id: message_id,
-        role,
+        id: message_id.clone(),
+        role: role.clone(),
         content: content.clone(),
         timestamp: now,
         tokens_per_second,
         is_error,
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        attachments,
     };
 
     session.messages.push(message.clone());
     session.updated_at = now;
 
     // Auto-generate title from first user message if still "New Chat"
-    if session.title == "New Chat" && message.role == "user" {
+    let auto_generated_title = if session.title == "New Chat" && role == "user" {
         let title = generate_chat_title(&content);
-        session.title = title;
-    }
+        tracing::debug!(
+            session_id = %session_id,
+            old_title = "New Chat",
+            new_title = %title,
+            "Auto-generated session title"
+        );
+        session.title = title.clone();
+        Some(title)
+    } else {
+        None
+    };
+
+    let message_count = session.messages.len();
 
     save_chat_sessions(&storage)?;
+    info!(
+        session_id = %session_id,
+        message_id = %message_id,
+        role = %role,
+        message_count = message_count,
+        auto_title = ?auto_generated_title,
+        "Message added and session saved"
+    );
 
     Ok(message)
 }
@@ -306,7 +411,11 @@ pub async fn add_message_to_temporary_session(
     role: String,
     content: String,
     tokens_per_second: Option<f64>,
-    is_error: Option<bool>
+    is_error: Option<bool>,
+    prompt_tokens: Option<u32>,
+    completion_tokens: Option<u32>,
+    total_tokens: Option<u32>,
+    attachments: Option<Vec<AttachmentInfo>>
 ) -> Result<(ChatSession, ChatMessage), String> {
     let message_id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp_millis();
@@ -318,6 +427,10 @@ pub async fn add_message_to_temporary_session(
         timestamp: now,
         tokens_per_second,
         is_error,
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        attachments,
     };
 
     session.messages.push(message.clone());
@@ -344,6 +457,23 @@ pub async fn get_session_messages(session_id: String) -> Result<Vec<ChatMessage>
 }
 
 #[tauri::command]
+pub async fn stop_chat_streaming(session_id: String) -> Result<String, String> {
+    info!(session_id = %session_id, "Attempting to stop chat streaming");
+    
+    let mut streams = ACTIVE_STREAMS.lock().map_err(|e| format!("Failed to acquire lock: {}", e))?;
+    
+    if let Some(sender) = streams.remove(&session_id) {
+        // Send cancellation signal
+        let _ = sender.send(());
+        info!(session_id = %session_id, "Streaming cancellation signal sent");
+        Ok(format!("Streaming stopped for session: {}", session_id))
+    } else {
+        log_warning!("No active stream found", session_id = %session_id);
+        Err(format!("No active streaming session found: {}", session_id))
+    }
+}
+
+#[tauri::command]
 pub async fn get_conversation_history(session_id: String) -> Result<Vec<ChatMessage>, String> {
     let storage = load_chat_sessions()?;
 
@@ -354,7 +484,7 @@ pub async fn get_conversation_history(session_id: String) -> Result<Vec<ChatMess
     // Return all messages except any currently streaming ones
     let messages: Vec<ChatMessage> = session.messages
         .iter()
-        .filter(|msg| (msg.role == "user" || msg.role == "assistant"))
+        .filter(|msg| msg.role == "user" || msg.role == "assistant")
         .cloned()
         .collect();
 
@@ -374,7 +504,8 @@ pub async fn chat_with_loaded_model_streaming(
     top_p: Option<f64>,
     seed: Option<i64>,
     max_tokens: Option<u32>,
-    max_completion_tokens: Option<u32>
+    max_completion_tokens: Option<u32>,
+    attachments: Option<Vec<AttachmentInfo>>
 ) -> Result<String, String> {
     let config = OpenAIConfig::new()
         .with_api_key("unused")
@@ -384,24 +515,29 @@ pub async fn chat_with_loaded_model_streaming(
     // Get MCP tools info for system message
     let mcp_tools = match mcp::get_all_mcp_tools_for_chat(app.clone()).await {
         Ok(tools) => {
-            debug!("Successfully loaded {} MCP tools for system message", tools.len());
+            tracing::debug!(count = tools.len(), "Loaded MCP tools for chat");
+            if tools.is_empty() {
+                log_warning!("No MCP tools available", note = "LLM will not have access to any tools");
+            } else {
+                tracing::debug!(tools = ?tools.iter().map(|t| &t.function.name).collect::<Vec<_>>(), "Available MCP tools");
+            }
             tools
         }
         Err(e) => {
-            warn!("Failed to load MCP tools for system message: {}", e);
+            log_warning!("Failed to load MCP tools", error = %e);
             Vec::new()
         }
     };
 
     let tools_info = if !mcp_tools.is_empty() {
-        debug!("Processing MCP tools for system message...");
+        tracing::debug!("Processing MCP tools for system message...");
 
         // Generate tool descriptions in simple text format for the custom template
         let tool_descs: Vec<String> = mcp_tools
             .iter()
             .enumerate()
             .map(|(i, tool)| {
-                debug!("Processing tool {}: {}", i, tool.function.name);
+                tracing::trace!(index = i, name = %tool.function.name, "Processing tool");
                 let params_str = match &tool.function.parameters {
                     Some(params) => serde_json::to_string_pretty(params).unwrap_or_default(),
                     None => "{}".to_string(),
@@ -434,36 +570,36 @@ For each function call, return a json object with function name and arguments wi
 {{"name": <function-name>, "arguments": <args-json-object>}}
 </tool_call>"#, tool_descs_text);
 
-        debug!("Generated custom tool template: {} characters", formatted_tools.len());
+        tracing::debug!(length = formatted_tools.len(), "Generated custom tool template");
         formatted_tools
     } else {
-        debug!("No MCP tools available for system message");
+        tracing::trace!("No MCP tools available for system message");
         "".to_string()
     };
 
     let base_system_message = system_prompt.unwrap_or_else(|| {
-        "You are a helpful AI assistant with access to various functions/tools. 
-        You MUST use the available tools when they are relevant to answer the user's request.
+        "You are a helpful AI assistant with access to various functions/tools.
 
-        IMPORTANT RULES:
-        1. NEVER make up or guess information that could be obtained from a function call
-        2. If you have a tool that can answer the question, USE IT
-
-        Available tools should be called whenever relevant to provide accurate, up-to-date information.".to_string()
+        Tool Usage Guidelines:
+        - Use tools ONLY when they are necessary to answer the user's question
+        - For simple greetings, general questions, or conversations, respond naturally WITHOUT using tools
+        - Only call a tool if the user's request specifically requires information or actions that the tool provides
+        - Examples of when NOT to use tools: greetings (hello, hi), general chat, opinions, explanations
+        - Examples of when to use tools: getting current time, converting units, fetching specific data
+        
+        When a tool would be helpful, use it. Otherwise, respond conversationally.".to_string()
     });
 
     // Always append tools info to system message (whether custom or default)
     let system_message = format!("{}{}", base_system_message, tools_info);
 
-    debug!("Message: {}", system_message);
-    // Log what we're including
-    debug!("System message length: {} chars", system_message.len());
-    debug!("Tools info length: {} chars", tools_info.len());
-    if !tools_info.is_empty() {
-        debug!("Including tools info in system message");
-    } else {
-        debug!("No tools info to include");
-    }
+    tracing::debug!(
+        length = system_message.len(),
+        has_tools = !tools_info.is_empty(),
+        tools_count = mcp_tools.len(),
+        message = %system_message,
+        "System message prepared"
+    );
 
     let mut messages = vec![
         ChatCompletionRequestSystemMessageArgs::default()
@@ -485,6 +621,12 @@ For each function call, return a json object with function name and arguments wi
                     }
                 }
 
+                tracing::debug!(
+                    history_count = history.len(),
+                    session_id = session_id.clone().unwrap(),
+                    "Including conversation history"
+                );
+
                 for msg in history {
                     match msg.role.as_str() {
                         "user" => {
@@ -497,39 +639,126 @@ For each function call, return a json object with function name and arguments wi
                             );
                         }
                         "assistant" => {
-                            messages.push(
-                                ChatCompletionRequestAssistantMessageArgs::default()
-                                    .content(msg.content.clone())
-                                    .build()
-                                    .map_err(|e|
-                                        format!("Failed to build assistant message: {}", e)
-                                    )?
-                                    .into()
-                            );
+                            // Strip XML tags from assistant messages to prevent LLM from seeing
+                            // tool call patterns in history and hallucinating duplicate responses
+                            let cleaned_content = strip_tool_xml_tags(&msg.content);
+                            
+                            // Only include if there's actual content after stripping XML
+                            if !cleaned_content.is_empty() {
+                                messages.push(
+                                    ChatCompletionRequestAssistantMessageArgs::default()
+                                        .content(cleaned_content)
+                                        .build()
+                                        .map_err(|e|
+                                            format!("Failed to build assistant message: {}", e)
+                                        )?
+                                        .into()
+                                );
+                            }
                         }
                         _ => {
-                            warn!(role = %msg.role, "Skipping unknown role");
+                            log_warning!("Skipping message with unknown role", role = %msg.role);
                             continue;
                         } // Skip unknown roles
                     };
                 }
             }
             Err(e) => {
-                error!(error = %e, "Failed to get conversation history");
+                log_operation_error!("Load conversation history", &e);
             }
         }
     }
+    
+    // Log total messages being sent
+    tracing::debug!(
+        total_messages = messages.len(),
+        has_tools = !tools_info.is_empty(),
+        "Preparing to send messages to LLM"
+    );
+
+    // Build the current user message with potential image attachments
+    let user_message_content = if let Some(ref attachment_list) = attachments {
+        let image_attachments: Vec<&AttachmentInfo> = attachment_list
+            .iter()
+            .filter(|a| a.is_image)
+            .collect();
+
+        if !image_attachments.is_empty() {
+            // Build multimodal message with text + images
+            tracing::debug!(
+                image_count = image_attachments.len(),
+                "Building multimodal message with images"
+            );
+
+            let mut content_parts: Vec<ChatCompletionRequestUserMessageContentPart> = vec![
+                ChatCompletionRequestMessageContentPartText {
+                    text: message.clone(),
+                }.into()
+            ];
+
+            // Add each image as base64 data URL
+            for img_attachment in image_attachments {
+                match fs::read(&img_attachment.file_path) {
+                    Ok(image_data) => {
+                        let base64_data = base64::engine::general_purpose::STANDARD.encode(&image_data);
+                        
+                        // Determine MIME type from file extension
+                        let mime_type = match img_attachment.file_type.to_lowercase().as_str() {
+                            "png" => "image/png",
+                            "jpg" | "jpeg" => "image/jpeg",
+                            "gif" => "image/gif",
+                            "webp" => "image/webp",
+                            _ => "image/jpeg", // default
+                        };
+                        
+                        let data_url = format!("data:{};base64,{}", mime_type, base64_data);
+                        
+                        tracing::debug!(
+                            file_name = %img_attachment.file_name,
+                            data_url_length = data_url.len(),
+                            "Added image to message"
+                        );
+
+                        content_parts.push(
+                            ChatCompletionRequestMessageContentPartImage {
+                                image_url: ImageUrl {
+                                    url: data_url,
+                                    detail: Some(ImageDetail::Auto),
+                                }
+                            }.into()
+                        );
+                    }
+                    Err(e) => {
+                        log_warning!(
+                            "Failed to read image file",
+                            error = %e,
+                            file_path = %img_attachment.file_path
+                        );
+                    }
+                }
+            }
+
+            ChatCompletionRequestUserMessageContent::Array(content_parts)
+        } else {
+            // No images, just text
+            ChatCompletionRequestUserMessageContent::Text(message.clone())
+        }
+    } else {
+        // No attachments at all
+        ChatCompletionRequestUserMessageContent::Text(message.clone())
+    };
 
     // Always add the current user message
     messages.push(
         ChatCompletionRequestUserMessageArgs::default()
-            .content(message.clone())
+            .content(user_message_content)
             .build()
             .map_err(|e| format!("Failed to build user message: {}", e))?
             .into()
     );
 
-    debug!("Starting chat request");
+    log_operation_start!("Chat request");
+    tracing::debug!(model = %model_name, message_length = message.len(), messages_count = messages.len(), "Chat parameters");
 
     // Create streaming chat completion
     let mut request_builder = CreateChatCompletionRequestArgs::default();
@@ -537,6 +766,10 @@ For each function call, return a json object with function name and arguments wi
         .model(model_name.clone())
         .messages(messages.clone())
         .stream(true)
+        .stream_options(ChatCompletionStreamOptions {
+            include_usage: Some(true),
+            include_obfuscation: None,
+        })
         .temperature(temperature.unwrap_or(0.7) as f32)
         .top_p(top_p.unwrap_or(1.0) as f32);
 
@@ -612,13 +845,14 @@ For each function call, return a json object with function name and arguments wi
     */
 
     // Tools info is now in system message instead
-    debug!("Tools info included in system message instead of request tools array");
+    tracing::debug!("Tools info included in system message instead of request tools array");
 
     let request = request_builder
         .build()
-        .map_err(|e| format!("Failed to build chat request: {}", e))?;
-
-    // Request details logged to file only (verbose output disabled for console)
+        .map_err(|e| {
+            log_operation_error!("Build chat request", &e);
+            format!("Failed to build chat request: {}", e)
+        })?;
 
     // Check system message for tools info (since tools are now in system message)
     if let Ok(request_value) = serde_json::to_value(&request) {
@@ -631,9 +865,9 @@ For each function call, return a json object with function name and arguments wi
                                 content_str.contains("<tools>") ||
                                 content_str.contains("Available functions:")
                             {
-                                debug!("Tools info found in system message");
+                                tracing::trace!("Tools info found in system message");
                             } else {
-                                debug!("No tools info found in system message");
+                                tracing::trace!("No tools info found in system message");
                             }
                         }
                     }
@@ -643,27 +877,74 @@ For each function call, return a json object with function name and arguments wi
 
         // Verify no tools array in request (should be commented out)
         if request_value.get("tools").is_some() {
-            warn!("Tools array still present in request!");
+            log_warning!("Tools array still present in request", note = "should be in system message");
         } else {
-            debug!("Confirmed: No tools array in request (as expected)");
+            tracing::trace!("Confirmed: No tools array in request (as expected)");
         }
     }
-    // Request logging complete
 
     let mut stream = client
         .chat()
         .create_stream(request).await
-        .map_err(|e| format!("Failed to create chat stream: {}", e))?;
+        .map_err(|e| {
+            log_operation_error!("Create chat stream", &e);
+            format!("Failed to create chat stream: {}", e)
+        })?;
+
+    // Setup cancellation channel
+    let (cancel_tx, mut cancel_rx) = broadcast::channel::<()>(1);
+    let stream_id = session_id.clone().unwrap_or_else(|| "temp".to_string());
+    
+    // Register this stream for cancellation
+    {
+        let mut streams = ACTIVE_STREAMS.lock().map_err(|e| format!("Failed to acquire lock: {}", e))?;
+        streams.insert(stream_id.clone(), cancel_tx);
+    }
 
     let mut full_response = String::new();
     let mut executed_tools = std::collections::HashSet::new();
     let mut needs_continuation = false;
+    let mut usage_data: Option<(u32, u32, u32)> = None; // (prompt_tokens, completion_tokens, total_tokens)
+    let mut was_cancelled = false;
 
     // Process streaming responses with function call support
-    while let Some(result) = stream.next().await {
-        match result {
-            Ok(response) => {
-                // Stream response chunk logging disabled for cleaner output
+    loop {
+        tokio::select! {
+            // Check for cancellation signal
+            _ = cancel_rx.recv() => {
+                info!(stream_id = %stream_id, "Stream cancelled by user");
+                was_cancelled = true;
+                break;
+            }
+            // Process next stream item
+            result = stream.next() => {
+                match result {
+                    None => break,
+                    Some(stream_result) => match stream_result {
+                        Ok(response) => {
+                            // // Log entire response structure for debugging
+                            // if let Ok(response_json) = serde_json::to_string_pretty(&response) {
+                            //     tracing::debug!(
+                            //         response_json = %response_json,
+                            //         "Complete streaming response chunk"
+                            //     );
+                            // }
+
+                            // Capture usage data if present (comes in final chunk with empty choices)
+                            if let Some(usage) = response.usage {
+                    let prompt_tokens = usage.prompt_tokens;
+                    let completion_tokens = usage.completion_tokens;
+                    let total_tokens = usage.total_tokens;
+                    
+                    usage_data = Some((prompt_tokens, completion_tokens, total_tokens));
+                    
+                    info!(
+                        prompt_tokens = prompt_tokens,
+                        completion_tokens = completion_tokens,
+                        total_tokens = total_tokens,
+                        "✅ Captured usage statistics from final stream chunk"
+                    );
+                }
 
                 for chat_choice in response.choices {
                     // Processing stream choice (verbose logging disabled)
@@ -693,7 +974,7 @@ For each function call, return a json object with function name and arguments wi
 
                             executed_tools.insert(tool_signature);
 
-                            debug!("Found complete tool call: name={}, args={}", fn_name, fn_args);
+                            tracing::debug!(name = %fn_name, args = %fn_args, "Found tool call");
 
                             // Parse arguments as JSON for MCP tool call
                             let args_map = match
@@ -707,9 +988,7 @@ For each function call, return a json object with function name and arguments wi
                                     Some(map)
                                 }
                                 Err(e) => {
-                                    let parse_error =
-                                        format!("Failed to parse tool arguments: {}", e);
-                                    warn!("{}", parse_error);
+                                    log_warning!("Failed to parse tool arguments", error = %e, args = %fn_args);
                                     None
                                 }
                             };
@@ -717,12 +996,8 @@ For each function call, return a json object with function name and arguments wi
                             // Call the MCP tool
                             match mcp::call_mcp_tool(app.clone(), fn_name.clone(), args_map).await {
                                 Ok(tool_result) => {
-                                    let tool_result_info = format!(
-                                        "Tool {} returned: {}",
-                                        fn_name,
-                                        tool_result
-                                    );
-                                    debug!("{}", tool_result_info);
+                                    tracing::debug!(tool = %fn_name, result_length = tool_result.len(), "Tool execution completed");
+                                    tracing::trace!(result = %tool_result, "Tool result content");
 
                                     // Emit function call result to frontend
                                     let _ = app.emit(
@@ -752,8 +1027,7 @@ For each function call, return a json object with function name and arguments wi
                                     needs_continuation = true;
                                 }
                                 Err(e) => {
-                                    let tool_error = format!("Tool call failed: {}", e);
-                                    error!("{}", tool_error);
+                                    log_operation_error!("Tool execution", &e, tool = %fn_name);
                                     let error_response_text =
                                         format!("\n<tool_response>\nError: {}\n</tool_response>", e);
                                     full_response.push_str(&error_response_text);
@@ -776,38 +1050,46 @@ For each function call, return a json object with function name and arguments wi
 
                     // Handle finish reason
                     if let Some(_finish_reason) = &chat_choice.finish_reason {
-                        debug!("Stream finished with reason: {:?}", _finish_reason);
+                        tracing::debug!(reason = ?_finish_reason, "Stream finished");
 
                         // Check for any remaining incomplete tool calls
                         if has_incomplete_tool_call(&full_response) {
-                            warn!("Stream ended with incomplete tool call");
+                            log_warning!("Stream ended with incomplete tool call", note = "response may be truncated");
                         }
                     }
                 }
             }
-            Err(err) => {
-                let error_info = format!("error: {err}");
-                error!("{}", error_info);
-                let _ = app.emit(
-                    "chat-error",
-                    serde_json::json!({
-                        "error": format!("Stream error: {}", err)
-                    })
-                );
-                break;
+                        Err(err) => {
+                            log_operation_error!("Chat stream", &err);
+                            let _ = app.emit(
+                                "chat-error",
+                                serde_json::json!({
+                                    "error": format!("Stream error: {}", err)
+                                })
+                            );
+                            break;
+                        }
+                    }
+                }
             }
         }
     }
 
+    // Cleanup: Remove this stream from active streams
+    {
+        let mut streams = ACTIVE_STREAMS.lock().map_err(|e| format!("Failed to acquire lock: {}", e))?;
+        streams.remove(&stream_id);
+    }
+
     // Continue the conversation if we executed tools and got JSON responses
     if needs_continuation {
-        debug!("Checking if continuation is needed after tool execution...");
+        tracing::trace!("Checking if continuation needed after tool execution...");
 
         // Check if the tool responses contain JSON structures that need interpretation
         let should_continue = check_if_continuation_needed(&full_response);
 
         if should_continue {
-            debug!("Tool response contains JSON - continuing conversation...");
+            tracing::debug!("Tool response contains JSON - continuing conversation...");
 
             match
                 continue_conversation_after_tools(
@@ -849,14 +1131,34 @@ For each function call, return a json object with function name and arguments wi
         }
     }
 
-    // Emit completion signal
+    // Emit completion signal with usage data and cancellation status
     let _ = app.emit(
         "chat-token",
         serde_json::json!({
-        "token": "",
-        "finished": true
-    })
+            "token": "",
+            "finished": true,
+            "cancelled": was_cancelled,
+            "usage": usage_data.map(|(prompt, completion, total)| {
+                serde_json::json!({
+                    "prompt_tokens": prompt,
+                    "completion_tokens": completion,
+                    "total_tokens": total
+                })
+            })
+        })
     );
+
+    // Emit usage data as separate event for easier frontend handling
+    if let Some((prompt_tokens, completion_tokens, total_tokens)) = usage_data {
+        let _ = app.emit(
+            "chat-usage",
+            serde_json::json!({
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens
+            })
+        );
+    }
 
     // Log the complete response before breaking
     debug!(
@@ -886,8 +1188,8 @@ For each function call, return a json object with function name and arguments wi
 async fn continue_conversation_after_tools(
     app: AppHandle,
     client: &Client<OpenAIConfig>,
-    system_message: &str,
-    previous_messages: &[async_openai::types::ChatCompletionRequestMessage],
+    _system_message: &str,
+    previous_messages: &[ChatCompletionRequestMessage],
     assistant_response_with_tools: String,
     model_name: &str,
     temperature: Option<f64>,
@@ -898,24 +1200,51 @@ async fn continue_conversation_after_tools(
 ) -> Result<String, String> {
     debug!("Continuing conversation after tool execution");
 
-    // Build new message list with the assistant's response containing tool calls and results
+    // Create a clean system message for continuation - completely remove tool formatting
+    let continuation_system_message = 
+        "You are a helpful AI assistant. A tool has just been executed and returned results. \
+        Your task is to interpret the JSON results and provide a clear, natural language response to the user.\n\n\
+        CRITICAL: Respond ONLY with plain text. Do NOT use any XML tags like <tool_call> or <tool_response>. \
+        Do NOT wrap your response in any special formatting. Just provide a natural, conversational answer.".to_string();
+
+    debug!("Continuation system message (length: {})", continuation_system_message.len());
+
+    // Extract just the tool response content (the JSON data) without XML tags
+    // This prevents the LLM from seeing the XML format and copying it
+    let clean_tool_response = extract_tool_response_content(&assistant_response_with_tools);
+    
+    tracing::trace!(length = clean_tool_response.len(), "Clean tool response for continuation");
+
+    // Build a minimal message list for continuation - ONLY system, user question, and tool result
+    // Do NOT include conversation history to avoid the LLM seeing XML patterns
     let mut continuation_messages = vec![
         ChatCompletionRequestSystemMessageArgs::default()
-            .content(system_message.to_string())
+            .content(continuation_system_message)
             .build()
             .map_err(|e| format!("Failed to build system message: {}", e))?
             .into()
     ];
 
-    // Add previous conversation messages (excluding system message)
-    for msg in previous_messages.iter().skip(1) {
-        continuation_messages.push(msg.clone());
+    // Find the last user message (the current question)
+    if let Some(last_user_msg) = previous_messages.iter().rev().find(|msg| {
+        // Check if this is a user message by inspecting the message structure
+        if let Ok(value) = serde_json::to_value(msg) {
+            if let Some(role) = value.get("role") {
+                return role.as_str() == Some("user");
+            }
+        }
+        false
+    }) {
+        // Add only the current user's question
+        continuation_messages.push(last_user_msg.clone());
+    } else {
+        log_warning!("Could not find user message in history", note = "continuation may lack context");
     }
 
-    // Add the assistant message with tool calls and responses
+    // Add a simplified assistant message showing the tool result without XML formatting
     continuation_messages.push(
         ChatCompletionRequestAssistantMessageArgs::default()
-            .content(assistant_response_with_tools)
+            .content(format!("I called a tool and received this result:\n{}", clean_tool_response))
             .build()
             .map_err(|e| format!("Failed to build assistant message with tools: {}", e))?
             .into()
@@ -973,20 +1302,19 @@ async fn continue_conversation_after_tools(
                     }
 
                     if let Some(finish_reason) = &chat_choice.finish_reason {
-                        debug!("Continuation finished with reason: {:?}", finish_reason);
+                        tracing::debug!(reason = ?finish_reason, "Continuation finished");
                         break;
                     }
                 }
             }
             Err(err) => {
-                let error_info = format!("Continuation stream error: {}", err);
-                error!("{}", error_info);
-                return Err(error_info);
+                log_operation_error!("Continuation stream", &err);
+                return Err(format!("Continuation stream error: {}", err));
             }
         }
     }
 
-    debug!("Continuation response: {}", continued_response);
+    tracing::debug!(length = continued_response.len(), "Continuation response completed");
     Ok(continued_response)
 }
 
@@ -1005,39 +1333,89 @@ pub async fn chat_with_rag_streaming(
     max_tokens: Option<u32>,
     max_completion_tokens: Option<u32>,
     use_rag: Option<bool>,
-    rag_limit: Option<usize>
+    rag_limit: Option<usize>,
+    attachments: Option<Vec<AttachmentInfo>>
 ) -> Result<String, String> {
     let mut context_content = String::new();
 
-    // RAG retrieval if enabled
-    if use_rag.unwrap_or(false) {
-        match perform_rag_retrieval(&message, rag_limit.unwrap_or(5)).await {
+    // Separate images from documents
+    let (_image_attachments, document_attachments): (Vec<AttachmentInfo>, Vec<AttachmentInfo>) = 
+        if let Some(attachment_list) = attachments.as_ref() {
+            let mut images = Vec::new();
+            let mut docs = Vec::new();
+            for attachment in attachment_list {
+                if attachment.is_image {
+                    images.push(attachment.clone());
+                } else {
+                    docs.push(attachment.clone());
+                }
+            }
+            (images, docs)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+
+    // Extract document file paths for RAG (excluding images)
+    let doc_file_paths: Option<Vec<String>> = if !document_attachments.is_empty() {
+        Some(document_attachments.iter().map(|a| a.file_path.clone()).collect())
+    } else {
+        None
+    };
+
+    // RAG retrieval if enabled OR if there are document attachments (not images)
+    let should_use_rag = use_rag.unwrap_or(false) || doc_file_paths.is_some();
+    
+    if should_use_rag {
+        tracing::info!(
+            has_attached_files = doc_file_paths.is_some(), 
+            attached_count = doc_file_paths.as_ref().map(|f| f.len()),
+            "RAG is enabled, performing document retrieval"
+        );
+        match perform_rag_retrieval(&message, rag_limit, doc_file_paths.as_ref()).await {
             Ok(context) => {
-                context_content = context;
+                if !context.is_empty() {
+                    tracing::info!(context_length = context.len(), "RAG context retrieved successfully");
+                    context_content = context;
+                } else {
+                    tracing::warn!("RAG retrieval returned empty context - no relevant documents found");
+                }
             }
             Err(e) => {
                 error!(error = %e, "RAG retrieval failed");
                 // Continue without RAG context rather than failing completely
             }
         }
+    } else {
+        tracing::debug!("RAG is disabled for this request");
     }
 
     // Enhanced system prompt with context
     let enhanced_system_prompt = if !context_content.is_empty() {
-        format!(
-            "{}\n\nRelevant context from documents:\n{}\n\nUse this context to answer the user's question when relevant. If the context doesn't contain relevant information, answer based on your general knowledge.",
-            system_prompt.unwrap_or_else(||
-                "You're an AI assistant that provides helpful responses.".to_string()
-            ),
+        let prompt = format!(
+            "You are a helpful AI assistant with access to document content. CRITICAL INSTRUCTIONS:\n\
+            - You MUST use the document excerpts provided below to answer questions\n\
+            - Quote specific details from the documents when relevant\n\
+            - If information is in the documents, cite it explicitly (e.g., \"According to Source 1...\")\n\
+            - If the answer isn't in the provided excerpts, say so clearly\n\
+            - DO NOT claim you cannot analyze documents - the content is right here\n\
+            - Synthesize information across multiple sources when needed\n\n\
+            DOCUMENT EXCERPTS:\n\
+            {}\n\n\
+            Answer the user's question using the above document content. Be specific and cite your sources.",
             context_content
-        )
+        );
+        tracing::info!(prompt_length = prompt.len(), has_context = true, "Enhanced system prompt with RAG context");
+        prompt
     } else {
-        system_prompt.unwrap_or_else(||
+        let prompt = system_prompt.unwrap_or_else(||
             "You're an AI assistant that provides helpful responses.".to_string()
-        )
+        );
+        tracing::debug!(has_context = false, "Using standard system prompt without RAG");
+        prompt
     };
 
     // Use existing chat function with enhanced prompt
+    // Pass the full attachments list (including images) to the base chat function
     chat_with_loaded_model_streaming(
         app,
         model_name,
@@ -1049,43 +1427,99 @@ pub async fn chat_with_rag_streaming(
         top_p,
         seed,
         max_tokens,
-        max_completion_tokens
+        max_completion_tokens,
+        attachments // Pass all attachments, images will be handled separately
     ).await
 }
 
-async fn perform_rag_retrieval(query: &str, limit: usize) -> Result<String, String> {
+async fn perform_rag_retrieval(
+    query: &str, 
+    limit: Option<usize>,
+    attached_file_paths: Option<&Vec<String>>
+) -> Result<String, String> {
+    tracing::info!(
+        query_length = query.len(), 
+        limit = ?limit,
+        has_attached_files = attached_file_paths.is_some(),
+        attached_count = attached_file_paths.map(|f| f.len()),
+        "Starting RAG retrieval"
+    );
+    
     // Create query embedding
     let embedding_service = crate::rag::embeddings::EmbeddingService::new();
-    let query_embedding = embedding_service.create_single_embedding(query.to_string()).await?;
+    let query_embedding = embedding_service.create_single_embedding(query.to_string()).await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to create query embedding");
+            e
+        })?;
+    tracing::debug!(embedding_dim = query_embedding.len(), "Query embedding created");
 
     // Search similar documents
     let vector_store = crate::rag::vector_store::VectorStore::new()?;
-    let search_results = vector_store.search_similar(&query_embedding, limit * 2)?; // Get more for reranking
+    
+    // If attached files are specified, search only in those files
+    let search_results = if let Some(file_paths) = attached_file_paths {
+        tracing::info!(file_count = file_paths.len(), "Searching only in attached files");
+        vector_store.search_similar_in_files(&query_embedding, file_paths, limit.unwrap_or(100))?
+    } else {
+        // Otherwise, search all documents with the specified limit
+        let search_limit = limit.unwrap_or(5) * 2; // Get more for reranking
+        vector_store.search_similar(&query_embedding, search_limit)?
+    };
+    
+    tracing::info!(results_found = search_results.len(), "Vector search completed");
 
     if search_results.is_empty() {
+        tracing::warn!("No similar documents found in vector store");
         return Ok(String::new());
     }
 
     // Rerank results
     let reranker = crate::rag::reranker::RerankerService::new();
-    let reranked_results = reranker.rerank(query, search_results).await?;
+    let reranked_results = reranker.rerank(query, search_results).await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to rerank results");
+            e
+        })?;
+    
+    tracing::info!(reranked_count = reranked_results.len(), "Results reranked");
 
     // Build context from top results
+    // Use a higher count if filtering by specific files
+    let default_top_results = if attached_file_paths.is_some() { 10 } else { 5 };
+    let top_results_count = std::cmp::min(
+        default_top_results, 
+        limit.unwrap_or(default_top_results)
+    );
     let context_content = reranked_results
         .iter()
-        .take(std::cmp::min(3, limit)) // Use top 3 results or limit, whichever is smaller
+        .take(top_results_count)
         .enumerate()
         .map(|(i, result)| {
+            tracing::debug!(
+                chunk_index = i,
+                score = result.score,
+                rerank_score = ?result.rerank_score,
+                content_length = result.document.content.len(),
+                file_path = %result.document.file_path,
+                "Including document chunk in context"
+            );
             format!(
                 "Source {}: {}\nContent: {}\nRelevance Score: {:.2}\n---",
                 i + 1,
                 result.document.title,
-                truncate_content(&result.document.content, 500), // Limit content length
+                &result.document.content, // Use full content instead of truncating
                 result.rerank_score.unwrap_or(result.score)
             )
         })
         .collect::<Vec<_>>()
         .join("\n");
+    
+    tracing::info!(
+        context_length = context_content.len(),
+        chunks_included = top_results_count,
+        "RAG context built successfully"
+    );
 
     Ok(context_content)
 }
@@ -1120,6 +1554,28 @@ fn extract_all_tool_calls_from_xml(text: &str) -> Vec<(String, String)> {
     tool_calls
 }
 
+fn extract_tool_response_content(text: &str) -> String {
+    // Extract content from <tool_response> tags without the XML formatting
+    if let Some(start) = text.find("<tool_response>") {
+        if let Some(end) = text[start..].find("</tool_response>") {
+            let content_start = start + 15; // Length of "<tool_response>"
+            let content_end = start + end;
+            let raw_content = text[content_start..content_end].trim();
+            
+            // Try to parse as JSON and pretty-print it for better LLM readability
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw_content) {
+                // Successfully parsed - return pretty-printed JSON
+                return serde_json::to_string_pretty(&parsed).unwrap_or_else(|_| raw_content.to_string());
+            }
+            
+            // If not valid JSON, return as-is
+            return raw_content.to_string();
+        }
+    }
+    // If no tool_response found, return the whole text
+    text.to_string()
+}
+
 fn has_incomplete_tool_call(text: &str) -> bool {
     if let Some(start) = text.rfind("<tool_call>") {
         if let Some(_end) = text[start..].find("</tool_call>") {
@@ -1135,6 +1591,7 @@ fn check_if_continuation_needed(text: &str) -> bool {
     text.contains("<tool_response>")
 }
 
+#[allow(dead_code)]
 fn truncate_content(content: &str, max_length: usize) -> String {
     if content.len() <= max_length {
         content.to_string()
@@ -1147,4 +1604,53 @@ fn truncate_content(content: &str, max_length: usize) -> String {
             format!("{}...", truncated)
         }
     }
+}
+
+fn strip_tool_xml_tags(content: &str) -> String {
+    let mut result = String::new();
+    let mut current_pos = 0;
+    
+    while current_pos < content.len() {
+        // Look for tool_call start
+        if let Some(tool_call_start) = content[current_pos..].find("<tool_call>") {
+            let actual_start = current_pos + tool_call_start;
+            
+            // Add any text before the tool_call
+            result.push_str(&content[current_pos..actual_start]);
+            
+            // Find the end of tool_call
+            if let Some(tool_call_end_offset) = content[actual_start..].find("</tool_call>") {
+                let tool_call_end = actual_start + tool_call_end_offset + 12; // 12 = "</tool_call>".len()
+                current_pos = tool_call_end;
+                continue;
+            } else {
+                // Incomplete tool_call, skip to end
+                break;
+            }
+        }
+        // Look for tool_response start
+        else if let Some(tool_response_start) = content[current_pos..].find("<tool_response>") {
+            let actual_start = current_pos + tool_response_start;
+            
+            // Add any text before the tool_response
+            result.push_str(&content[current_pos..actual_start]);
+            
+            // Find the end of tool_response
+            if let Some(tool_response_end_offset) = content[actual_start..].find("</tool_response>") {
+                let tool_response_end = actual_start + tool_response_end_offset + 16; // 16 = "</tool_response>".len()
+                current_pos = tool_response_end;
+                continue;
+            } else {
+                // Incomplete tool_response, skip to end
+                break;
+            }
+        }
+        else {
+            // No more XML tags, add remaining content
+            result.push_str(&content[current_pos..]);
+            break;
+        }
+    }
+    
+    result.trim().to_string()
 }

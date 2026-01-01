@@ -26,8 +26,9 @@ impl RerankerService {
             let lexical_score = calculate_lexical_similarity(query, &result.document.content);
             let length_penalty = calculate_length_penalty(&result.document.content);
 
-            // Combine scores with weights
-            let combined_score = semantic_score * 0.6 + lexical_score * 0.3 + length_penalty * 0.1;
+            // Combine scores with adjusted weights
+            // Prioritize semantic similarity (70%), then lexical (20%), then length (10%)
+            let combined_score = semantic_score * 0.7 + lexical_score * 0.2 + length_penalty * 0.1;
 
             result.rerank_score = Some(combined_score);
         }

@@ -64,15 +64,35 @@ pub async fn search_documents_by_query(
     use_reranking: Option<bool>,
     file_types: Option<Vec<String>>
 ) -> Result<Vec<SearchResult>, String> {
-    let search_service = SearchService::new()?;
+    log_operation_start!("Search documents");
+    
+    let search_service = SearchService::new()
+        .map_err(|e| {
+            log_operation_error!("Search documents", &e, note = "failed to create search service");
+            e
+        })?;
+    
     let search_limit = limit.unwrap_or(10);
     let should_rerank = use_reranking.unwrap_or(true);
     
-    if let Some(types) = file_types {
-        search_service.search_with_filters(&query, search_limit, Some(types), should_rerank).await
+    tracing::debug!(
+        query = %query,
+        limit = search_limit,
+        rerank = should_rerank,
+        file_types = ?file_types,
+        "Searching documents"
+    );
+    
+    let results = if let Some(types) = file_types {
+        search_service.search_with_filters(&query, search_limit, Some(types), should_rerank).await?
     } else {
-        search_service.search(&query, search_limit, should_rerank).await
-    }
+        search_service.search(&query, search_limit, should_rerank).await?
+    };
+    
+    log_operation_success!("Search documents");
+    tracing::debug!(query = %query, results_count = results.len(), "Document search completed");
+    
+    Ok(results)
 }
 
 #[tauri::command]

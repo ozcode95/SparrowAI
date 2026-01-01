@@ -3,21 +3,34 @@ use pdf_extract::extract_text;
 use calamine::{Reader, Xlsx, open_workbook};
 use std::path::Path;
 use std::fs;
+use crate::constants;
 
 #[tauri::command]
 pub async fn process_document(file_path: String) -> Result<Vec<Document>, String> {
+    log_operation_start!("Process document");
+    
     let path = Path::new(&file_path);
     let extension = path.extension()
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_lowercase();
 
-    match extension.as_str() {
+    tracing::debug!(file = %file_path, extension = %extension, "Processing document");
+
+    let result = match extension.as_str() {
         "pdf" => process_pdf(&file_path).await,
         "docx" => process_docx(&file_path).await,
         "xlsx" | "xls" => process_excel(&file_path).await,
-        _ => Err("Unsupported file type".to_string()),
-    }
+        _ => {
+            log_operation_error!("Process document", "Unsupported file type", extension = %extension);
+            Err("Unsupported file type".to_string())
+        }
+    }?;
+    
+    log_operation_success!("Process document");
+    tracing::debug!(file = %file_path, chunks = result.len(), "Document processed into chunks");
+    
+    Ok(result)
 }
 
 #[tauri::command]
@@ -33,9 +46,14 @@ pub async fn save_temp_file(file_name: String, file_data: Vec<u8>) -> Result<Str
 
 async fn process_pdf(file_path: &str) -> Result<Vec<Document>, String> {
     let text = extract_text(file_path)
-        .map_err(|e| format!("Failed to extract PDF text: {}", e))?;
+        .map_err(|e| {
+            log_operation_error!("PDF extraction", &e, file = %file_path);
+            format!("Failed to extract PDF text: {}", e)
+        })?;
     
-    let chunks = chunk_text(&text, 1000, 200); // 1000 chars with 200 overlap
+    tracing::debug!(file = %file_path, text_length = text.len(), "Extracted PDF text");
+    
+    let chunks = chunk_text(&text, constants::DEFAULT_CHUNK_SIZE, constants::DEFAULT_CHUNK_OVERLAP);
     
     let mut documents = Vec::new();
     let file_name = Path::new(file_path)
@@ -71,7 +89,7 @@ async fn process_docx(file_path: &str) -> Result<Vec<Document>, String> {
     // Simple DOCX processing - you might want to use docx-rs properly
     let text = format!("DOCX content from: {}", file_path);
     
-    let chunks = chunk_text(&text, 1000, 200);
+    let chunks = chunk_text(&text, constants::DEFAULT_CHUNK_SIZE, constants::DEFAULT_CHUNK_OVERLAP);
     
     let mut documents = Vec::new();
     let file_name = Path::new(file_path)
@@ -122,7 +140,7 @@ async fn process_excel(file_path: &str) -> Result<Vec<Document>, String> {
                 text.push('\n');
             }
             
-            let chunks = chunk_text(&text, 1000, 200);
+            let chunks = chunk_text(&text, constants::DEFAULT_CHUNK_SIZE, constants::DEFAULT_CHUNK_OVERLAP);
             
             for (i, chunk) in chunks.iter().enumerate() {
                 if chunk.trim().is_empty() {
@@ -153,7 +171,27 @@ fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<String> {
     
     let mut start = 0;
     while start < chars.len() {
-        let end = std::cmp::min(start + chunk_size, chars.len());
+        let mut end = std::cmp::min(start + chunk_size, chars.len());
+        
+        // Try to break at paragraph boundary (double newline) for better semantic coherence
+        if end < chars.len() {
+            // Look back up to 150 chars for a paragraph break
+            let search_start = std::cmp::max(end.saturating_sub(150), start);
+            if let Some(para_pos) = chars[search_start..end]
+                .windows(2)
+                .rposition(|w| w[0] == '\n' && w[1] == '\n')
+            {
+                end = search_start + para_pos + 2; // Include both newlines
+            } 
+            // If no paragraph break, try sentence boundary
+            else if let Some(sent_pos) = chars[search_start..end]
+                .iter()
+                .rposition(|&c| c == '.' || c == '!' || c == '?')
+            {
+                end = search_start + sent_pos + 1;
+            }
+        }
+        
         let chunk: String = chars[start..end].iter().collect();
         
         if !chunk.trim().is_empty() {

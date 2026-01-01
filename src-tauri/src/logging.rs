@@ -1,14 +1,15 @@
 use std::fs;
 use std::path::PathBuf;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, fmt};
-use tracing_appender::{non_blocking, rolling};
 use chrono::{Local, NaiveDate};
 use std::io;
 
-/// Initialize the logging system with file-based logging and archiving
-pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
-    let log_dir = get_log_directory()?;
-    let archive_dir = log_dir.join("archive");
+use crate::{ paths, constants };
+
+/// Initialize log directories and perform archiving
+/// This should be called before initializing the Tauri log plugin
+pub fn prepare_log_directories() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let log_dir = paths::get_logs_dir()?;
+    let archive_dir = paths::get_logs_archive_dir()?;
     
     // Create log directories
     fs::create_dir_all(&log_dir)?;
@@ -17,69 +18,118 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
     // Archive old logs before starting
     archive_old_logs(&log_dir, &archive_dir)?;
     
-    // Set up file appender for daily rotation with .log extension
-    let file_appender = rolling::Builder::new()
-        .rotation(rolling::Rotation::DAILY)
-        .filename_prefix("sparrow")
-        .filename_suffix("log")
-        .build(&log_dir)
-        .map_err(|e| format!("Failed to create rolling file appender: {}", e))?;
-    let (non_blocking_appender, _guard) = non_blocking(file_appender);
-    
-    // Create console layer for development - simplified output (message only)
-    let console_layer = fmt::layer()
-        .with_target(false)
-        .with_thread_ids(false)
-        .with_line_number(false)
-        .with_file(false)
-        .with_level(false)
-        .with_ansi(true)
-        .without_time();
-    
-    // Create file layer with structured format
-    let file_layer = fmt::layer()
-        .with_target(true)
-        .with_thread_ids(true)
-        .with_line_number(true)
-        .with_file(true)
-        .with_ansi(false)
-        .with_writer(non_blocking_appender);
-    
-    // Set up environment filter (default to INFO level)
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,sparrow=debug"));
-    
-    // Initialize the subscriber
-    tracing_subscriber::registry()
-        .with(env_filter)
-        .with(console_layer)
-        .with(file_layer)
-        .init();
-    
-    tracing::info!("Logging system initialized");
-    tracing::info!("Log directory: {}", log_dir.display());
-    tracing::info!("Archive directory: {}", archive_dir.display());
-    
-    // Store the guard to prevent dropping (this keeps the non-blocking writer alive)
-    std::mem::forget(_guard);
-    
-    // Run initial cleanup synchronously (don't spawn tokio task here)
+    // Run initial cleanup
     if let Err(e) = cleanup_old_archives() {
-        tracing::warn!("Failed to cleanup old log archives during init: {}", e);
+        eprintln!("Warning: Failed to cleanup old log archives during init: {}", e);
     }
     
-    Ok(())
+    Ok(log_dir)
 }
 
-/// Get the application's log directory
-fn get_log_directory() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    // Use user data directory for logs
-    let home_dir = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .map_err(|_| "Failed to get user home directory")?;
+/// Custom time formatter with 2 decimal places for seconds (kept for compatibility)
+#[allow(dead_code)]
+struct CustomTimeFormat;
+
+#[allow(dead_code)]
+impl tracing_subscriber::fmt::time::FormatTime for CustomTimeFormat {
+    fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
+        let now = Local::now();
+        // Format base time without fractional seconds
+        let base = now.format("%Y-%m-%d %H:%M:%S").to_string();
+        // Get fractional seconds in centiseconds (hundredths)
+        let centisecs = (now.timestamp_subsec_millis() / 10) % 100;
+        w.write_str(&format!("{}.{:02}", base, centisecs))
+    }
+}
+
+/// Build and return the Tauri log plugin builder
+/// This replaces the old init_logging function
+pub fn build_tauri_log_plugin() -> Result<tauri_plugin_log::Builder, Box<dyn std::error::Error>> {
+    // Prepare directories and archive old logs
+    let log_dir = prepare_log_directories()?;
     
-    let log_dir = PathBuf::from(home_dir).join(".sparrow").join("logs");
-    Ok(log_dir)
+    // Build the Tauri log plugin with custom configuration
+    // Generate filename with today's date: sparrow.2025-12-23
+    let today = Local::now().format("%Y-%m-%d").to_string();
+    let log_filename = format!("sparrow.{}", today);
+    
+    let plugin_builder = tauri_plugin_log::Builder::new()
+        // Configure log targets: Use Folder to write to our custom log directory
+        .targets([
+            tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Folder {
+                path: log_dir.clone(),
+                file_name: Some(log_filename), // Creates sparrow.YYYY-MM-DD.log files
+            }),
+            tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+        ])
+        // Set log level (info and above)
+        .level(log::LevelFilter::Info)
+        // Debug level for our crate
+        .level_for("sparrow_lib", log::LevelFilter::Debug)
+        .level_for("SparrowAI", log::LevelFilter::Debug)
+        // Reduce noise from dependencies
+        .level_for("h2", log::LevelFilter::Warn)
+        .level_for("hyper", log::LevelFilter::Warn)
+        .level_for("reqwest", log::LevelFilter::Warn)
+        .level_for("sled", log::LevelFilter::Warn)
+        // Use local timezone for timestamps
+        .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
+        // Configure file rotation (keep all rotated files)
+        .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepAll)
+        // Set max file size (50MB)
+        .max_file_size(50_000_000)
+        // Custom format to simplify webview logs
+        .format(|out, message, record| {
+            // Simplify webview target format
+            let target = record.target();
+            let simplified_target = if target.starts_with("webview:") {
+                // Remove function name and localhost URL from webview logs
+                // From: webview:Logger.info@http://localhost:1420/src/lib/logger.ts:39:11
+                // To:   webview:src/lib/logger.ts:39:11
+                let parts: Vec<&str> = target.split('@').collect();
+                if parts.len() > 1 {
+                    let url_part = parts[1];
+                    // Remove http://localhost:1420/ prefix
+                    let simplified = url_part
+                        .replace("http://localhost:1420/", "")
+                        .replace("http://localhost:5173/", ""); // Also handle Vite dev server
+                    format!("webview:{}", simplified)
+                } else {
+                    target.to_string()
+                }
+            } else {
+                target.to_string()
+            };
+            
+            out.finish(format_args!(
+                "[{} {}] {}",
+                record.level(),
+                simplified_target,
+                message
+            ))
+        });
+    
+    tracing::info!(
+        log_dir = %log_dir.display(),
+        "Tauri logging plugin configured"
+    );
+    
+    Ok(plugin_builder)
+}
+
+/// Initialize the logging system with file-based logging and archiving
+/// Legacy function - now calls build_tauri_log_plugin for compatibility
+#[allow(dead_code)]
+#[deprecated(note = "Use build_tauri_log_plugin() and register with Tauri builder instead")]
+pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
+    // Just prepare directories for backward compatibility
+    let log_dir = prepare_log_directories()?;
+    
+    eprintln!("🚀 SparrowAI starting...");
+    eprintln!("📁 Log directory: {}", log_dir.display());
+    eprintln!("⚠️  Please use build_tauri_log_plugin() with Tauri builder");
+    
+    Ok(())
 }
 
 /// Archive logs older than today
@@ -136,14 +186,14 @@ fn extract_date_from_filename(filename: &str) -> Option<String> {
 
 /// Clean up old archived logs (keep last 30 days)
 pub fn cleanup_old_archives() -> Result<(), Box<dyn std::error::Error>> {
-    let log_dir = get_log_directory()?;
-    let archive_dir = log_dir.join("archive");
+    let _log_dir = paths::get_logs_dir()?;
+    let archive_dir = paths::get_logs_archive_dir()?;
     
     if !archive_dir.exists() {
         return Ok(());
     }
     
-    let cutoff_date = Local::now().naive_local().date() - chrono::Duration::days(30);
+    let cutoff_date = Local::now().naive_local().date() - chrono::Duration::days(constants::LOG_RETENTION_DAYS);
     
     for entry in fs::read_dir(&archive_dir)? {
         let entry = entry?;
