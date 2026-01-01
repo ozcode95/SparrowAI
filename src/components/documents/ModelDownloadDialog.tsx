@@ -28,7 +28,6 @@ export const ModelDownloadDialog = ({
   isOpen,
   onClose,
   onSuccess,
-  modelId,
   setModelDownloading,
 }: ModelDownloadDialogProps) => {
   const [isDownloading, setIsDownloading] = useState(false);

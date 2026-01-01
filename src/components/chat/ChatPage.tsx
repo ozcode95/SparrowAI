@@ -5,7 +5,6 @@ import { PageContainer } from "../layout";
 import { Card, Button, Input } from "../ui";
 import { MessageContent } from "./MessageContent";
 import { useAppStore } from "@/store";
-import type { ModelCategory } from "@/store/types";
 import {
   Send,
   User,

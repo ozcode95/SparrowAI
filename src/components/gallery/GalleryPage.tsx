@@ -3,7 +3,6 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { PageContainer } from "../layout";
 import { Card, Button, Input } from "../ui";
 import { useAppStore } from "@/store";
-import type { ModelCategory } from "@/store/types";
 import type { GeneratedImage } from "@/store/slices/gallerySlice";
 import {
   Send,

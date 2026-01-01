@@ -41,7 +41,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     showNotification,
   } = useUI();
 
-  const { loadedModels, getLoadedModels } = useModels();
+  const { getLoadedModels } = useModels();
 
   const {
     chatSessions,
