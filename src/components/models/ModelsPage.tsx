@@ -57,8 +57,6 @@ export const ModelsPage = () => {
     removeDownloadedModel,
     isModelDownloaded,
     setDownloadedModels,
-    loadedModel,
-    setLoadedModel,
     loadedModelsByType,
     setLoadedModelByType,
   } = useAppStore();
@@ -78,6 +76,8 @@ export const ModelsPage = () => {
     useState<string>("");
   const [downloadedModelsDialogOpen, setDownloadedModelsDialogOpen] =
     useState(false);
+  const [loadingModelId, setLoadingModelId] = useState<string | null>(null);
+  const [deletingModelId, setDeletingModelId] = useState<string | null>(null);
   const debouncedSearch = useDebounce(searchQuery, 500);
 
   // Load downloaded models on mount
@@ -108,6 +108,7 @@ export const ModelsPage = () => {
         "get_all_model_metadata"
       );
       setModelMetadata(metadata);
+      console.log("metadata", metadata);
       logDebug("Loaded model metadata", {
         count: Object.keys(metadata).length,
       });
@@ -224,15 +225,23 @@ export const ModelsPage = () => {
   };
 
   const handleDelete = async (modelId: string) => {
+    setDeletingModelId(modelId);
     try {
-      const homeDir = await invoke<string>("get_home_dir");
-      const modelPath = `${homeDir}\\.sparrow\\models\\${modelId}`;
-
-      await invoke("delete_directory", { path: modelPath });
+      logUserAction("Delete model", { modelId });
+      await invoke("delete_downloaded_model", {
+        modelId,
+        downloadPath: null,
+      });
       removeDownloadedModel(modelId);
       await loadDownloadedModels();
+      await loadModelMetadata();
+      logDebug("Model deleted successfully", { modelId });
     } catch (error) {
       console.error("Delete failed:", error);
+      logError("Failed to delete model", error as Error, { modelId });
+      alert(`Failed to delete model: ${error}`);
+    } finally {
+      setDeletingModelId(null);
     }
   };
 
@@ -246,16 +255,14 @@ export const ModelsPage = () => {
   };
 
   const handleLoadModel = async (modelId: string, modelType: ModelCategory) => {
+    setLoadingModelId(modelId);
     try {
       await invoke("load_model", { modelId });
       setLoadedModelByType(modelType, modelId);
-
-      // Also set as the primary loaded model if it's a text model
-      if (modelType === "text") {
-        setLoadedModel(modelId);
-      }
     } catch (error) {
       console.error("Failed to load model:", error);
+    } finally {
+      setLoadingModelId(null);
     }
   };
 
@@ -394,10 +401,20 @@ export const ModelsPage = () => {
                                 e.stopPropagation();
                                 handleDelete(modelId);
                               }}
+                              disabled={deletingModelId === modelId}
                               className="bg-red-600 hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700 w-28"
                             >
-                              <Trash2 className="w-3 h-3 mr-1" />
-                              Delete
+                              {deletingModelId === modelId ? (
+                                <>
+                                  <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                                  Deleting...
+                                </>
+                              ) : (
+                                <>
+                                  <Trash2 className="w-3 h-3 mr-1" />
+                                  Delete
+                                </>
+                              )}
                             </Button>
                           ) : downloading ? (
                             <div className="space-y-2 min-w-[120px]">
@@ -499,10 +516,20 @@ export const ModelsPage = () => {
                             e.stopPropagation();
                             handleDelete(modelId);
                           }}
+                          disabled={deletingModelId === modelId}
                           className="bg-red-600 hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700 w-28"
                         >
-                          <Trash2 className="w-3 h-3 mr-1" />
-                          Delete
+                          {deletingModelId === modelId ? (
+                            <>
+                              <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                              Deleting...
+                            </>
+                          ) : (
+                            <>
+                              <Trash2 className="w-3 h-3 mr-1" />
+                              Delete
+                            </>
+                          )}
                         </Button>
                       ) : downloading ? (
                         <div className="space-y-1 min-w-[120px]">
@@ -722,9 +749,10 @@ export const ModelsPage = () => {
         onDelete={handleDelete}
         onOpenFolder={handleOpenModelFolder}
         onLoadModel={handleLoadModel}
-        loadedModel={loadedModel}
         loadedModelsByType={loadedModelsByType}
         modelMetadata={modelMetadata}
+        loadingModelId={loadingModelId || undefined}
+        deletingModelId={deletingModelId || undefined}
       />
     </PageContainer>
   );

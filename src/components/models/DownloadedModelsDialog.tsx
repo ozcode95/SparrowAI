@@ -1,6 +1,13 @@
 import { Dialog } from "../ui";
 import { Button } from "../ui";
-import { CheckCircle, Trash2, FolderOpen, X, Play } from "lucide-react";
+import {
+  CheckCircle,
+  Trash2,
+  FolderOpen,
+  X,
+  Play,
+  Loader2,
+} from "lucide-react";
 import type { ModelMetadata } from "@/types/models";
 import type { ModelCategory, LoadedModelsByType } from "@/store/types";
 import {
@@ -17,9 +24,10 @@ interface DownloadedModelsDialogProps {
   onDelete: (modelId: string) => void;
   onOpenFolder: (modelId: string) => void;
   onLoadModel?: (modelId: string, modelType: ModelCategory) => void;
-  loadedModel?: string | null;
   loadedModelsByType?: LoadedModelsByType;
   modelMetadata?: Record<string, ModelMetadata>;
+  loadingModelId?: string;
+  deletingModelId?: string;
 }
 
 export const DownloadedModelsDialog = ({
@@ -29,8 +37,9 @@ export const DownloadedModelsDialog = ({
   onDelete,
   onOpenFolder,
   onLoadModel,
-  loadedModel,
   loadedModelsByType,
+  loadingModelId,
+  deletingModelId,
 }: DownloadedModelsDialogProps) => {
   // Group models by category
   const modelsByCategory: Record<ModelCategory, string[]> = {
@@ -39,6 +48,8 @@ export const DownloadedModelsDialog = ({
     "image-gen": [],
     "speech-to-text": [],
     "text-to-speech": [],
+    embedding: [],
+    reranker: [],
   };
 
   Array.from(downloadedModels).forEach((modelId) => {
@@ -48,17 +59,14 @@ export const DownloadedModelsDialog = ({
     }
   });
 
-  const isModelLoaded = (modelId: string): boolean => {
-    if (!loadedModelsByType) return loadedModel === modelId;
-
-    const category = categorizeModel(modelId);
-    if (!category) return false;
-
+  const isModelLoaded = (modelId: string, category: ModelCategory): boolean => {
+    if (!loadedModelsByType) return false;
+    console.log(loadedModelsByType, category, modelId);
     return loadedModelsByType[category] === modelId;
   };
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <div className="bg-white dark:bg-gray-800 rounded-xl max-w-2xl w-full p-6 max-h-[80vh] flex flex-col">
+      <div className="bg-white dark:bg-gray-800 rounded-xl max-w-2xl w-full p-6 h-[80vh] max-h-[80vh] flex flex-col">
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             <div className="p-2 rounded-lg bg-green-500/10">
@@ -82,7 +90,7 @@ export const DownloadedModelsDialog = ({
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto min-h-0 pr-2">
           {Array.from(downloadedModels).length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-center">
               <CheckCircle className="w-16 h-16 text-gray-300 dark:text-gray-600 mb-4" />
@@ -106,7 +114,7 @@ export const DownloadedModelsDialog = ({
                       </h3>
                       <div className="space-y-2">
                         {models.map((modelId) => {
-                          const loaded = isModelLoaded(modelId);
+                          const loaded = isModelLoaded(modelId, category);
                           return (
                             <div
                               key={modelId}
@@ -117,9 +125,9 @@ export const DownloadedModelsDialog = ({
                                   {modelId}
                                 </p>
                                 <div className="flex items-center gap-2 mt-0.5">
-                                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                                  {/* <p className="text-xs text-gray-500 dark:text-gray-400">
                                     {modelId.split("/")[0]} organization
-                                  </p>
+                                  </p> */}
                                   <span
                                     className={`inline-block px-2 py-0.5 text-xs rounded-full ${getCategoryColor(
                                       category
@@ -143,11 +151,22 @@ export const DownloadedModelsDialog = ({
                                     onClick={() =>
                                       onLoadModel(modelId, category)
                                     }
-                                    disabled={loaded}
+                                    disabled={
+                                      loaded || loadingModelId === modelId
+                                    }
                                     className="shrink-0"
                                   >
-                                    <Play className="w-4 h-4 mr-1" />
-                                    {loaded ? "Loaded" : "Load"}
+                                    {loadingModelId === modelId ? (
+                                      <>
+                                        <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                                        Loading...
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Play className="w-4 h-4 mr-1" />
+                                        {loaded ? "Loaded" : "Load"}
+                                      </>
+                                    )}
                                   </Button>
                                 )}
                                 <Button
@@ -163,10 +182,20 @@ export const DownloadedModelsDialog = ({
                                   variant="ghost"
                                   size="sm"
                                   onClick={() => onDelete(modelId)}
+                                  disabled={deletingModelId === modelId}
                                   className="shrink-0 text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
                                 >
-                                  <Trash2 className="w-4 h-4 mr-1" />
-                                  Delete
+                                  {deletingModelId === modelId ? (
+                                    <>
+                                      <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                                      Deleting...
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Trash2 className="w-4 h-4 mr-1" />
+                                      Delete
+                                    </>
+                                  )}
                                 </Button>
                               </div>
                             </div>

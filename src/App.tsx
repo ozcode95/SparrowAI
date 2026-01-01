@@ -26,7 +26,7 @@ import { logInfo, logError, logDebug } from "./lib/logger";
 
 function App() {
   const { currentPage, setCurrentPage, showNotification } = useUI();
-  const { setIsOvmsRunning, getLoadedModel } = useModels();
+  const { setIsOvmsRunning, getLoadedModels } = useModels();
   const { themeMode } = useTheme();
   const {
     setActiveChatSessionId,
@@ -122,7 +122,7 @@ function App() {
 
           // Load model once when OVMS is ready
           if (!modelLoadedRef.current) {
-            await getLoadedModel();
+            await getLoadedModels();
             modelLoadedRef.current = true;
           }
 
@@ -193,7 +193,7 @@ function App() {
 
         // Load model once when OVMS is ready
         if (!modelLoadedRef.current) {
-          await getLoadedModel();
+          await getLoadedModels();
           modelLoadedRef.current = true;
         }
 

@@ -41,7 +41,6 @@ export const useAppStore = create<AppState>()(
           selectedModel: null,
           isSearching: false,
           isOvmsRunning: false,
-          loadedModel: null,
         };
       },
     }
@@ -87,7 +86,6 @@ export const useModels = () =>
       downloadProgress: state.downloadProgress,
       downloadedModels: state.downloadedModels,
       isOvmsRunning: state.isOvmsRunning,
-      loadedModel: state.loadedModel,
       setSearchQuery: state.setSearchQuery,
       setSearchResults: state.setSearchResults,
       setSelectedModel: state.setSelectedModel,
@@ -102,8 +100,12 @@ export const useModels = () =>
       removeDownloadedModel: state.removeDownloadedModel,
       setDownloadedModels: state.setDownloadedModels,
       setIsOvmsRunning: state.setIsOvmsRunning,
-      setLoadedModel: state.setLoadedModel,
-      getLoadedModel: state.getLoadedModel,
+      loadedModels: state.loadedModels,
+      setLoadedModels: state.setLoadedModels,
+      getLoadedModels: state.getLoadedModels,
+      loadedModelsByType: state.loadedModelsByType,
+      setLoadedModelByType: state.setLoadedModelByType,
+      getLoadedModelByType: state.getLoadedModelByType,
     }))
   );
 

@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { ChatMessage as ChatMessageType } from "@/store/types";
+import { categorizeModel } from "@/lib/modelUtils";
 import {
   logUserAction,
   logError,
@@ -38,57 +39,6 @@ interface AttachmentInfo {
   is_image?: boolean;
 }
 
-// Helper function to categorize models by type
-const categorizeModel = (modelId: string): ModelCategory | null => {
-  const lowerModelId = modelId.toLowerCase();
-
-  if (lowerModelId.includes("embedding") || lowerModelId.includes("reranker")) {
-    return null;
-  }
-
-  if (
-    lowerModelId.includes("flux") ||
-    lowerModelId.includes("stable-diffusion") ||
-    lowerModelId.includes("sd-") ||
-    lowerModelId.includes("image-generation") ||
-    lowerModelId.includes("imagegen")
-  ) {
-    return "image-gen";
-  }
-
-  if (
-    lowerModelId.includes("vision") ||
-    lowerModelId.includes("llava") ||
-    lowerModelId.includes("minicpm-v") ||
-    lowerModelId.includes("phi-3-vision") ||
-    lowerModelId.includes("image-to-text") ||
-    lowerModelId.includes("vl-")
-  ) {
-    return "image-to-text";
-  }
-
-  if (
-    lowerModelId.includes("whisper") ||
-    lowerModelId.includes("speech-to-text") ||
-    lowerModelId.includes("speech2text") ||
-    lowerModelId.includes("stt")
-  ) {
-    return "speech-to-text";
-  }
-
-  if (
-    lowerModelId.includes("tts") ||
-    lowerModelId.includes("text-to-speech") ||
-    lowerModelId.includes("text2speech") ||
-    lowerModelId.includes("speecht5") ||
-    lowerModelId.includes("bark")
-  ) {
-    return "text-to-speech";
-  }
-
-  return "text";
-};
-
 export const ChatPage = () => {
   const {
     activeChatSessionId,
@@ -99,13 +49,8 @@ export const ChatPage = () => {
     setActiveChatSessionId,
   } = useAppStore();
   const { settings } = useAppStore();
-  const {
-    loadedModel,
-    setLoadedModel,
-    downloadedModels,
-    loadedModelsByType,
-    setLoadedModelByType,
-  } = useAppStore();
+  const { downloadedModels, loadedModelsByType, setLoadedModelByType } =
+    useAppStore();
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [currentStreamingMessage, setCurrentStreamingMessage] = useState("");
@@ -145,8 +90,8 @@ export const ChatPage = () => {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Organize downloaded models by category
-  const modelsByCategory = useRef<{
+  // Organize downloaded models by category using state instead of ref
+  const [modelsByCategory, setModelsByCategory] = useState<{
     text: string[];
     "image-to-text": string[];
   }>({
@@ -156,6 +101,12 @@ export const ChatPage = () => {
 
   // Update categorized models when downloadedModels changes
   useEffect(() => {
+    console.log(
+      "[ChatPage] downloadedModels changed:",
+      downloadedModels.size,
+      Array.from(downloadedModels)
+    );
+
     const categorized: {
       text: string[];
       "image-to-text": string[];
@@ -166,12 +117,14 @@ export const ChatPage = () => {
 
     Array.from(downloadedModels).forEach((modelId) => {
       const category = categorizeModel(modelId);
+      console.log(`[ChatPage] Categorizing ${modelId} as ${category}`);
       if (category === "text" || category === "image-to-text") {
         categorized[category].push(modelId);
       }
     });
 
-    modelsByCategory.current = categorized;
+    setModelsByCategory(categorized);
+    console.log("[ChatPage] modelsByCategory updated:", categorized);
   }, [downloadedModels]);
 
   // Auto-scroll to bottom when messages change
@@ -659,7 +612,7 @@ export const ChatPage = () => {
 
       logDebug("Starting chat with session", {
         sessionId: sessionToUse,
-        modelId: loadedModel,
+        modelId: loadedModelsByType.text,
       });
       logUserAction("Send chat message", {
         sessionId: sessionToUse,
@@ -758,11 +711,6 @@ export const ChatPage = () => {
       await invoke("load_model", { modelId });
       setLoadedModelByType(modelType, modelId);
 
-      // Also set as the primary loaded model if it's a text model
-      if (modelType === "text") {
-        setLoadedModel(modelId);
-      }
-
       console.log(`Model loaded successfully: ${modelId}`);
     } catch (error) {
       console.error("Failed to load model:", error);
@@ -772,6 +720,9 @@ export const ChatPage = () => {
       setIsLoadingModel((prev) => ({ ...prev, [modelType]: false }));
     }
   };
+
+  const isAnyModelLoading =
+    isLoadingModel.text || isLoadingModel["image-to-text"];
 
   return (
     <PageContainer
@@ -789,11 +740,11 @@ export const ChatPage = () => {
               onChange={(e) =>
                 e.target.value && handleLoadModel(e.target.value, "text")
               }
-              disabled={isLoadingModel.text || isStreaming}
+              disabled={isAnyModelLoading || isStreaming}
               className="px-2 py-1.5 border rounded-lg bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-xs disabled:opacity-50 disabled:cursor-not-allowed w-56 truncate"
             >
               <option value="">Select model...</option>
-              {modelsByCategory.current.text.map((modelId) => (
+              {modelsByCategory.text.map((modelId) => (
                 <option key={modelId} value={modelId}>
                   {modelId}
                 </option>
@@ -812,11 +763,11 @@ export const ChatPage = () => {
                 e.target.value &&
                 handleLoadModel(e.target.value, "image-to-text")
               }
-              disabled={isLoadingModel["image-to-text"] || isStreaming}
+              disabled={isAnyModelLoading || isStreaming}
               className="px-2 py-1.5 border rounded-lg bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-xs disabled:opacity-50 disabled:cursor-not-allowed w-56 truncate"
             >
               <option value="">Select model...</option>
-              {modelsByCategory.current["image-to-text"].map((modelId) => (
+              {modelsByCategory["image-to-text"].map((modelId) => (
                 <option key={modelId} value={modelId}>
                   {modelId}
                 </option>

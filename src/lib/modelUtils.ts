@@ -7,8 +7,12 @@ import type { ModelCategory } from "@/store/types";
 export const categorizeModel = (modelId: string): ModelCategory | null => {
   const lowerModelId = modelId.toLowerCase();
 
-  if (lowerModelId.includes("embedding") || lowerModelId.includes("reranker")) {
-    return null;
+  if (lowerModelId.includes("reranker")) {
+    return "reranker";
+  }
+
+  if (lowerModelId.includes("embedding")) {
+    return "embedding";
   }
 
   if (
@@ -64,6 +68,8 @@ export const getCategoryDisplayName = (category: ModelCategory): string => {
     "image-gen": "Image Gen",
     "speech-to-text": "STT",
     "text-to-speech": "TTS",
+    embedding: "Embedding",
+    reranker: "Reranker",
   };
   return names[category];
 };
@@ -78,6 +84,8 @@ export const getCategoryFullName = (category: ModelCategory): string => {
     "image-gen": "Image Generation",
     "speech-to-text": "Speech-to-Text",
     "text-to-speech": "Text-to-Speech",
+    embedding: "Embedding Models",
+    reranker: "Reranker Models",
   };
   return names[category];
 };
@@ -96,6 +104,10 @@ export const getCategoryColor = (category: ModelCategory): string => {
       "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300",
     "text-to-speech":
       "bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300",
+    embedding:
+      "bg-cyan-100 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-300",
+    reranker:
+      "bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300",
   };
   return colors[category];
 };

@@ -41,7 +41,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     showNotification,
   } = useUI();
 
-  const { getLoadedModel } = useModels();
+  const { loadedModels, getLoadedModels } = useModels();
 
   const {
     chatSessions,
@@ -142,15 +142,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       const session = chatSessions[sessionId];
       if (session && !session.model_id) {
-        const loadedModel = await getLoadedModel();
-        if (loadedModel) {
+        const models = await getLoadedModels();
+        const firstModel = models.length > 0 ? models[0] : null;
+        if (firstModel) {
+          const modelId = firstModel.startsWith("OpenVINO/")
+            ? firstModel
+            : `OpenVINO/${firstModel}`;
           try {
             await invoke("update_chat_session", {
               sessionId: sessionId,
               title: null,
-              modelId: loadedModel,
+              modelId: modelId,
             });
-            updateChatSession(sessionId, { model_id: loadedModel });
+            updateChatSession(sessionId, { model_id: modelId });
           } catch (error) {
             console.error("Failed to update session with loaded model:", error);
           }
@@ -299,7 +303,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               isCollapsed && "justify-center px-0"
             )}
             onClick={() => {
-              getLoadedModel(); // Refresh model status on click
+              getLoadedModels(); // Refresh model status on click
               setOvmsStatusDialogOpen(true);
             }}
           >

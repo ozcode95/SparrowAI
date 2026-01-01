@@ -14,29 +14,13 @@ import {
   Trash2,
 } from "lucide-react";
 import { logUserAction, logInfo } from "@/lib/logger";
+import { categorizeModel } from "@/lib/modelUtils";
 
 interface AttachmentInfo {
   file_path: string;
   file_name: string;
   file_type: string;
 }
-
-// Helper function to categorize models by type
-const categorizeModel = (modelId: string): ModelCategory | null => {
-  const lowerModelId = modelId.toLowerCase();
-
-  if (
-    lowerModelId.includes("flux") ||
-    lowerModelId.includes("stable-diffusion") ||
-    lowerModelId.includes("sd-") ||
-    lowerModelId.includes("image-generation") ||
-    lowerModelId.includes("imagegen")
-  ) {
-    return "image-gen";
-  }
-
-  return null;
-};
 
 export const GalleryPage = () => {
   const {

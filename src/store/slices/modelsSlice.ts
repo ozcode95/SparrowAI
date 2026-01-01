@@ -15,7 +15,6 @@ export const createModelsSlice: StateCreator<AppState, [], [], ModelsSlice> = (
   downloadProgress: {},
   downloadedModels: new Set(),
   isOvmsRunning: false,
-  loadedModel: null,
   loadedModels: [],
   loadedModelsByType: {
     text: null,
@@ -23,6 +22,8 @@ export const createModelsSlice: StateCreator<AppState, [], [], ModelsSlice> = (
     "image-gen": null,
     "speech-to-text": null,
     "text-to-speech": null,
+    embedding: null,
+    reranker: null,
   },
 
   setSearchQuery: (query) => set({ searchQuery: query }),
@@ -83,16 +84,11 @@ export const createModelsSlice: StateCreator<AppState, [], [], ModelsSlice> = (
     set({ downloadedModels: new Set(modelIds) }),
 
   setIsOvmsRunning: (isRunning) => set({ isOvmsRunning: isRunning }),
-  setLoadedModel: (modelId) => {
-    logStateChange("models", "setLoadedModel", { modelId });
-    set({ loadedModel: modelId });
-  },
 
   setLoadedModels: (modelIds) => {
     logStateChange("models", "setLoadedModels", { count: modelIds.length });
     set({
       loadedModels: modelIds,
-      loadedModel: modelIds.length > 0 ? modelIds[0] : null, // Set first as primary
     });
   },
 
@@ -103,40 +99,85 @@ export const createModelsSlice: StateCreator<AppState, [], [], ModelsSlice> = (
         count: modelNames.length,
         models: modelNames,
       });
-      set({
-        loadedModels: modelNames,
-        loadedModel: modelNames.length > 0 ? modelNames[0] : null,
-      });
+
+      // Get metadata to categorize models by type
+      try {
+        const metadata = await invoke<
+          Record<
+            string,
+            { model_id: string; model_type: string; pipeline_tag: string }
+          >
+        >("get_all_model_metadata");
+
+        // Map model types from metadata to loadedModelsByType
+        const loadedByType: Record<string, string | null> = {
+          text: null,
+          "image-to-text": null,
+          "image-gen": null,
+          "speech-to-text": null,
+          "text-to-speech": null,
+          embedding: null,
+          reranker: null,
+        };
+
+        // Categorize each loaded model
+        modelNames.forEach((modelName) => {
+          // Try with OpenVINO/ prefix first (metadata key format)
+          const fullModelId = `OpenVINO/${modelName}`;
+          let modelMetadata = metadata[fullModelId];
+
+          // If not found, try without prefix
+          if (!modelMetadata) {
+            modelMetadata = metadata[modelName];
+          }
+
+          if (modelMetadata) {
+            const modelType = modelMetadata.model_type;
+            // Map backend model types to frontend categories
+            // Use full model ID for storage
+            const modelIdToStore = fullModelId;
+
+            if (modelType === "text") {
+              loadedByType.text = modelIdToStore;
+            } else if (
+              modelType === "vision" ||
+              modelType === "image-to-text"
+            ) {
+              loadedByType["image-to-text"] = modelIdToStore;
+            } else if (modelType === "embedding") {
+              loadedByType.embedding = modelIdToStore;
+            } else if (modelType === "reranker") {
+              loadedByType.reranker = modelIdToStore;
+            } else if (
+              modelType === "image" ||
+              modelType === "image-generation"
+            ) {
+              loadedByType["image-gen"] = modelIdToStore;
+            }
+          }
+        });
+
+        logInfo("Categorized loaded models by type", { loadedByType });
+
+        set({
+          loadedModels: modelNames,
+          loadedModelsByType: loadedByType as any,
+        });
+      } catch (metadataError) {
+        logError(
+          "Failed to get model metadata for categorization",
+          metadataError as Error
+        );
+        // Still set loadedModels even if metadata fails
+        set({
+          loadedModels: modelNames,
+        });
+      }
+
       return modelNames;
     } catch (error) {
       logError("Failed to get loaded models", error as Error);
       return [];
-    }
-  },
-
-  getLoadedModel: async () => {
-    try {
-      const modelNames: string[] = await invoke("get_loaded_models");
-
-      if (modelNames.length > 0) {
-        // Get first model from config
-        const modelId = modelNames[0].startsWith("OpenVINO/")
-          ? modelNames[0]
-          : `OpenVINO/${modelNames[0]}`;
-        logInfo("Model loaded from config", {
-          modelId,
-          total: modelNames.length,
-        });
-        set({ loadedModel: modelId, loadedModels: modelNames });
-        return modelId;
-      }
-
-      set({ loadedModel: null, loadedModels: [] });
-      return null;
-    } catch (error) {
-      logError("Failed to get loaded model", error as Error);
-      set({ loadedModel: null, loadedModels: [] });
-      return null;
     }
   },
 

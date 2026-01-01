@@ -54,7 +54,9 @@ export type ModelCategory =
   | "image-to-text"
   | "image-gen"
   | "speech-to-text"
-  | "text-to-speech";
+  | "text-to-speech"
+  | "embedding"
+  | "reranker";
 
 export interface LoadedModelsByType {
   text: string | null;
@@ -62,6 +64,8 @@ export interface LoadedModelsByType {
   "image-gen": string | null;
   "speech-to-text": string | null;
   "text-to-speech": string | null;
+  embedding: string | null;
+  reranker: string | null;
 }
 
 export interface ModelsSlice {
@@ -73,7 +77,6 @@ export interface ModelsSlice {
   downloadProgress: Record<string, { progress: number; currentFile: string }>;
   downloadedModels: Set<string>;
   isOvmsRunning: boolean;
-  loadedModel: string | null; // Keep for backward compatibility - first loaded model
   loadedModels: string[]; // All loaded models from config
   loadedModelsByType: LoadedModelsByType; // Models loaded by category
   setSearchQuery: (query: string) => void;
@@ -98,9 +101,7 @@ export interface ModelsSlice {
   removeDownloadedModel: (modelId: string) => void;
   setDownloadedModels: (modelIds: string[]) => void;
   setIsOvmsRunning: (isRunning: boolean) => void;
-  setLoadedModel: (modelId: string | null) => void;
   setLoadedModels: (modelIds: string[]) => void;
-  getLoadedModel: () => Promise<string | null>;
   getLoadedModels: () => Promise<string[]>;
   setLoadedModelByType: (
     modelType: ModelCategory,
