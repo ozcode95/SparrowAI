@@ -8,7 +8,7 @@ const defaultSettings: Settings = {
   temperature: 0.7,
   topP: 1.0,
   seed: null,
-  maxTokens: null,
+  maxTokens: 2048,
   maxCompletionTokens: null,
   useRAG: false,
   enableAutostart: false,

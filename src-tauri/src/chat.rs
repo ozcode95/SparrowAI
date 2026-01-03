@@ -19,6 +19,12 @@ use async_openai::types::chat::{
     ChatCompletionRequestMessageContentPartText,
     ChatCompletionRequestMessageContentPartImage,
     ChatCompletionStreamOptions,
+    ChatCompletionTool,
+    ChatCompletionTools,
+    ChatCompletionMessageToolCall,
+    ChatCompletionMessageToolCalls,
+    ChatCompletionRequestToolMessageArgs,
+    CreateChatCompletionStreamResponse,
     ImageUrl,
     ImageDetail,
 };
@@ -178,6 +184,7 @@ fn generate_chat_title(content: &str) -> String {
     };
 
     // Capitalize first letter and ensure it doesn't end with punctuation before ellipsis
+    // Capitalize first letter and ensure it doesn't end with punctuation before ellipsis
     let mut chars: Vec<char> = title.chars().collect();
     if !chars.is_empty() {
         chars[0] = chars[0].to_uppercase().next().unwrap_or(chars[0]);
@@ -193,6 +200,701 @@ fn generate_chat_title(content: &str) -> String {
     } else {
         result
     }
+}
+
+// Helper function to determine if model should use modern tool format
+fn should_use_modern_tool_format(model_name: &str) -> bool {
+    // let model_lower = model_name.to_lowercase();
+    // model_lower.contains("qwen3") ||
+    // model_lower.contains("llama-3.") ||
+    // model_lower.contains("hermes-3") ||
+    // model_lower.contains("mistral-7b") ||
+    // model_lower.contains("phi-4") ||
+    // model_lower.contains("gpt-oss")
+    false // Placeholder until more models are supported
+}
+
+// Helper function to build system message with or without tool info
+async fn build_system_message(
+    app: AppHandle,
+    system_prompt: Option<String>,
+    use_modern_format: bool
+) -> Result<(String, Vec<ChatCompletionTool>), String> {
+    // Get MCP tools
+    let mcp_tools = match mcp::get_all_mcp_tools_for_chat(app.clone()).await {
+        Ok(tools) => {
+            tracing::debug!(count = tools.len(), "Loaded MCP tools for chat");
+            if tools.is_empty() {
+                log_warning!("No MCP tools available", note = "LLM will not have access to any tools");
+            } else {
+                tracing::debug!(tools = ?tools.iter().map(|t| &t.function.name).collect::<Vec<_>>(), "Available MCP tools");
+            }
+            tools
+        }
+        Err(e) => {
+            log_warning!("Failed to load MCP tools", error = %e);
+            Vec::new()
+        }
+    };
+
+    let base_system_message = system_prompt.unwrap_or_else(|| {
+        "You are a helpful AI assistant with access to various functions/tools.
+
+        Tool Usage Guidelines:
+        - Use tools ONLY when they are necessary to answer the user's question
+        - For simple greetings, general questions, or conversations, respond naturally WITHOUT using tools
+        - Only call a tool if the user's request specifically requires information or actions that the tool provides
+        - Examples of when NOT to use tools: greetings (hello, hi), general chat, opinions, explanations
+        - Examples of when to use tools: getting current time, converting units, fetching specific data
+        
+        When a tool would be helpful, use it. Otherwise, respond conversationally.".to_string()
+    });
+
+    if use_modern_format {
+        // Modern format: tools go in the request, minimal system message
+        tracing::debug!("Using modern tool format (tools in request)");
+        Ok((base_system_message, mcp_tools))
+    } else {
+        // Legacy format: tools in system message as XML template
+        let tools_info = if !mcp_tools.is_empty() {
+            tracing::debug!("Processing MCP tools for system message...");
+
+            let tool_descs: Vec<String> = mcp_tools
+                .iter()
+                .enumerate()
+                .map(|(i, tool)| {
+                    tracing::trace!(index = i, name = %tool.function.name, "Processing tool");
+                    let params_str = match &tool.function.parameters {
+                        Some(params) => serde_json::to_string_pretty(params).unwrap_or_default(),
+                        None => "{}".to_string(),
+                    };
+
+                    format!(
+                        "{}({}) - {}",
+                        tool.function.name,
+                        params_str,
+                        tool.function.description.as_ref().unwrap_or(&"".to_string())
+                    )
+                })
+                .collect();
+
+            let tool_descs_text = tool_descs.join("\n");
+            let formatted_tools = format!(r#"
+
+# Tools
+
+You may call one or more functions to assist with the user query.
+
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{}
+</tools>
+
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+<tool_call>
+{{"name": <function-name>, "arguments": <args-json-object>}}
+</tool_call>"#, tool_descs_text);
+
+            tracing::debug!(length = formatted_tools.len(), "Generated custom tool template");
+            formatted_tools
+        } else {
+            tracing::trace!("No MCP tools available for system message");
+            "".to_string()
+        };
+
+        let system_message = format!("{}{}", base_system_message, tools_info);
+        tracing::debug!(
+            length = system_message.len(),
+            has_tools = !tools_info.is_empty(),
+            tools_count = mcp_tools.len(),
+            "System message prepared with XML tool format"
+        );
+        
+        Ok((system_message, Vec::new())) // Return empty tools vec for legacy format
+    }
+}
+
+// Helper function to build messages array including history
+async fn build_messages_array(
+    session_id: Option<String>,
+    include_history: Option<bool>,
+    system_message: String,
+    user_message: String,
+    attachments: Option<Vec<AttachmentInfo>>
+) -> Result<Vec<ChatCompletionRequestMessage>, String> {
+    let mut messages = vec![
+        ChatCompletionRequestSystemMessageArgs::default()
+            .content(system_message.clone())
+            .build()
+            .map_err(|e| format!("Failed to build system message: {}", e))?
+            .into()
+    ];
+
+    // Include conversation history if requested
+    if include_history.unwrap_or(false) && session_id.is_some() {
+        match get_conversation_history(session_id.clone().unwrap()).await {
+            Ok(mut history) => {
+                if let Some(last_msg) = history.last() {
+                    if last_msg.role == "user" && last_msg.content == user_message {
+                        history.pop();
+                    }
+                }
+
+                tracing::debug!(
+                    history_count = history.len(),
+                    session_id = session_id.clone().unwrap(),
+                    "Including conversation history"
+                );
+
+                for msg in history {
+                    match msg.role.as_str() {
+                        "user" => {
+                            messages.push(
+                                ChatCompletionRequestUserMessageArgs::default()
+                                    .content(msg.content.clone())
+                                    .build()
+                                    .map_err(|e| format!("Failed to build user message: {}", e))?
+                                    .into()
+                            );
+                        }
+                        "assistant" => {
+                            let cleaned_content = strip_tool_xml_tags(&msg.content);
+                            
+                            if !cleaned_content.is_empty() {
+                                messages.push(
+                                    ChatCompletionRequestAssistantMessageArgs::default()
+                                        .content(cleaned_content)
+                                        .build()
+                                        .map_err(|e|
+                                            format!("Failed to build assistant message: {}", e)
+                                        )?
+                                        .into()
+                                );
+                            }
+                        }
+                        _ => {
+                            log_warning!("Skipping message with unknown role", role = %msg.role);
+                            continue;
+                        }
+                    };
+                }
+            }
+            Err(e) => {
+                log_operation_error!("Load conversation history", &e);
+            }
+        }
+    }
+
+    // Build current user message with potential attachments
+    let user_message_content = build_user_message_content(&user_message, attachments)?;
+    messages.push(
+        ChatCompletionRequestUserMessageArgs::default()
+            .content(user_message_content)
+            .build()
+            .map_err(|e| format!("Failed to build user message: {}", e))?
+            .into()
+    );
+
+    tracing::debug!(
+        total_messages = messages.len(),
+        "Messages array prepared"
+    );
+
+    Ok(messages)
+}
+
+// Helper function to build user message content with attachments
+fn build_user_message_content(
+    message: &str,
+    attachments: Option<Vec<AttachmentInfo>>
+) -> Result<ChatCompletionRequestUserMessageContent, String> {
+    if let Some(ref attachment_list) = attachments {
+        let image_attachments: Vec<&AttachmentInfo> = attachment_list
+            .iter()
+            .filter(|a| a.is_image)
+            .collect();
+
+        if !image_attachments.is_empty() {
+            tracing::debug!(
+                image_count = image_attachments.len(),
+                "Building multimodal message with images"
+            );
+
+            let mut content_parts: Vec<ChatCompletionRequestUserMessageContentPart> = vec![
+                ChatCompletionRequestMessageContentPartText {
+                    text: message.to_string(),
+                }.into()
+            ];
+
+            for img_attachment in image_attachments {
+                match fs::read(&img_attachment.file_path) {
+                    Ok(image_data) => {
+                        let base64_data = base64::engine::general_purpose::STANDARD.encode(&image_data);
+                        
+                        let mime_type = match img_attachment.file_type.to_lowercase().as_str() {
+                            "png" => "image/png",
+                            "jpg" | "jpeg" => "image/jpeg",
+                            "gif" => "image/gif",
+                            "webp" => "image/webp",
+                            _ => "image/jpeg",
+                        };
+                        
+                        let data_url = format!("data:{};base64,{}", mime_type, base64_data);
+                        
+                        tracing::debug!(
+                            file_name = %img_attachment.file_name,
+                            data_url_length = data_url.len(),
+                            "Added image to message"
+                        );
+
+                        content_parts.push(
+                            ChatCompletionRequestMessageContentPartImage {
+                                image_url: ImageUrl {
+                                    url: data_url,
+                                    detail: Some(ImageDetail::Auto),
+                                }
+                            }.into()
+                        );
+                    }
+                    Err(e) => {
+                        log_warning!(
+                            "Failed to read image file",
+                            error = %e,
+                            file_path = %img_attachment.file_path
+                        );
+                    }
+                }
+            }
+
+            return Ok(ChatCompletionRequestUserMessageContent::Array(content_parts));
+        }
+    }
+
+    Ok(ChatCompletionRequestUserMessageContent::Text(message.to_string()))
+}
+
+// Process streaming response and handle tool calls (both modern and XML format)
+async fn process_stream_with_tool_calls(
+    app: AppHandle,
+    client: &Client<OpenAIConfig>,
+    mut stream: impl futures::Stream<Item = Result<CreateChatCompletionStreamResponse, async_openai::error::OpenAIError>> + Unpin,
+    stream_id: String,
+    cancel_rx: &mut broadcast::Receiver<()>,
+    use_modern_format: bool,
+    system_message: &str,
+    previous_messages: &[ChatCompletionRequestMessage],
+    model_name: &str,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+    seed: Option<i64>,
+    max_tokens: Option<u32>,
+    max_completion_tokens: Option<u32>
+) -> Result<(String, Option<(u32, u32, u32)>, bool), String> {
+    let mut full_response = String::new();
+    let mut executed_tools = std::collections::HashSet::new();
+    let mut needs_continuation = false;
+    let mut usage_data: Option<(u32, u32, u32)> = None;
+    let mut was_cancelled = false;
+    
+    // For modern tool format
+    let mut modern_tool_calls: Vec<ChatCompletionMessageToolCall> = Vec::new();
+
+    loop {
+        tokio::select! {
+            _ = cancel_rx.recv() => {
+                info!(stream_id = %stream_id, "Stream cancelled by user");
+                was_cancelled = true;
+                break;
+            }
+            result = stream.next() => {
+                match result {
+                    None => break,
+                    Some(stream_result) => match stream_result {
+                        Ok(response) => {
+                            if let Some(usage) = response.usage {
+                                let prompt_tokens = usage.prompt_tokens;
+                                let completion_tokens = usage.completion_tokens;
+                                let total_tokens = usage.total_tokens;
+                                
+                                usage_data = Some((prompt_tokens, completion_tokens, total_tokens));
+                                
+                                info!(
+                                    prompt_tokens = prompt_tokens,
+                                    completion_tokens = completion_tokens,
+                                    total_tokens = total_tokens,
+                                    "✅ Captured usage statistics from final stream chunk"
+                                );
+                            }
+
+                            for chat_choice in response.choices {
+                                // Handle modern tool calls
+                                if use_modern_format {
+                                    if let Some(tool_call_chunks) = chat_choice.delta.tool_calls {
+                                        for chunk in tool_call_chunks {
+                                            let index = chunk.index as usize;
+                                            
+                                            while modern_tool_calls.len() <= index {
+                                                modern_tool_calls.push(ChatCompletionMessageToolCall {
+                                                    id: String::new(),
+                                                    function: Default::default(),
+                                                });
+                                            }
+                                            
+                                            let tool_call = &mut modern_tool_calls[index];
+                                            if let Some(id) = chunk.id {
+                                                tool_call.id = id;
+                                            }
+                                            if let Some(function_chunk) = chunk.function {
+                                                if let Some(name) = function_chunk.name {
+                                                    tool_call.function.name = name;
+                                                }
+                                                if let Some(args) = function_chunk.arguments {
+                                                    tool_call.function.arguments.push_str(&args);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Handle content (for both formats)
+                                if let Some(content) = &chat_choice.delta.content {
+                                    full_response.push_str(content);
+
+                                    let _ = app.emit(
+                                        "chat-token",
+                                        serde_json::json!({
+                                            "token": content,
+                                            "finished": false
+                                        })
+                                    );
+
+                                    // For XML format, process tool calls
+                                    if !use_modern_format {
+                                        let tool_calls = extract_all_tool_calls_from_xml(&full_response);
+
+                                        for (fn_name, fn_args) in tool_calls {
+                                            let tool_signature = format!("{}:{}", fn_name, fn_args);
+                                            if executed_tools.contains(&tool_signature) {
+                                                continue;
+                                            }
+
+                                            executed_tools.insert(tool_signature);
+                                            tracing::debug!(name = %fn_name, args = %fn_args, "Found XML tool call");
+
+                                            let tool_result = execute_tool_call(
+                                                app.clone(),
+                                                &fn_name,
+                                                &fn_args
+                                            ).await;
+
+                                            handle_tool_result(
+                                                app.clone(),
+                                                &fn_name,
+                                                &fn_args,
+                                                tool_result,
+                                                &mut full_response,
+                                                &mut needs_continuation
+                                            )?;
+                                        }
+                                    }
+                                }
+
+                                if let Some(_finish_reason) = &chat_choice.finish_reason {
+                                    tracing::debug!(reason = ?_finish_reason, "Stream finished");
+
+                                    if !use_modern_format && has_incomplete_tool_call(&full_response) {
+                                        log_warning!("Stream ended with incomplete tool call", note = "response may be truncated");
+                                    }
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            log_operation_error!("Chat stream", &err);
+                            let _ = app.emit(
+                                "chat-error",
+                                serde_json::json!({
+                                    "error": format!("Stream error: {}", err)
+                                })
+                            );
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Execute modern tool calls after stream completes
+    if use_modern_format && !modern_tool_calls.is_empty() {
+        tracing::debug!(count = modern_tool_calls.len(), "Processing modern tool calls");
+        
+        let continuation_result = execute_modern_tool_calls_and_continue(
+            app.clone(),
+            client,
+            modern_tool_calls,
+            previous_messages,
+            model_name,
+            temperature,
+            top_p,
+            seed,
+            max_tokens,
+            max_completion_tokens
+        ).await?;
+        
+        full_response.push_str(&continuation_result);
+    } else if !use_modern_format && needs_continuation {
+        // Handle XML format continuation
+        let should_continue = check_if_continuation_needed(&full_response);
+
+        if should_continue {
+            tracing::debug!("Tool response contains JSON - continuing conversation...");
+
+            match
+                continue_conversation_after_tools(
+                    app.clone(),
+                    client,
+                    system_message,
+                    previous_messages,
+                    full_response.clone(),
+                    model_name,
+                    temperature,
+                    top_p,
+                    seed,
+                    max_tokens,
+                    max_completion_tokens
+                ).await
+            {
+                Ok(continued_response) => {
+                    if !continued_response.trim().is_empty() {
+                        full_response.push_str(&continued_response);
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to continue conversation: {}", e);
+                    let error_msg = format!("\n\n[Continuation Error: {}]", e);
+                    full_response.push_str(&error_msg);
+
+                    let _ = app.emit(
+                        "chat-token",
+                        serde_json::json!({
+                            "token": error_msg,
+                            "finished": false
+                        })
+                    );
+                }
+            }
+        }
+    }
+
+    Ok((full_response, usage_data, was_cancelled))
+}
+
+// Execute a single tool call
+async fn execute_tool_call(
+    app: AppHandle,
+    fn_name: &str,
+    fn_args: &str
+) -> Result<String, String> {
+    let args_map = match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(fn_args) {
+        Ok(mut map) => {
+            map.retain(|_k, v| !v.is_null());
+            Some(map)
+        }
+        Err(e) => {
+            log_warning!("Failed to parse tool arguments", error = %e, args = %fn_args);
+            None
+        }
+    };
+
+    mcp::call_mcp_tool(app, fn_name.to_string(), args_map).await
+}
+
+// Handle tool execution result
+fn handle_tool_result(
+    app: AppHandle,
+    fn_name: &str,
+    fn_args: &str,
+    tool_result: Result<String, String>,
+    full_response: &mut String,
+    needs_continuation: &mut bool
+) -> Result<(), String> {
+    match tool_result {
+        Ok(result) => {
+            tracing::debug!(tool = %fn_name, result_length = result.len(), "Tool execution completed");
+            tracing::trace!(result = %result, "Tool result content");
+
+            let _ = app.emit(
+                "tool-call",
+                serde_json::json!({
+                    "tool_name": fn_name,
+                    "arguments": fn_args,
+                    "result": result
+                })
+            );
+
+            let tool_response_text = format!("\n<tool_response>\n{}\n</tool_response>", result);
+            full_response.push_str(&tool_response_text);
+
+            let _ = app.emit(
+                "chat-token",
+                serde_json::json!({
+                    "token": tool_response_text,
+                    "finished": false
+                })
+            );
+
+            *needs_continuation = true;
+        }
+        Err(e) => {
+            log_operation_error!("Tool execution", &e, tool = %fn_name);
+            let error_response_text = format!("\n<tool_response>\nError: {}\n</tool_response>", e);
+            full_response.push_str(&error_response_text);
+
+            let _ = app.emit(
+                "chat-token",
+                serde_json::json!({
+                    "token": error_response_text,
+                    "finished": false
+                })
+            );
+
+            *needs_continuation = true;
+        }
+    }
+    
+    Ok(())
+}
+
+// Execute modern tool calls and continue conversation
+async fn execute_modern_tool_calls_and_continue(
+    app: AppHandle,
+    client: &Client<OpenAIConfig>,
+    tool_calls: Vec<ChatCompletionMessageToolCall>,
+    previous_messages: &[ChatCompletionRequestMessage],
+    model_name: &str,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+    seed: Option<i64>,
+    max_tokens: Option<u32>,
+    max_completion_tokens: Option<u32>
+) -> Result<String, String> {
+    let mut messages = previous_messages.to_vec();
+    let mut tool_responses = Vec::new();
+
+    // Execute each tool call
+    for tool_call in &tool_calls {
+        tracing::debug!(
+            tool_name = %tool_call.function.name,
+            tool_id = %tool_call.id,
+            "Executing modern tool call"
+        );
+
+        let result = execute_tool_call(
+            app.clone(),
+            &tool_call.function.name,
+            &tool_call.function.arguments
+        ).await;
+
+        let response_content = match result {
+            Ok(content) => content,
+            Err(e) => format!("Error: {}", e),
+        };
+
+        // Emit tool call event
+        let _ = app.emit(
+            "tool-call",
+            serde_json::json!({
+                "tool_name": tool_call.function.name,
+                "arguments": tool_call.function.arguments,
+                "result": response_content
+            })
+        );
+
+        tool_responses.push((tool_call.id.clone(), response_content));
+    }
+
+    // Add assistant message with tool calls
+    let tool_calls_converted: Vec<ChatCompletionMessageToolCalls> = tool_calls
+        .iter()
+        .map(|tc| tc.clone().into())
+        .collect();
+    
+    messages.push(
+        ChatCompletionRequestAssistantMessageArgs::default()
+            .tool_calls(tool_calls_converted)
+            .build()
+            .map_err(|e| format!("Failed to build assistant message: {}", e))?
+            .into()
+    );
+
+    // Add tool response messages
+    for (tool_call_id, response) in tool_responses {
+        messages.push(
+            ChatCompletionRequestToolMessageArgs::default()
+                .content(response)
+                .tool_call_id(tool_call_id)
+                .build()
+                .map_err(|e| format!("Failed to build tool message: {}", e))?
+                .into()
+        );
+    }
+
+    // Create follow-up request
+    let mut request_builder = CreateChatCompletionRequestArgs::default();
+    request_builder
+        .model(model_name.to_string())
+        .messages(messages)
+        .stream(true)
+        .temperature(temperature.unwrap_or(0.7) as f32)
+        .top_p(top_p.unwrap_or(1.0) as f32);
+
+    if let Some(seed) = seed {
+        request_builder.seed(seed);
+    }
+
+    let effective_max_tokens = max_tokens.unwrap_or(1000).max(100);
+    request_builder.max_tokens(effective_max_tokens);
+
+    if let Some(max_completion_tokens) = max_completion_tokens {
+        request_builder.max_completion_tokens(max_completion_tokens);
+    }
+
+    let request = request_builder
+        .build()
+        .map_err(|e| format!("Failed to build follow-up request: {}", e))?;
+
+    let mut stream = client
+        .chat()
+        .create_stream(request).await
+        .map_err(|e| format!("Failed to create follow-up stream: {}", e))?;
+
+    let mut continued_response = String::new();
+
+    while let Some(result) = stream.next().await {
+        match result {
+            Ok(response) => {
+                for chat_choice in response.choices {
+                    if let Some(content) = &chat_choice.delta.content {
+                        continued_response.push_str(content);
+
+                        let _ = app.emit(
+                            "chat-token",
+                            serde_json::json!({
+                                "token": content,
+                                "finished": false
+                            })
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                log_operation_error!("Follow-up stream", &err);
+                return Err(format!("Follow-up stream error: {}", err));
+            }
+        }
+    }
+
+    Ok(continued_response)
 }
 
 #[tauri::command]
@@ -507,260 +1209,39 @@ pub async fn chat_with_loaded_model_streaming(
     max_completion_tokens: Option<u32>,
     attachments: Option<Vec<AttachmentInfo>>
 ) -> Result<String, String> {
+    log_operation_start!("Chat request");
+    tracing::debug!(model = %model_name, message_length = message.len(), "Chat parameters");
+
     let config = OpenAIConfig::new()
         .with_api_key("unused")
         .with_api_base("http://localhost:1114/v3");
     let client = Client::with_config(config);
 
-    // Get MCP tools info for system message
-    let mcp_tools = match mcp::get_all_mcp_tools_for_chat(app.clone()).await {
-        Ok(tools) => {
-            tracing::debug!(count = tools.len(), "Loaded MCP tools for chat");
-            if tools.is_empty() {
-                log_warning!("No MCP tools available", note = "LLM will not have access to any tools");
-            } else {
-                tracing::debug!(tools = ?tools.iter().map(|t| &t.function.name).collect::<Vec<_>>(), "Available MCP tools");
-            }
-            tools
-        }
-        Err(e) => {
-            log_warning!("Failed to load MCP tools", error = %e);
-            Vec::new()
-        }
-    };
-
-    let tools_info = if !mcp_tools.is_empty() {
-        tracing::debug!("Processing MCP tools for system message...");
-
-        // Generate tool descriptions in simple text format for the custom template
-        let tool_descs: Vec<String> = mcp_tools
-            .iter()
-            .enumerate()
-            .map(|(i, tool)| {
-                tracing::trace!(index = i, name = %tool.function.name, "Processing tool");
-                let params_str = match &tool.function.parameters {
-                    Some(params) => serde_json::to_string_pretty(params).unwrap_or_default(),
-                    None => "{}".to_string(),
-                };
-
-                format!(
-                    "{}({}) - {}",
-                    tool.function.name,
-                    params_str,
-                    tool.function.description.as_ref().unwrap_or(&"".to_string())
-                )
-            })
-            .collect();
-
-        let tool_descs_text = tool_descs.join("\n");
-        let formatted_tools =
-            format!(r#"
-
-# Tools
-
-You may call one or more functions to assist with the user query.
-
-You are provided with function signatures within <tools></tools> XML tags:
-<tools>
-{}
-</tools>
-
-For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
-<tool_call>
-{{"name": <function-name>, "arguments": <args-json-object>}}
-</tool_call>"#, tool_descs_text);
-
-        tracing::debug!(length = formatted_tools.len(), "Generated custom tool template");
-        formatted_tools
-    } else {
-        tracing::trace!("No MCP tools available for system message");
-        "".to_string()
-    };
-
-    let base_system_message = system_prompt.unwrap_or_else(|| {
-        "You are a helpful AI assistant with access to various functions/tools.
-
-        Tool Usage Guidelines:
-        - Use tools ONLY when they are necessary to answer the user's question
-        - For simple greetings, general questions, or conversations, respond naturally WITHOUT using tools
-        - Only call a tool if the user's request specifically requires information or actions that the tool provides
-        - Examples of when NOT to use tools: greetings (hello, hi), general chat, opinions, explanations
-        - Examples of when to use tools: getting current time, converting units, fetching specific data
-        
-        When a tool would be helpful, use it. Otherwise, respond conversationally.".to_string()
-    });
-
-    // Always append tools info to system message (whether custom or default)
-    let system_message = format!("{}{}", base_system_message, tools_info);
-
+    // Determine tool format based on model
+    let use_modern_format = should_use_modern_tool_format(&model_name);
     tracing::debug!(
-        length = system_message.len(),
-        has_tools = !tools_info.is_empty(),
-        tools_count = mcp_tools.len(),
-        message = %system_message,
-        "System message prepared"
+        model = %model_name,
+        use_modern_format = use_modern_format,
+        "Determined tool format"
     );
 
-    let mut messages = vec![
-        ChatCompletionRequestSystemMessageArgs::default()
-            .content(system_message.clone())
-            .build()
-            .map_err(|e| format!("Failed to build system message: {}", e))?
-            .into()
-    ];
+    // Build system message and get tools
+    let (system_message, tools) = build_system_message(
+        app.clone(),
+        system_prompt,
+        use_modern_format
+    ).await?;
 
-    // Include conversation history if requested and session_id is provided
-    if include_history.unwrap_or(false) && session_id.is_some() {
-        match get_conversation_history(session_id.clone().unwrap()).await {
-            Ok(mut history) => {
-                // Remove the last user message if it matches the current message
-                // This prevents duplicate user messages
-                if let Some(last_msg) = history.last() {
-                    if last_msg.role == "user" && last_msg.content == message {
-                        history.pop(); // Remove the last message
-                    }
-                }
+    // Build messages array
+    let messages = build_messages_array(
+        session_id.clone(),
+        include_history,
+        system_message.clone(),
+        message.clone(),
+        attachments
+    ).await?;
 
-                tracing::debug!(
-                    history_count = history.len(),
-                    session_id = session_id.clone().unwrap(),
-                    "Including conversation history"
-                );
-
-                for msg in history {
-                    match msg.role.as_str() {
-                        "user" => {
-                            messages.push(
-                                ChatCompletionRequestUserMessageArgs::default()
-                                    .content(msg.content.clone())
-                                    .build()
-                                    .map_err(|e| format!("Failed to build user message: {}", e))?
-                                    .into()
-                            );
-                        }
-                        "assistant" => {
-                            // Strip XML tags from assistant messages to prevent LLM from seeing
-                            // tool call patterns in history and hallucinating duplicate responses
-                            let cleaned_content = strip_tool_xml_tags(&msg.content);
-                            
-                            // Only include if there's actual content after stripping XML
-                            if !cleaned_content.is_empty() {
-                                messages.push(
-                                    ChatCompletionRequestAssistantMessageArgs::default()
-                                        .content(cleaned_content)
-                                        .build()
-                                        .map_err(|e|
-                                            format!("Failed to build assistant message: {}", e)
-                                        )?
-                                        .into()
-                                );
-                            }
-                        }
-                        _ => {
-                            log_warning!("Skipping message with unknown role", role = %msg.role);
-                            continue;
-                        } // Skip unknown roles
-                    };
-                }
-            }
-            Err(e) => {
-                log_operation_error!("Load conversation history", &e);
-            }
-        }
-    }
-    
-    // Log total messages being sent
-    tracing::debug!(
-        total_messages = messages.len(),
-        has_tools = !tools_info.is_empty(),
-        "Preparing to send messages to LLM"
-    );
-
-    // Build the current user message with potential image attachments
-    let user_message_content = if let Some(ref attachment_list) = attachments {
-        let image_attachments: Vec<&AttachmentInfo> = attachment_list
-            .iter()
-            .filter(|a| a.is_image)
-            .collect();
-
-        if !image_attachments.is_empty() {
-            // Build multimodal message with text + images
-            tracing::debug!(
-                image_count = image_attachments.len(),
-                "Building multimodal message with images"
-            );
-
-            let mut content_parts: Vec<ChatCompletionRequestUserMessageContentPart> = vec![
-                ChatCompletionRequestMessageContentPartText {
-                    text: message.clone(),
-                }.into()
-            ];
-
-            // Add each image as base64 data URL
-            for img_attachment in image_attachments {
-                match fs::read(&img_attachment.file_path) {
-                    Ok(image_data) => {
-                        let base64_data = base64::engine::general_purpose::STANDARD.encode(&image_data);
-                        
-                        // Determine MIME type from file extension
-                        let mime_type = match img_attachment.file_type.to_lowercase().as_str() {
-                            "png" => "image/png",
-                            "jpg" | "jpeg" => "image/jpeg",
-                            "gif" => "image/gif",
-                            "webp" => "image/webp",
-                            _ => "image/jpeg", // default
-                        };
-                        
-                        let data_url = format!("data:{};base64,{}", mime_type, base64_data);
-                        
-                        tracing::debug!(
-                            file_name = %img_attachment.file_name,
-                            data_url_length = data_url.len(),
-                            "Added image to message"
-                        );
-
-                        content_parts.push(
-                            ChatCompletionRequestMessageContentPartImage {
-                                image_url: ImageUrl {
-                                    url: data_url,
-                                    detail: Some(ImageDetail::Auto),
-                                }
-                            }.into()
-                        );
-                    }
-                    Err(e) => {
-                        log_warning!(
-                            "Failed to read image file",
-                            error = %e,
-                            file_path = %img_attachment.file_path
-                        );
-                    }
-                }
-            }
-
-            ChatCompletionRequestUserMessageContent::Array(content_parts)
-        } else {
-            // No images, just text
-            ChatCompletionRequestUserMessageContent::Text(message.clone())
-        }
-    } else {
-        // No attachments at all
-        ChatCompletionRequestUserMessageContent::Text(message.clone())
-    };
-
-    // Always add the current user message
-    messages.push(
-        ChatCompletionRequestUserMessageArgs::default()
-            .content(user_message_content)
-            .build()
-            .map_err(|e| format!("Failed to build user message: {}", e))?
-            .into()
-    );
-
-    log_operation_start!("Chat request");
-    tracing::debug!(model = %model_name, message_length = message.len(), messages_count = messages.len(), "Chat parameters");
-
-    // Create streaming chat completion
+    // Build request
     let mut request_builder = CreateChatCompletionRequestArgs::default();
     request_builder
         .model(model_name.clone())
@@ -773,79 +1254,26 @@ For each function call, return a json object with function name and arguments wi
         .temperature(temperature.unwrap_or(0.7) as f32)
         .top_p(top_p.unwrap_or(1.0) as f32);
 
-    // Only set these parameters if they have values
     if let Some(seed) = seed {
         request_builder.seed(seed);
     }
 
-    // Set a reasonable max_tokens for function calls (override if too low)
-    let effective_max_tokens = max_tokens.unwrap_or(1000).max(100); // Ensure at least 100 tokens
+    let effective_max_tokens = max_tokens.unwrap_or(1000).max(100);
     request_builder.max_tokens(effective_max_tokens);
 
     if let Some(max_completion_tokens) = max_completion_tokens {
         request_builder.max_completion_tokens(max_completion_tokens);
     }
 
-    // Commented out: Add MCP tools using modern tools format
-    /*
-    match mcp::get_all_mcp_tools_for_chat(app.clone()).await {
-        Ok(mcp_tools) => {
-            if !mcp_tools.is_empty() {
-                let mcp_info = format!("Adding {} MCP tools to chat completion", mcp_tools.len());
-                debug!("{}", mcp_info);
-
-                // Log each tool for debugging
-                for (i, tool) in mcp_tools.iter().enumerate() {
-                    let tool_info = format!(
-                        "Tool {}: {} - {}",
-                        i,
-                        &tool.function.name,
-                        tool.function.description.as_ref().unwrap_or(&"No description".to_string())
-                    );
-                    debug!("{}", tool_info);
-                }
-
-                debug!("Using modern 'tools' format...");
-                request_builder.tools(mcp_tools.clone());
-
-                // Determine tool choice based on message content
-                let message_lower = message.to_lowercase();
-                let forced_tool = if message_lower.contains("time") || message_lower.contains("current") {
-                    mcp_tools.iter().find(|tool| tool.function.name.contains("time_get_current_time"))
-                } else if message_lower.contains("convert") && message_lower.contains("time") {
-                    mcp_tools.iter().find(|tool| tool.function.name.contains("time_convert_time"))
-                } else {
-                    None
-                };
-
-                if let Some(tool) = forced_tool {
-                    debug!("Forcing specific tool call: {}", tool.function.name);
-                    
-                    let specific_choice = ChatCompletionNamedToolChoice {
-                        r#type: ChatCompletionToolType::Function,
-                        function: FunctionName {
-                            name: tool.function.name.clone(),
-                        },
-                    };
-                    request_builder.tool_choice(ChatCompletionToolChoiceOption::Named(specific_choice));
-                } else {
-                    debug!("Using auto tool choice (no specific match found)");
-                    request_builder.tool_choice(ChatCompletionToolChoiceOption::Auto);
-                }
-            } else {
-                debug!("No MCP tools available");
-            }
-        }
-        Err(e) => {
-            let mcp_error = format!("Failed to get MCP tools: {}", e);
-            warn!("{}", mcp_error);
-            // Continue without tools
-        }
+    // Add tools if using modern format
+    if use_modern_format && !tools.is_empty() {
+        tracing::debug!(tool_count = tools.len(), "Adding tools to request (modern format)");
+        let tools_converted: Vec<ChatCompletionTools> = tools
+            .into_iter()
+            .map(|t| ChatCompletionTools::Function(t))
+            .collect();
+        request_builder.tools(tools_converted);
     }
-    */
-
-    // Tools info is now in system message instead
-    tracing::debug!("Tools info included in system message instead of request tools array");
 
     let request = request_builder
         .build()
@@ -854,36 +1282,7 @@ For each function call, return a json object with function name and arguments wi
             format!("Failed to build chat request: {}", e)
         })?;
 
-    // Check system message for tools info (since tools are now in system message)
-    if let Ok(request_value) = serde_json::to_value(&request) {
-        if let Some(messages) = request_value.get("messages") {
-            if let Some(messages_array) = messages.as_array() {
-                if let Some(system_msg) = messages_array.get(0) {
-                    if let Some(content) = system_msg.get("content") {
-                        if let Some(content_str) = content.as_str() {
-                            if
-                                content_str.contains("<tools>") ||
-                                content_str.contains("Available functions:")
-                            {
-                                tracing::trace!("Tools info found in system message");
-                            } else {
-                                tracing::trace!("No tools info found in system message");
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Verify no tools array in request (should be commented out)
-        if request_value.get("tools").is_some() {
-            log_warning!("Tools array still present in request", note = "should be in system message");
-        } else {
-            tracing::trace!("Confirmed: No tools array in request (as expected)");
-        }
-    }
-
-    let mut stream = client
+    let stream = client
         .chat()
         .create_stream(request).await
         .map_err(|e| {
@@ -895,243 +1294,36 @@ For each function call, return a json object with function name and arguments wi
     let (cancel_tx, mut cancel_rx) = broadcast::channel::<()>(1);
     let stream_id = session_id.clone().unwrap_or_else(|| "temp".to_string());
     
-    // Register this stream for cancellation
     {
         let mut streams = ACTIVE_STREAMS.lock().map_err(|e| format!("Failed to acquire lock: {}", e))?;
         streams.insert(stream_id.clone(), cancel_tx);
     }
 
-    let mut full_response = String::new();
-    let mut executed_tools = std::collections::HashSet::new();
-    let mut needs_continuation = false;
-    let mut usage_data: Option<(u32, u32, u32)> = None; // (prompt_tokens, completion_tokens, total_tokens)
-    let mut was_cancelled = false;
+    // Process stream with tool calls
+    let (full_response, usage_data, was_cancelled) = process_stream_with_tool_calls(
+        app.clone(),
+        &client,
+        stream,
+        stream_id.clone(),
+        &mut cancel_rx,
+        use_modern_format,
+        &system_message,
+        &messages,
+        &model_name,
+        temperature,
+        top_p,
+        seed,
+        max_tokens,
+        max_completion_tokens
+    ).await?;
 
-    // Process streaming responses with function call support
-    loop {
-        tokio::select! {
-            // Check for cancellation signal
-            _ = cancel_rx.recv() => {
-                info!(stream_id = %stream_id, "Stream cancelled by user");
-                was_cancelled = true;
-                break;
-            }
-            // Process next stream item
-            result = stream.next() => {
-                match result {
-                    None => break,
-                    Some(stream_result) => match stream_result {
-                        Ok(response) => {
-                            // // Log entire response structure for debugging
-                            // if let Ok(response_json) = serde_json::to_string_pretty(&response) {
-                            //     tracing::debug!(
-                            //         response_json = %response_json,
-                            //         "Complete streaming response chunk"
-                            //     );
-                            // }
-
-                            // Capture usage data if present (comes in final chunk with empty choices)
-                            if let Some(usage) = response.usage {
-                    let prompt_tokens = usage.prompt_tokens;
-                    let completion_tokens = usage.completion_tokens;
-                    let total_tokens = usage.total_tokens;
-                    
-                    usage_data = Some((prompt_tokens, completion_tokens, total_tokens));
-                    
-                    info!(
-                        prompt_tokens = prompt_tokens,
-                        completion_tokens = completion_tokens,
-                        total_tokens = total_tokens,
-                        "✅ Captured usage statistics from final stream chunk"
-                    );
-                }
-
-                for chat_choice in response.choices {
-                    // Processing stream choice (verbose logging disabled)
-
-                    // Handle content and look for <tool_call> XML tags
-                    if let Some(content) = &chat_choice.delta.content {
-                        full_response.push_str(content);
-
-                        // Emit streaming content to frontend (including XML tags)
-                        let _ = app.emit(
-                            "chat-token",
-                            serde_json::json!({
-                                "token": content,
-                                "finished": false
-                            })
-                        );
-
-                        // Process any complete tool calls found in the response so far
-                        let tool_calls = extract_all_tool_calls_from_xml(&full_response);
-
-                        for (fn_name, fn_args) in tool_calls {
-                            // Skip if we already executed this exact tool call
-                            let tool_signature = format!("{}:{}", fn_name, fn_args);
-                            if executed_tools.contains(&tool_signature) {
-                                continue;
-                            }
-
-                            executed_tools.insert(tool_signature);
-
-                            tracing::debug!(name = %fn_name, args = %fn_args, "Found tool call");
-
-                            // Parse arguments as JSON for MCP tool call
-                            let args_map = match
-                                serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
-                                    &fn_args
-                                )
-                            {
-                                Ok(mut map) => {
-                                    // Remove null values as MCP tools don't handle them well
-                                    map.retain(|_k, v| !v.is_null());
-                                    Some(map)
-                                }
-                                Err(e) => {
-                                    log_warning!("Failed to parse tool arguments", error = %e, args = %fn_args);
-                                    None
-                                }
-                            };
-
-                            // Call the MCP tool
-                            match mcp::call_mcp_tool(app.clone(), fn_name.clone(), args_map).await {
-                                Ok(tool_result) => {
-                                    tracing::debug!(tool = %fn_name, result_length = tool_result.len(), "Tool execution completed");
-                                    tracing::trace!(result = %tool_result, "Tool result content");
-
-                                    // Emit function call result to frontend
-                                    let _ = app.emit(
-                                        "tool-call",
-                                        serde_json::json!({
-                                            "tool_name": fn_name,
-                                            "arguments": fn_args,
-                                            "result": tool_result
-                                        })
-                                    );
-
-                                    // Add tool response in Qwen-Agent format and emit to frontend
-                                    let tool_response_text =
-                                        format!("\n<tool_response>\n{}\n</tool_response>", tool_result);
-                                    full_response.push_str(&tool_response_text);
-
-                                    // Emit tool response as streaming content (including XML tags)
-                                    let _ = app.emit(
-                                        "chat-token",
-                                        serde_json::json!({
-                                            "token": tool_response_text,
-                                            "finished": false
-                                        })
-                                    );
-
-                                    // Mark that we need to continue the conversation after tool execution
-                                    needs_continuation = true;
-                                }
-                                Err(e) => {
-                                    log_operation_error!("Tool execution", &e, tool = %fn_name);
-                                    let error_response_text =
-                                        format!("\n<tool_response>\nError: {}\n</tool_response>", e);
-                                    full_response.push_str(&error_response_text);
-
-                                    // Emit error response as streaming content (including XML tags)
-                                    let _ = app.emit(
-                                        "chat-token",
-                                        serde_json::json!({
-                                            "token": error_response_text,
-                                            "finished": false
-                                        })
-                                    );
-
-                                    // Mark that we need to continue the conversation even after tool error
-                                    needs_continuation = true;
-                                }
-                            }
-                        }
-                    }
-
-                    // Handle finish reason
-                    if let Some(_finish_reason) = &chat_choice.finish_reason {
-                        tracing::debug!(reason = ?_finish_reason, "Stream finished");
-
-                        // Check for any remaining incomplete tool calls
-                        if has_incomplete_tool_call(&full_response) {
-                            log_warning!("Stream ended with incomplete tool call", note = "response may be truncated");
-                        }
-                    }
-                }
-            }
-                        Err(err) => {
-                            log_operation_error!("Chat stream", &err);
-                            let _ = app.emit(
-                                "chat-error",
-                                serde_json::json!({
-                                    "error": format!("Stream error: {}", err)
-                                })
-                            );
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Cleanup: Remove this stream from active streams
+    // Cleanup
     {
         let mut streams = ACTIVE_STREAMS.lock().map_err(|e| format!("Failed to acquire lock: {}", e))?;
         streams.remove(&stream_id);
     }
 
-    // Continue the conversation if we executed tools and got JSON responses
-    if needs_continuation {
-        tracing::trace!("Checking if continuation needed after tool execution...");
-
-        // Check if the tool responses contain JSON structures that need interpretation
-        let should_continue = check_if_continuation_needed(&full_response);
-
-        if should_continue {
-            tracing::debug!("Tool response contains JSON - continuing conversation...");
-
-            match
-                continue_conversation_after_tools(
-                    app.clone(),
-                    &client,
-                    &system_message,
-                    &messages,
-                    full_response.clone(),
-                    &model_name,
-                    temperature,
-                    top_p,
-                    seed,
-                    max_tokens,
-                    max_completion_tokens
-                ).await
-            {
-                Ok(continued_response) => {
-                    if !continued_response.trim().is_empty() {
-                        // Append the continued response (streaming is already handled by continue_conversation_after_tools)
-                        full_response.push_str(&continued_response);
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to continue conversation: {}", e);
-                    let error_msg = format!("\n\n[Continuation Error: {}]", e);
-                    full_response.push_str(&error_msg);
-
-                    let _ = app.emit(
-                        "chat-token",
-                        serde_json::json!({
-                            "token": error_msg,
-                            "finished": false
-                        })
-                    );
-                }
-            }
-        } else {
-            debug!("Tool response doesn't contain JSON - no continuation needed");
-        }
-    }
-
-    // Emit completion signal with usage data and cancellation status
+    // Emit completion signal
     let _ = app.emit(
         "chat-token",
         serde_json::json!({
@@ -1148,7 +1340,6 @@ For each function call, return a json object with function name and arguments wi
         })
     );
 
-    // Emit usage data as separate event for easier frontend handling
     if let Some((prompt_tokens, completion_tokens, total_tokens)) = usage_data {
         let _ = app.emit(
             "chat-usage",
@@ -1160,7 +1351,6 @@ For each function call, return a json object with function name and arguments wi
         );
     }
 
-    // Log the complete response before breaking
     debug!(
         message_length = full_response.len(),
         session_id = ?session_id,
@@ -1168,7 +1358,6 @@ For each function call, return a json object with function name and arguments wi
         "Chat completion finished"
     );
 
-    // Log full response (truncated for readability)
     if full_response.len() > 500 {
         info!(
             response_preview = %&full_response[..500],

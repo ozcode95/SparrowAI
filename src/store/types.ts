@@ -15,6 +15,7 @@ export type PageType =
   | "chat"
   | "models"
   | "documents"
+  | "skills"
   | "mcp"
   | "tasks"
   | "gallery"

@@ -44,15 +44,83 @@ impl ToolResult {
 /// Registry of all built-in tools
 pub struct BuiltinToolRegistry {
     tools: HashMap<String, BuiltinTool>,
+    skill_tools: HashMap<String, crate::skills::InstalledSkill>,
 }
 
 impl BuiltinToolRegistry {
     pub fn new() -> Self {
         let mut registry = Self {
             tools: HashMap::new(),
+            skill_tools: HashMap::new(),
         };
         registry.register_all_tools();
+        registry.load_skill_tools();
         registry
+    }
+    
+    /// Reload all skill tools (call this after installing/uninstalling skills)
+    pub fn reload_skill_tools(&mut self) {
+        // Remove all existing skill tools
+        self.skill_tools.clear();
+        self.tools.retain(|_, tool| !tool.description.starts_with("[SKILL]"));
+        
+        // Reload skills
+        self.load_skill_tools();
+    }
+    
+    /// Load installed skills as dynamic tools
+    fn load_skill_tools(&mut self) {
+        match crate::skills::get_installed_skills() {
+            Ok(installed_skills) => {
+                tracing::info!("Found {} installed skills", installed_skills.len());
+                for skill in installed_skills {
+                    tracing::debug!("Processing skill: slug={}, has_metadata={}", skill.slug, skill.metadata.is_some());
+                    if let Some(metadata) = skill.metadata.as_ref() {
+                        // Only register skills that have valid metadata
+                        let skill_slug = skill.slug.clone();
+                        let skill_name = metadata.name.clone();
+                        
+                        // Create tool description in skillz format
+                        let description = format!(
+                            "[SKILL] {} - Invoke this to receive specialized instructions and resources for this task.",
+                            metadata.description
+                        );
+                        
+                        // Create tool schema - skills take a 'task' parameter
+                        let input_schema = json!({
+                            "type": "object",
+                            "properties": {
+                                "task": {
+                                    "type": "string",
+                                    "description": "The specific task or request to apply this skill to"
+                                }
+                            },
+                            "required": ["task"]
+                        });
+                        
+                        self.tools.insert(
+                            skill_slug.clone(),
+                            BuiltinTool {
+                                name: skill_slug.clone(),
+                                description,
+                                input_schema,
+                                hidden_from_task_creation: false,
+                            },
+                        );
+                        
+                        self.skill_tools.insert(skill_slug.clone(), skill);
+                        
+                        tracing::info!("Registered skill as tool: {} (slug: {})", skill_name, skill_slug);
+                    } else {
+                        tracing::warn!("Skill {} has no metadata, skipping", skill.slug);
+                    }
+                }
+                tracing::info!("Loaded {} skill tools", self.skill_tools.len());
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load skill tools: {}", e);
+            }
+        }
     }
 
     /// Convert built-in tools to OpenAI ChatCompletionTool format
@@ -319,20 +387,15 @@ impl BuiltinToolRegistry {
         self.tools.get(name)
     }
 
-    pub async fn execute_tool(&self, name: &str, arguments: Value) -> Result<ToolResult, String> {
-        match name {
-            "get_system_info" => execute_get_system_info().await,
-            "get_current_time" => execute_get_current_time(arguments).await,
-            "list_directory" => execute_list_directory(arguments).await,
-            "create_task" => execute_create_task(arguments).await,
-            _ => Err(format!("Unknown tool: {}", name)),
-        }
+    /// Extract skill if this tool is a skill (to avoid holding lock across await)
+    pub fn get_skill_if_skill_tool(&self, name: &str) -> Option<crate::skills::InstalledSkill> {
+        self.skill_tools.get(name).cloned()
     }
 }
 
 // Tool implementations
 
-async fn execute_get_system_info() -> Result<ToolResult, String> {
+pub async fn execute_get_system_info() -> Result<ToolResult, String> {
     let mut sys = System::new_all();
     sys.refresh_all();
 
@@ -414,7 +477,7 @@ fn get_gpu_info() -> Value {
     }
 }
 
-async fn execute_get_current_time(arguments: Value) -> Result<ToolResult, String> {
+pub async fn execute_get_current_time(arguments: Value) -> Result<ToolResult, String> {
     let format = arguments.get("format")
         .and_then(|v| v.as_str())
         .unwrap_or("iso8601");
@@ -451,7 +514,7 @@ async fn execute_get_current_time(arguments: Value) -> Result<ToolResult, String
     Ok(ToolResult::text(serde_json::to_string_pretty(&time_info).unwrap()))
 }
 
-async fn execute_list_directory(arguments: Value) -> Result<ToolResult, String> {
+pub async fn execute_list_directory(arguments: Value) -> Result<ToolResult, String> {
     let path_str = arguments.get("path")
         .and_then(|v| v.as_str())
         .ok_or("Missing 'path' parameter")?;
@@ -560,7 +623,7 @@ fn list_directory_recursive(path: &Path, prefix: &str, entries: &mut Vec<Value>)
     Ok(())
 }
 
-async fn execute_create_task(arguments: Value) -> Result<ToolResult, String> {
+pub async fn execute_create_task(arguments: Value) -> Result<ToolResult, String> {
     use crate::tasks::{ActionType, TriggerTime};
     
     // Extract name
@@ -702,6 +765,76 @@ async fn execute_create_task(arguments: Value) -> Result<ToolResult, String> {
     });
 
     Ok(ToolResult::text(serde_json::to_string_pretty(&result).unwrap()))
+}
+
+// Skill tool execution - follows skillz MCP server pattern
+pub async fn execute_skill_tool(
+    skill: &crate::skills::InstalledSkill,
+    arguments: Value,
+) -> Result<ToolResult, String> {
+    // Extract task parameter
+    let task = arguments.get("task")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing required argument: task")?;
+    
+    if task.trim().is_empty() {
+        return Err("The 'task' parameter must be a non-empty string.".to_string());
+    }
+    
+    let metadata = skill.metadata.as_ref()
+        .ok_or("Skill metadata not available")?;
+    
+    // Use instructions if available, otherwise use description as fallback
+    let instructions = skill.instructions.as_ref()
+        .map(|s| s.as_str())
+        .unwrap_or(&metadata.description);
+    
+    // Build resource list
+    let mut resources = Vec::new();
+    for resource_name in &skill.resources {
+        resources.push(json!({
+            "uri": format!("resource://skillz/{}/{}", skill.slug, resource_name),
+            "name": format!("{}/{}", skill.slug, resource_name),
+            "mime_type": mime_guess::from_path(resource_name).first_or_octet_stream().to_string(),
+        }));
+    }
+    
+    // Build response following skillz format
+    let response = json!({
+        "skill": skill.slug,
+        "task": task,
+        "metadata": {
+            "name": metadata.name,
+            "description": metadata.description,
+            "license": metadata.license,
+            "allowed_tools": metadata.allowed_tools,
+            "extra": metadata.extra,
+        },
+        "resources": resources,
+        "instructions": instructions,
+        "usage": format!(
+            "HOW TO USE THIS SKILL:\n\n\
+            1. READ the instructions carefully - they contain specialized guidance for completing the task.\n\n\
+            2. UNDERSTAND the context:\n\
+               - The 'task' field contains the specific request\n\
+               - The 'metadata.allowed_tools' list specifies which tools to use when applying this skill (if specified, respect these constraints)\n\
+               - The 'resources' array lists additional files\n\n\
+            3. APPLY the skill instructions to complete the task:\n\
+               - Follow the instructions as your primary guidance\n\
+               - Use judgment to adapt instructions to the task\n\
+               - Instructions are authored by skill creators and may contain domain-specific expertise, best practices, or specialized techniques\n\n\
+            4. ACCESS resources when needed:\n\
+               - If instructions reference additional files or you need them, you can read them from the skill's local directory\n\
+               - Resource paths are relative to: {}\n\n\
+            5. RESPECT constraints:\n\
+               - If 'metadata.allowed_tools' is specified and non-empty, prefer using only those tools when executing the skill instructions\n\
+               - This helps ensure the skill works as intended\n\n\
+            Remember: Skills are specialized instruction sets created by experts. They provide domain knowledge and best practices you can apply to user tasks.",
+            skill.local_path.display()
+        ),
+    });
+    
+    Ok(ToolResult::text(serde_json::to_string_pretty(&response).unwrap()))
 }
 
 #[cfg(test)]

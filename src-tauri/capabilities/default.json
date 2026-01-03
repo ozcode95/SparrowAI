@@ -12,6 +12,8 @@
         }
       ]
     },
+    "shell:allow-open",
+    "shell:default",
     "dialog:allow-open",
     "dialog:allow-message",
     "dialog:default",

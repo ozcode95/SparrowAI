@@ -10,7 +10,7 @@ use serde_json::Value;
 // Global MCP manager instance
 lazy_static::lazy_static! {
     static ref MCP_MANAGER: Arc<Mutex<Option<McpManager>>> = Arc::new(Mutex::new(None));
-    static ref BUILTIN_TOOLS: BuiltinToolRegistry = BuiltinToolRegistry::new();
+    static ref BUILTIN_TOOLS: Arc<Mutex<BuiltinToolRegistry>> = Arc::new(Mutex::new(BuiltinToolRegistry::new()));
 }
 
 async fn get_or_init_manager(app_handle: &AppHandle) -> Result<(), String> {
@@ -353,11 +353,14 @@ pub async fn get_all_mcp_tools_for_chat(
     app_handle: AppHandle,
 ) -> Result<Vec<async_openai::types::chat::ChatCompletionTool>, String> {
     // Get built-in tools first
-    let mut all_tools = match BUILTIN_TOOLS.to_openai_tools() {
-        Ok(tools) => tools,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to convert built-in tools, continuing with empty built-in list");
-            Vec::new()
+    let mut all_tools = {
+        let builtin_tools = BUILTIN_TOOLS.lock().map_err(|e| format!("Lock error: {}", e))?;
+        match builtin_tools.to_openai_tools() {
+            Ok(tools) => tools,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to convert built-in tools, continuing with empty built-in list");
+                Vec::new()
+            }
         }
     };
     
@@ -416,8 +419,25 @@ pub async fn call_mcp_tool(
             None => Value::Object(serde_json::Map::new()),
         };
         
-        // Execute built-in tool
-        let result = BUILTIN_TOOLS.execute_tool(actual_tool_name, args_value).await?;
+        // Extract what we need before releasing the lock
+        let maybe_skill = {
+            let builtin_tools = BUILTIN_TOOLS.lock().map_err(|e| format!("Lock error: {}", e))?;
+            builtin_tools.get_skill_if_skill_tool(actual_tool_name)
+        };
+        
+        // Execute built-in tool outside the lock
+        let result = if let Some(skill) = maybe_skill {
+            super::builtin_tools::execute_skill_tool(&skill, args_value).await?
+        } else {
+            // For non-skill tools, we need to execute synchronously
+            match actual_tool_name {
+                "get_system_info" => super::builtin_tools::execute_get_system_info().await?,
+                "get_current_time" => super::builtin_tools::execute_get_current_time(args_value).await?,
+                "list_directory" => super::builtin_tools::execute_list_directory(args_value).await?,
+                "create_task" => super::builtin_tools::execute_create_task(args_value).await?,
+                _ => return Err(format!("Unknown builtin tool: {}", actual_tool_name)),
+            }
+        };
         
         // Extract text from ToolResult
         let result_text = result.content.iter()
@@ -582,7 +602,16 @@ pub async fn auto_connect_mcp_servers(
 /// Get all built-in tools
 #[tauri::command]
 pub async fn get_builtin_tools() -> Result<Vec<BuiltinTool>, String> {
-    Ok(BUILTIN_TOOLS.list_tools())
+    let builtin_tools = BUILTIN_TOOLS.lock().map_err(|e| format!("Lock error: {}", e))?;
+    Ok(builtin_tools.list_tools())
+}
+
+/// Reload skill tools after installing/uninstalling skills
+#[tauri::command]
+pub async fn reload_skill_tools() -> Result<String, String> {
+    let mut builtin_tools = BUILTIN_TOOLS.lock().map_err(|e| format!("Lock error: {}", e))?;
+    builtin_tools.reload_skill_tools();
+    Ok("Skill tools reloaded successfully".to_string())
 }
 
 /// Execute a built-in tool
@@ -593,7 +622,25 @@ pub async fn execute_builtin_tool(
 ) -> Result<ToolResult, String> {
     tracing::debug!(tool = %tool_name, args = ?arguments, "Executing built-in tool");
     
-    BUILTIN_TOOLS.execute_tool(&tool_name, arguments).await
+    // Extract what we need before releasing the lock
+    let maybe_skill = {
+        let builtin_tools = BUILTIN_TOOLS.lock().map_err(|e| format!("Lock error: {}", e))?;
+        builtin_tools.get_skill_if_skill_tool(&tool_name)
+    };
+    
+    // Now execute outside the lock
+    if let Some(skill) = maybe_skill {
+        super::builtin_tools::execute_skill_tool(&skill, arguments).await
+    } else {
+        // For non-skill tools, execute directly
+        match tool_name.as_str() {
+            "get_system_info" => super::builtin_tools::execute_get_system_info().await,
+            "get_current_time" => super::builtin_tools::execute_get_current_time(arguments).await,
+            "list_directory" => super::builtin_tools::execute_list_directory(arguments).await,
+            "create_task" => super::builtin_tools::execute_create_task(arguments).await,
+            _ => Err(format!("Unknown builtin tool: {}", tool_name)),
+        }
+    }
 }
 
 /// Get all available tools (both built-in and external MCP servers)
@@ -602,7 +649,10 @@ pub async fn get_all_available_tools(
     app_handle: AppHandle,
 ) -> Result<AllToolsResponse, String> {
     // Get built-in tools
-    let builtin_tools = BUILTIN_TOOLS.list_tools();
+    let builtin_tools = {
+        let tools = BUILTIN_TOOLS.lock().map_err(|e| format!("Lock error: {}", e))?;
+        tools.list_tools()
+    };
     
     // Get external MCP server tools
     let mut external_tools = HashMap::new();

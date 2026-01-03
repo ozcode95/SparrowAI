@@ -1,7 +1,15 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { PageContainer } from "../layout";
-import { Card, Button, Input, Dialog } from "../ui";
+import {
+  Card,
+  Button,
+  Input,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "../ui";
 import {
   Plus,
   Server,
@@ -26,6 +34,13 @@ interface ToolInfo {
   description?: string;
 }
 
+interface BuiltinTool {
+  name: string;
+  description: string;
+  input_schema: any;
+  hidden_from_task_creation?: boolean;
+}
+
 interface McpServerInfo {
   name: string;
   config: McpServerConfig;
@@ -47,25 +62,29 @@ export const McpPage = () => {
   const [envVars, setEnvVars] = useState<Array<{ key: string; value: string }>>(
     []
   );
-  const [selectedServer, setSelectedServer] = useState<McpServerInfo | null>(
-    null
-  );
   const [toolDetails, setToolDetails] = useState<ToolInfo[]>([]);
   const [loadingTools, setLoadingTools] = useState(false);
   const [connectingServer, setConnectingServer] = useState<string | null>(null);
+  const [isBuiltinToolsOpen, setIsBuiltinToolsOpen] = useState(false);
+  const [builtinTools, setBuiltinTools] = useState<BuiltinTool[]>([]);
+  const [loadingBuiltinTools, setLoadingBuiltinTools] = useState(false);
+  const [isServerDetailsOpen, setIsServerDetailsOpen] = useState(false);
+  const [detailsServer, setDetailsServer] = useState<McpServerInfo | null>(
+    null
+  );
 
   useEffect(() => {
     loadServers();
   }, []);
 
   useEffect(() => {
-    // Fetch tool details when a connected server is selected
-    if (selectedServer && selectedServer.status === "connected") {
-      fetchToolDetails(selectedServer.name);
+    // Fetch tool details when a connected server details dialog is opened
+    if (detailsServer && detailsServer.status === "connected") {
+      fetchToolDetails(detailsServer.name);
     } else {
       setToolDetails([]);
     }
-  }, [selectedServer]);
+  }, [detailsServer]);
 
   const loadServers = async () => {
     setIsLoading(true);
@@ -92,6 +111,20 @@ export const McpPage = () => {
       setToolDetails([]);
     } finally {
       setLoadingTools(false);
+    }
+  };
+
+  const fetchBuiltinTools = async () => {
+    setLoadingBuiltinTools(true);
+    try {
+      const tools = await invoke<BuiltinTool[]>("get_builtin_tools");
+      setBuiltinTools(tools);
+      setIsBuiltinToolsOpen(true);
+    } catch (error) {
+      console.error("Failed to fetch builtin tools:", error);
+      setBuiltinTools([]);
+    } finally {
+      setLoadingBuiltinTools(false);
     }
   };
 
@@ -184,8 +217,9 @@ export const McpPage = () => {
     try {
       await invoke("remove_mcp_server", { serverName: name });
       await loadServers();
-      if (selectedServer?.name === name) {
-        setSelectedServer(null);
+      if (detailsServer?.name === name) {
+        setIsServerDetailsOpen(false);
+        setDetailsServer(null);
       }
     } catch (error) {
       console.error("Failed to remove server:", error);
@@ -231,9 +265,9 @@ export const McpPage = () => {
       title="Model Context Protocol"
       description="Configure MCP servers and tools"
     >
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
-        {/* Servers List Column */}
-        <div className="lg:col-span-2 flex flex-col gap-4">
+      <div className="flex flex-col gap-4 h-full">
+        {/* Servers List */}
+        <div className="flex flex-col gap-4">
           {/* Header */}
           <Card className="p-4">
             <div className="flex items-center justify-between">
@@ -245,6 +279,15 @@ export const McpPage = () => {
                 </p>
               </div>
               <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={fetchBuiltinTools}
+                  disabled={loadingBuiltinTools}
+                >
+                  <Wrench className="w-4 h-4 mr-2" />
+                  {loadingBuiltinTools ? "Loading..." : "Builtin Tools"}
+                </Button>
                 <Button
                   variant="outline"
                   size="sm"
@@ -299,12 +342,7 @@ export const McpPage = () => {
               servers.map((server) => (
                 <Card
                   key={server.name}
-                  className={`p-3 cursor-pointer transition-all hover:shadow-md ${
-                    selectedServer?.name === server.name
-                      ? "ring-1 ring-primary"
-                      : ""
-                  }`}
-                  onClick={() => setSelectedServer(server)}
+                  className="p-3 transition-all hover:shadow-md"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex items-start gap-2 flex-1 min-w-0">
@@ -363,14 +401,21 @@ export const McpPage = () => {
                     </div>
 
                     <div className="flex flex-col gap-1">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setDetailsServer(server);
+                          setIsServerDetailsOpen(true);
+                        }}
+                      >
+                        Details
+                      </Button>
                       {server.status === "connected" ? (
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDisconnectServer(server.name);
-                          }}
+                          onClick={() => handleDisconnectServer(server.name)}
                           disabled={connectingServer !== null}
                         >
                           <Square className="w-3 h-3 mr-1" />
@@ -380,10 +425,7 @@ export const McpPage = () => {
                         <Button
                           variant="primary"
                           size="sm"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleConnectServer(server.name);
-                          }}
+                          onClick={() => handleConnectServer(server.name)}
                           disabled={connectingServer !== null}
                         >
                           {connectingServer === server.name ? (
@@ -402,10 +444,7 @@ export const McpPage = () => {
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleRemoveServer(server.name);
-                        }}
+                        onClick={() => handleRemoveServer(server.name)}
                         disabled={connectingServer !== null}
                       >
                         <Trash2 className="w-3 h-3 mr-1" />
@@ -417,105 +456,6 @@ export const McpPage = () => {
               ))
             )}
           </div>
-        </div>
-
-        {/* Details Column */}
-        <div className="flex flex-col gap-4">
-          <Card className="p-6 flex-1">
-            {selectedServer ? (
-              <div className="space-y-4">
-                <div>
-                  <h2 className="text-xl font-bold mb-2">
-                    {selectedServer.name}
-                  </h2>
-                  <span
-                    className={`text-sm px-3 py-1 rounded-full ${getStatusColor(
-                      selectedServer.status
-                    )}`}
-                  >
-                    {selectedServer.status}
-                  </span>
-                </div>
-
-                <div>
-                  <h3 className="text-sm font-semibold mb-2">Configuration</h3>
-                  <div className="space-y-2 text-sm">
-                    {selectedServer.config.command && (
-                      <div>
-                        <span className="text-gray-600 dark:text-gray-400">
-                          Command:
-                        </span>
-                        <code className="ml-2 px-2 py-1 bg-gray-100 dark:bg-gray-800 rounded">
-                          {selectedServer.config.command}
-                        </code>
-                      </div>
-                    )}
-                    {selectedServer.config.args &&
-                      selectedServer.config.args.length > 0 && (
-                        <div>
-                          <span className="text-gray-600 dark:text-gray-400">
-                            Arguments:
-                          </span>
-                          <code className="ml-2 px-2 py-1 bg-gray-100 dark:bg-gray-800 rounded">
-                            {selectedServer.config.args.join(" ")}
-                          </code>
-                        </div>
-                      )}
-                    {selectedServer.config.url && (
-                      <div>
-                        <span className="text-gray-600 dark:text-gray-400">
-                          URL:
-                        </span>
-                        <code className="ml-2 px-2 py-1 bg-gray-100 dark:bg-gray-800 rounded">
-                          {selectedServer.config.url}
-                        </code>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {selectedServer.status === "connected" &&
-                  toolDetails.length > 0 && (
-                    <div>
-                      <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
-                        <Wrench className="w-4 h-4" />
-                        Available Tools ({toolDetails.length})
-                      </h3>
-                      {loadingTools ? (
-                        <div className="flex items-center justify-center py-4">
-                          <Loader2 className="w-5 h-5 animate-spin text-primary" />
-                        </div>
-                      ) : (
-                        <div className="space-y-2 max-h-64 overflow-y-auto">
-                          {toolDetails.map((tool) => (
-                            <div
-                              key={tool.name}
-                              className="p-3 bg-gray-100 dark:bg-gray-800 rounded"
-                            >
-                              <div className="font-semibold text-sm">
-                                {tool.name}
-                              </div>
-                              {tool.description && (
-                                <div className="text-xs text-gray-600 dark:text-gray-400 mt-1">
-                                  {tool.description}
-                                </div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-              </div>
-            ) : (
-              <div className="flex flex-col items-center justify-center h-full text-center">
-                <Server className="w-16 h-16 mb-4 text-gray-400" />
-                <p className="text-gray-600 dark:text-gray-400">
-                  Select a server to view details
-                </p>
-              </div>
-            )}
-          </Card>
         </div>
       </div>
 
@@ -672,6 +612,182 @@ export const McpPage = () => {
             <Button onClick={handleAddServer}>Add Server</Button>
           </div>
         </div>
+      </Dialog>
+
+      {/* Server Details Dialog */}
+      <Dialog open={isServerDetailsOpen} onOpenChange={setIsServerDetailsOpen}>
+        <DialogContent
+          className="max-w-3xl max-h-[80vh] flex flex-col"
+          onClose={() => setIsServerDetailsOpen(false)}
+        >
+          <DialogHeader>
+            <DialogTitle>{detailsServer?.name || "Server Details"}</DialogTitle>
+          </DialogHeader>
+
+          {detailsServer && (
+            <div className="flex-1 overflow-y-auto mt-4 pr-2">
+              <div className="space-y-4">
+                <div>
+                  <span
+                    className={`text-sm px-3 py-1 rounded-full ${getStatusColor(
+                      detailsServer.status
+                    )}`}
+                  >
+                    {detailsServer.status}
+                  </span>
+                </div>
+
+                <div>
+                  <h3 className="text-sm font-semibold mb-2">Configuration</h3>
+                  <div className="space-y-2 text-sm">
+                    {detailsServer.config.command && (
+                      <div>
+                        <span className="text-gray-600 dark:text-gray-400">
+                          Command:
+                        </span>
+                        <code className="ml-2 px-2 py-1 bg-gray-100 dark:bg-gray-800 rounded">
+                          {detailsServer.config.command}
+                        </code>
+                      </div>
+                    )}
+                    {detailsServer.config.args &&
+                      detailsServer.config.args.length > 0 && (
+                        <div>
+                          <span className="text-gray-600 dark:text-gray-400">
+                            Arguments:
+                          </span>
+                          <code className="ml-2 px-2 py-1 bg-gray-100 dark:bg-gray-800 rounded">
+                            {detailsServer.config.args.join(" ")}
+                          </code>
+                        </div>
+                      )}
+                    {detailsServer.config.url && (
+                      <div>
+                        <span className="text-gray-600 dark:text-gray-400">
+                          URL:
+                        </span>
+                        <code className="ml-2 px-2 py-1 bg-gray-100 dark:bg-gray-800 rounded">
+                          {detailsServer.config.url}
+                        </code>
+                      </div>
+                    )}
+                    {detailsServer.config.env &&
+                      Object.keys(detailsServer.config.env).length > 0 && (
+                        <div>
+                          <span className="text-gray-600 dark:text-gray-400">
+                            Environment Variables:
+                          </span>
+                          <div className="ml-2 mt-1 space-y-1">
+                            {Object.entries(detailsServer.config.env).map(
+                              ([key, value]) => (
+                                <code
+                                  key={key}
+                                  className="block px-2 py-1 bg-gray-100 dark:bg-gray-800 rounded text-xs"
+                                >
+                                  {key}={value}
+                                </code>
+                              )
+                            )}
+                          </div>
+                        </div>
+                      )}
+                  </div>
+                </div>
+
+                {detailsServer.status === "connected" && (
+                  <div>
+                    <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                      <Wrench className="w-4 h-4" />
+                      Available Tools ({toolDetails.length})
+                    </h3>
+                    {loadingTools ? (
+                      <div className="flex items-center justify-center py-4">
+                        <Loader2 className="w-5 h-5 animate-spin text-primary" />
+                      </div>
+                    ) : toolDetails.length > 0 ? (
+                      <div className="space-y-2">
+                        {toolDetails.map((tool) => (
+                          <div
+                            key={tool.name}
+                            className="p-3 bg-gray-100 dark:bg-gray-800 rounded"
+                          >
+                            <div className="font-semibold text-sm">
+                              {tool.name}
+                            </div>
+                            {tool.description && (
+                              <div className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                                {tool.description}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-gray-600 dark:text-gray-400">
+                        No tools available
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end mt-4 pt-4 border-t border-gray-200 dark:border-gray-800 flex-shrink-0">
+            <Button onClick={() => setIsServerDetailsOpen(false)}>Close</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Builtin Tools Dialog */}
+      <Dialog open={isBuiltinToolsOpen} onOpenChange={setIsBuiltinToolsOpen}>
+        <DialogContent
+          className="max-w-3xl max-h-[80vh] flex flex-col"
+          onClose={() => setIsBuiltinToolsOpen(false)}
+        >
+          <DialogHeader>
+            <DialogTitle>Built-in Tools</DialogTitle>
+          </DialogHeader>
+
+          <div className="flex-1 overflow-y-auto mt-4 pr-2">
+            {loadingBuiltinTools ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-8 h-8 animate-spin text-primary" />
+              </div>
+            ) : builtinTools.length === 0 ? (
+              <div className="text-center py-8">
+                <Wrench className="w-12 h-12 mx-auto mb-3 text-gray-400" />
+                <p className="text-gray-600 dark:text-gray-400">
+                  No builtin tools available
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {builtinTools.map((tool, index) => (
+                  <Card key={index} className="p-4">
+                    <div className="flex items-start gap-3">
+                      <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
+                        <Wrench className="w-5 h-5 text-primary" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <h3 className="font-semibold text-sm mb-1">
+                          {tool.name}
+                        </h3>
+                        <p className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap">
+                          {tool.description}
+                        </p>
+                      </div>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-end mt-4 pt-4 border-t border-gray-200 dark:border-gray-800 flex-shrink-0">
+            <Button onClick={() => setIsBuiltinToolsOpen(false)}>Close</Button>
+          </div>
+        </DialogContent>
       </Dialog>
     </PageContainer>
   );

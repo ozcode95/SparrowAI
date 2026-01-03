@@ -12,6 +12,7 @@ import {
   Info,
   Clock,
   Image,
+  Sparkles,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useUI, useModels, useChat, type PageType } from "@/store";
@@ -73,6 +74,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       id: "documents",
       label: "Documents",
       icon: <FileText className="h-5 w-5" />,
+    },
+    {
+      id: "skills",
+      label: "Skills",
+      icon: <Sparkles className="h-5 w-5" />,
     },
     {
       id: "mcp",

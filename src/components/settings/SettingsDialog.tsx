@@ -24,7 +24,7 @@ export const SettingsDialog: React.FC = () => {
   const [isLoadingAutostart, setIsLoadingAutostart] = useState(false);
 
   const { settingsDialogOpen, setSettingsDialogOpen } = useUI();
-  const { settings, updateSettings } = useSettings();
+  const { settings, updateSettings, resetSettings } = useSettings();
 
   // Load current autostart status when dialog opens
   useEffect(() => {
@@ -301,9 +301,17 @@ export const SettingsDialog: React.FC = () => {
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={handleClose}>
-            Close
-          </Button>
+          <div className="flex justify-between w-full">
+            <Button 
+              variant="outline" 
+              onClick={resetSettings}
+            >
+              Reset to Defaults
+            </Button>
+            <Button variant="outline" onClick={handleClose}>
+              Close
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>

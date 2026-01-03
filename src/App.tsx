@@ -6,6 +6,7 @@ import { Sidebar, AppLayout } from "./components/layout";
 import { ChatPage } from "./components/chat";
 import { ModelsPage } from "./components/models";
 import { DocumentsPage } from "./components/documents";
+import { SkillsPage } from "./components/skills";
 import { McpPage } from "./components/mcp";
 import { TasksPage } from "./components/tasks";
 import { GalleryPage } from "./components/gallery";
@@ -224,6 +225,8 @@ function App() {
         return <ModelsPage />;
       case "documents":
         return <DocumentsPage />;
+      case "skills":
+        return <SkillsPage />;
       case "mcp":
         return <McpPage />;
       case "tasks":

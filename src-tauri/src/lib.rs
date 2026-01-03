@@ -17,6 +17,7 @@ mod logging;
 mod autostart;
 mod tasks;
 mod gallery;
+mod skills;
 
 #[tauri::command]
 async fn get_default_download_path() -> Result<String, String> {
@@ -41,6 +42,47 @@ async fn get_home_dir() -> Result<String, String> {
     paths::get_home_dir()
         .map(|p| p.to_string_lossy().to_string())
         .map_err(|e| e.to_string())
+}
+
+// Skills commands
+#[tauri::command]
+async fn fetch_skills_marketplace() -> Result<skills::SkillsMarketplace, String> {
+    skills::fetch_marketplace().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn refresh_skills_marketplace() -> Result<skills::SkillsMarketplace, String> {
+    skills::refresh_marketplace().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn download_skill(skill: skills::Skill) -> Result<String, String> {
+    let path = skills::download_skill(&skill).await.map_err(|e| e.to_string())?;
+    
+    // Reload skill tools after downloading
+    let _ = mcp::reload_skill_tools().await;
+    
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+async fn delete_skill(skill_id: String) -> Result<(), String> {
+    skills::delete_skill(&skill_id).await.map_err(|e| e.to_string())?;
+    
+    // Reload skill tools after deleting
+    let _ = mcp::reload_skill_tools().await;
+    
+    Ok(())
+}
+
+#[tauri::command]
+fn get_installed_skills() -> Result<Vec<skills::InstalledSkill>, String> {
+    skills::get_installed_skills().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn is_skill_installed(skill_id: String) -> bool {
+    skills::is_skill_installed(&skill_id)
 }
 
 #[tauri::command]
@@ -416,6 +458,7 @@ pub fn run() {
                 mcp::enable_all_auto_connect,
                 mcp::auto_connect_mcp_servers,
                 mcp::get_builtin_tools,
+                mcp::reload_skill_tools,
                 mcp::execute_builtin_tool,
                 mcp::get_all_available_tools,
                 autostart::enable_autostart,
@@ -433,7 +476,13 @@ pub fn run() {
                 gallery::generate_image,
                 gallery::get_generated_images,
                 gallery::delete_generated_image,
-                gallery::copy_file
+                gallery::copy_file,
+                fetch_skills_marketplace,
+                refresh_skills_marketplace,
+                download_skill,
+                delete_skill,
+                get_installed_skills,
+                is_skill_installed
             ]
         )
         .setup(|app| {
