@@ -462,6 +462,7 @@ pub fn run() {
                 mcp::enable_all_auto_connect,
                 mcp::auto_connect_mcp_servers,
                 mcp::get_builtin_tools,
+                mcp::get_all_builtin_tools,
                 mcp::reload_skill_tools,
                 mcp::execute_builtin_tool,
                 mcp::get_all_available_tools,

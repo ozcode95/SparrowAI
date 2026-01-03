@@ -126,6 +126,7 @@ export const useChat = () =>
       activeChatSessionId: state.activeChatSessionId,
       currentChatMessages: state.currentChatMessages,
       temporarySession: state.temporarySession,
+      isStreaming: state.isStreaming,
       setChatSessions: state.setChatSessions,
       setActiveChatSessionId: state.setActiveChatSessionId,
       setCurrentChatMessages: state.setCurrentChatMessages,

@@ -13,6 +13,12 @@ const defaultSettings: Settings = {
   useRAG: false,
   enableAutostart: false,
   startMinimized: true,
+  // Feature flags - all enabled by default
+  enableImageCaptioning: true,
+  enableImageGeneration: true,
+  enableRag: true,
+  enableSpeechToText: true,
+  enableTextToSpeech: true,
 };
 
 export const createSettingsSlice: StateCreator<

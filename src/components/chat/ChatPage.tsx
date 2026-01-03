@@ -52,8 +52,8 @@ export const ChatPage = () => {
     setIsStreaming,
     appendToStreamingMessage,
     clearStreamingMessage,
+    settings,
   } = useAppStore();
-  const { settings } = useAppStore();
   const { downloadedModels, loadedModelsByType, setLoadedModelByType } =
     useAppStore();
   const [input, setInput] = useState("");
@@ -157,22 +157,31 @@ export const ChatPage = () => {
   const handleFileUpload = async () => {
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
+      
+      // Determine allowed file extensions based on feature flags
+      const allowedExtensions: string[] = [];
+      if (settings.enableImageCaptioning) {
+        allowedExtensions.push("png", "jpg", "jpeg", "webp", "gif");
+      }
+      if (settings.enableRag) {
+        allowedExtensions.push("pdf", "docx", "xlsx", "xls");
+      }
+      
+      // If no features enabled, don't open dialog
+      if (allowedExtensions.length === 0) {
+        return;
+      }
+      
       const selected = await open({
         multiple: true,
         filters: [
           {
-            name: "Documents & Images",
-            extensions: [
-              "pdf",
-              "docx",
-              "xlsx",
-              "xls",
-              "png",
-              "jpg",
-              "jpeg",
-              "webp",
-              "gif",
-            ],
+            name: settings.enableImageCaptioning && settings.enableRag 
+              ? "Documents & Images" 
+              : settings.enableImageCaptioning 
+                ? "Images" 
+                : "Documents",
+            extensions: allowedExtensions,
           },
         ],
       });
@@ -192,7 +201,7 @@ export const ChatPage = () => {
             extension
           );
 
-          if (isImage) {
+          if (isImage && settings.enableImageCaptioning) {
             // Images don't go through RAG processing, just add directly to attachments
             logInfo(`Added image file ${filePath} (skipping RAG processing)`);
             const fileName = filePath.split(/[\\/]/).pop() || filePath;
@@ -205,7 +214,7 @@ export const ChatPage = () => {
                 is_image: true,
               },
             ]);
-          } else {
+          } else if (!isImage && settings.enableRag) {
             // Process document into chunks for RAG
             const documents = await invoke<any[]>("process_document", {
               filePath,
@@ -500,8 +509,8 @@ export const ChatPage = () => {
     // Check if images are attached
     const hasImageAttachments = attachments.some((a) => a.is_image);
 
-    // Check if vision model is loaded when images are attached
-    if (hasImageAttachments && !loadedModelsByType["image-to-text"]) {
+    // Check if vision model is loaded when images are attached (and feature is enabled)
+    if (hasImageAttachments && settings.enableImageCaptioning && !loadedModelsByType["image-to-text"]) {
       alert("Please select a Vision (Image-to-Text) model to process images");
       return;
     }
@@ -648,12 +657,13 @@ export const ChatPage = () => {
         : modelToUse;
 
       // Choose the appropriate chat function based on RAG setting
-      const chatCommand = settings.useRAG
+      const chatCommand = (settings.enableRag && settings.useRAG)
         ? "chat_with_rag_streaming"
         : "chat_with_loaded_model_streaming";
 
       logDebug(`Using chat command: ${chatCommand}`, {
         useRAG: settings.useRAG,
+        enableRag: settings.enableRag,
         hasAttachments: currentAttachments.length > 0,
       });
 
@@ -669,7 +679,7 @@ export const ChatPage = () => {
         maxTokens: effectiveMaxTokens,
         maxCompletionTokens: settings.maxCompletionTokens,
         // RAG-specific parameters (only used if chatCommand is chat_with_rag_streaming)
-        useRag: settings.useRAG || currentAttachments.some((a) => !a.is_image), // Use RAG if enabled OR if there are document attachments
+        useRag: (settings.enableRag && settings.useRAG) || currentAttachments.some((a) => !a.is_image), // Use RAG if enabled OR if there are document attachments
         ragLimit: currentAttachments.some((a) => !a.is_image) ? null : 5, // null means use only attached documents
         // Pass full attachment objects (includes both images and documents)
         attachments: currentAttachments.length > 0 ? currentAttachments : null,
@@ -762,27 +772,29 @@ export const ChatPage = () => {
           </div>
 
           {/* Image-to-Text Model */}
-          <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium text-gray-600 dark:text-gray-400 px-1">
-              Vision (Image-to-Text)
-            </label>
-            <select
-              value={loadedModelsByType["image-to-text"] || ""}
-              onChange={(e) =>
-                e.target.value &&
-                handleLoadModel(e.target.value, "image-to-text")
-              }
-              disabled={isAnyModelLoading || isStreaming}
-              className="px-2 py-1.5 border rounded-lg bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-xs disabled:opacity-50 disabled:cursor-not-allowed w-56 truncate"
-            >
-              <option value="">Select model...</option>
-              {modelsByCategory["image-to-text"].map((modelId) => (
-                <option key={modelId} value={modelId}>
-                  {modelId}
-                </option>
-              ))}
-            </select>
-          </div>
+          {settings.enableImageCaptioning && (
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-medium text-gray-600 dark:text-gray-400 px-1">
+                Vision (Image-to-Text)
+              </label>
+              <select
+                value={loadedModelsByType["image-to-text"] || ""}
+                onChange={(e) =>
+                  e.target.value &&
+                  handleLoadModel(e.target.value, "image-to-text")
+                }
+                disabled={isAnyModelLoading || isStreaming}
+                className="px-2 py-1.5 border rounded-lg bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-xs disabled:opacity-50 disabled:cursor-not-allowed w-56 truncate"
+              >
+                <option value="">Select model...</option>
+                {modelsByCategory["image-to-text"].map((modelId) => (
+                  <option key={modelId} value={modelId}>
+                    {modelId}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* Loading indicators */}
           {(isLoadingModel.text || isLoadingModel["image-to-text"]) && (
@@ -1069,30 +1081,34 @@ export const ChatPage = () => {
                 {!showFileSelector ? (
                   // Two button interface
                   <div className="flex items-center gap-2">
-                    <Button
-                      onClick={handleFileUpload}
-                      disabled={isUploadingFile}
-                      size="sm"
-                      variant="outline"
-                      className="flex-1"
-                    >
-                      {isUploadingFile ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        "Upload New"
-                      )}
-                    </Button>
-                    <Button
-                      onClick={() => {
-                        setShowFileSelector(true);
-                        loadAvailableFiles();
-                      }}
-                      size="sm"
-                      variant="outline"
-                      className="flex-1"
-                    >
-                      Select from RAG
-                    </Button>
+                    {settings.enableImageCaptioning && (
+                      <Button
+                        onClick={handleFileUpload}
+                        disabled={isUploadingFile}
+                        size="sm"
+                        variant="outline"
+                        className="flex-1"
+                      >
+                        {isUploadingFile ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          "Upload Image"
+                        )}
+                      </Button>
+                    )}
+                    {settings.enableRag && (
+                      <Button
+                        onClick={() => {
+                          setShowFileSelector(true);
+                          loadAvailableFiles();
+                        }}
+                        size="sm"
+                        variant="outline"
+                        className="flex-1"
+                      >
+                        Select from RAG
+                      </Button>
+                    )}
                     <Button
                       onClick={() => {
                         setShowAttachmentPanel(false);
@@ -1283,21 +1299,23 @@ export const ChatPage = () => {
             )}
 
             <div className="flex gap-3">
-              <div className="flex items-end">
-                <Button
-                  onClick={() => {
-                    setShowAttachmentPanel(!showAttachmentPanel);
-                    setShowFileSelector(false);
-                    setFileSearchQuery("");
-                  }}
-                  disabled={isStreaming}
-                  size="icon"
-                  variant="outline"
-                  title="Attach Documents"
-                >
-                  <Paperclip className="w-5 h-5" />
-                </Button>
-              </div>
+              {(settings.enableImageCaptioning || settings.enableRag) && (
+                <div className="flex items-end">
+                  <Button
+                    onClick={() => {
+                      setShowAttachmentPanel(!showAttachmentPanel);
+                      setShowFileSelector(false);
+                      setFileSearchQuery("");
+                    }}
+                    disabled={isStreaming}
+                    size="icon"
+                    variant="outline"
+                    title="Attach Documents"
+                  >
+                    <Paperclip className="w-5 h-5" />
+                  </Button>
+                </div>
+              )}
               <textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}

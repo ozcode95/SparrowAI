@@ -19,6 +19,13 @@ pub struct AppConfig {
     // General settings
     pub enable_autostart: bool,
     pub start_minimized: bool,
+    
+    // Feature flags
+    pub enable_image_captioning: bool,
+    pub enable_image_generation: bool,
+    pub enable_rag: bool,
+    pub enable_speech_to_text: bool,
+    pub enable_text_to_speech: bool,
 }
 
 impl Default for AppConfig {
@@ -34,6 +41,12 @@ impl Default for AppConfig {
             use_rag: false,
             enable_autostart: false,
             start_minimized: true,
+            // Feature flags - all enabled by default
+            enable_image_captioning: true,
+            enable_image_generation: true,
+            enable_rag: true,
+            enable_speech_to_text: true,
+            enable_text_to_speech: true,
         }
     }
 }
@@ -114,6 +127,21 @@ impl AppConfig {
         if let Some(v) = updates.start_minimized {
             self.start_minimized = v;
         }
+        if let Some(v) = updates.enable_image_captioning {
+            self.enable_image_captioning = v;
+        }
+        if let Some(v) = updates.enable_image_generation {
+            self.enable_image_generation = v;
+        }
+        if let Some(v) = updates.enable_rag {
+            self.enable_rag = v;
+        }
+        if let Some(v) = updates.enable_speech_to_text {
+            self.enable_speech_to_text = v;
+        }
+        if let Some(v) = updates.enable_text_to_speech {
+            self.enable_text_to_speech = v;
+        }
         
         self.save()
     }
@@ -131,6 +159,12 @@ pub struct AppConfigUpdate {
     pub use_rag: Option<bool>,
     pub enable_autostart: Option<bool>,
     pub start_minimized: Option<bool>,
+    // Feature flags
+    pub enable_image_captioning: Option<bool>,
+    pub enable_image_generation: Option<bool>,
+    pub enable_rag: Option<bool>,
+    pub enable_speech_to_text: Option<bool>,
+    pub enable_text_to_speech: Option<bool>,
 }
 
 // Tauri commands

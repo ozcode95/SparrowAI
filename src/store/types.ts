@@ -122,6 +122,12 @@ export interface Settings {
   useRAG: boolean;
   enableAutostart: boolean;
   startMinimized: boolean;
+  // Feature flags
+  enableImageCaptioning: boolean;
+  enableImageGeneration: boolean;
+  enableRag: boolean;
+  enableSpeechToText: boolean;
+  enableTextToSpeech: boolean;
 }
 
 export interface SettingsSlice {

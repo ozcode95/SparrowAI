@@ -28,7 +28,10 @@ impl BuiltinToolsConfig {
 impl BuiltinToolsConfig {
     /// Get the path to the builtin_tools_config.json file
     pub fn config_path() -> Result<PathBuf> {
-        Ok(get_sparrow_dir()?.join("builtin_tools_config.json"))
+        let mcp_dir = get_sparrow_dir()?.join("mcp");
+        fs::create_dir_all(&mcp_dir)
+            .map_err(|e| SparrowError::Io(e))?;
+        Ok(mcp_dir.join("builtin_tools_config.json"))
     }
 
     /// Load the config from disk, or create default if it doesn't exist

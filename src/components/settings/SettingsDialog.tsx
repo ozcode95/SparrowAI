@@ -4,6 +4,7 @@ import {
   MessageSquare,
   Sliders,
   Settings,
+  Sparkles,
 } from "lucide-react";
 import { useUI, useSettings } from "@/store";
 import {
@@ -18,7 +19,7 @@ import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 
 export const SettingsDialog: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<"general" | "chat" | "advanced">(
+  const [activeTab, setActiveTab] = useState<"general" | "chat" | "advanced" | "features">(
     "general"
   );
   const [isLoadingAutostart, setIsLoadingAutostart] = useState(false);
@@ -94,6 +95,7 @@ export const SettingsDialog: React.FC = () => {
     { id: "general" as const, label: "General", icon: Settings },
     { id: "chat" as const, label: "Chat", icon: MessageSquare },
     { id: "advanced" as const, label: "Advanced", icon: Sliders },
+    { id: "features" as const, label: "Features", icon: Sparkles },
   ];
 
   return (
@@ -137,26 +139,37 @@ export const SettingsDialog: React.FC = () => {
             {/* General Tab */}
             {activeTab === "general" && (
               <div className="space-y-6">
-                <div>
-                  <label className="flex items-center gap-3">
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                      Launch on System Startup
+                    </div>
+                    <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
+                      Automatically start SparrowAI when your computer boots up
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer ml-4">
                     <input
                       type="checkbox"
                       checked={settings.enableAutostart}
                       onChange={(e) => handleAutostartToggle(e.target.checked)}
                       disabled={isLoadingAutostart}
-                      className="h-4 w-4 rounded text-accent-600 disabled:opacity-50"
+                      className="sr-only peer"
                     />
-                    <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                      Launch on System Startup
-                    </span>
+                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-accent-300 dark:peer-focus:ring-accent-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-accent-600 peer-disabled:opacity-50 peer-disabled:cursor-not-allowed"></div>
                   </label>
-                  <p className="ml-7 mt-1 text-sm text-gray-600 dark:text-gray-400">
-                    Automatically start SparrowAI when your computer boots up
-                  </p>
                 </div>
 
-                <div className={cn(!settings.enableAutostart && "opacity-50")}>
-                  <label className="flex items-center gap-3">
+                <div className={cn("flex items-start justify-between", !settings.enableAutostart && "opacity-50")}>
+                  <div className="flex-1">
+                    <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                      Start Minimized
+                    </div>
+                    <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
+                      Launch the app minimized to system tray on startup
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer ml-4">
                     <input
                       type="checkbox"
                       checked={settings.startMinimized}
@@ -166,15 +179,10 @@ export const SettingsDialog: React.FC = () => {
                         })
                       }
                       disabled={!settings.enableAutostart}
-                      className="h-4 w-4 rounded text-accent-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="sr-only peer"
                     />
-                    <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                      Start Minimized
-                    </span>
+                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-accent-300 dark:peer-focus:ring-accent-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-accent-600 peer-disabled:opacity-50 peer-disabled:cursor-not-allowed"></div>
                   </label>
-                  <p className="ml-7 mt-1 text-sm text-gray-600 dark:text-gray-400">
-                    Launch the app minimized to system tray on startup
-                  </p>
                 </div>
               </div>
             )}
@@ -182,8 +190,16 @@ export const SettingsDialog: React.FC = () => {
             {/* Chat Tab */}
             {activeTab === "chat" && (
               <div className="space-y-6">
-                <div>
-                  <label className="flex items-center gap-3">
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                      Include Conversation History
+                    </div>
+                    <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
+                      Include previous messages in context for better responses
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer ml-4">
                     <input
                       type="checkbox"
                       checked={settings.includeConversationHistory}
@@ -192,34 +208,10 @@ export const SettingsDialog: React.FC = () => {
                           includeConversationHistory: e.target.checked,
                         })
                       }
-                      className="h-4 w-4 rounded text-accent-600"
+                      className="sr-only peer"
                     />
-                    <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                      Include Conversation History
-                    </span>
+                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-accent-300 dark:peer-focus:ring-accent-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-accent-600"></div>
                   </label>
-                  <p className="ml-7 mt-1 text-sm text-gray-600 dark:text-gray-400">
-                    Include previous messages in context for better responses
-                  </p>
-                </div>
-
-                <div>
-                  <label className="flex items-center gap-3">
-                    <input
-                      type="checkbox"
-                      checked={settings.useRAG}
-                      onChange={(e) =>
-                        handleSettingChange({ useRAG: e.target.checked })
-                      }
-                      className="h-4 w-4 rounded text-accent-600"
-                    />
-                    <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                      Use RAG (Retrieval Augmented Generation)
-                    </span>
-                  </label>
-                  <p className="ml-7 mt-1 text-sm text-gray-600 dark:text-gray-400">
-                    Use document knowledge base to enhance responses
-                  </p>
                 </div>
 
                 <div>
@@ -322,6 +314,131 @@ export const SettingsDialog: React.FC = () => {
                       placeholder="Default"
                     />
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* Features Tab */}
+            {activeTab === "features" && (
+              <div className="space-y-6 pb-6">
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                      Image Captioning (Vision-to-Text)
+                    </div>
+                    <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
+                      Enable vision-to-text model selection and image attachments in chat
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer ml-4">
+                    <input
+                      type="checkbox"
+                      checked={settings.enableImageCaptioning}
+                      onChange={(e) =>
+                        handleSettingChange({
+                          enableImageCaptioning: e.target.checked,
+                        })
+                      }
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-accent-300 dark:peer-focus:ring-accent-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-accent-600"></div>
+                  </label>
+                </div>
+
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                      Image Generation
+                    </div>
+                    <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
+                      Show the Gallery page for generating images
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer ml-4">
+                    <input
+                      type="checkbox"
+                      checked={settings.enableImageGeneration}
+                      onChange={(e) =>
+                        handleSettingChange({
+                          enableImageGeneration: e.target.checked,
+                        })
+                      }
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-accent-300 dark:peer-focus:ring-accent-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-accent-600"></div>
+                  </label>
+                </div>
+
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                      RAG (Retrieval Augmented Generation)
+                    </div>
+                    <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
+                      Enable document knowledge base, Documents page, and file attachments
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer ml-4">
+                    <input
+                      type="checkbox"
+                      checked={settings.enableRag}
+                      onChange={(e) =>
+                        handleSettingChange({
+                          enableRag: e.target.checked,
+                        })
+                      }
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-accent-300 dark:peer-focus:ring-accent-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-accent-600"></div>
+                  </label>
+                </div>
+
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                      Speech-to-Text
+                    </div>
+                    <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
+                      Enable voice input capabilities (coming soon)
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer ml-4">
+                    <input
+                      type="checkbox"
+                      checked={settings.enableSpeechToText}
+                      onChange={(e) =>
+                        handleSettingChange({
+                          enableSpeechToText: e.target.checked,
+                        })
+                      }
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-accent-300 dark:peer-focus:ring-accent-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-accent-600"></div>
+                  </label>
+                </div>
+
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                      Text-to-Speech
+                    </div>
+                    <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
+                      Enable voice output for AI responses (coming soon)
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer ml-4">
+                    <input
+                      type="checkbox"
+                      checked={settings.enableTextToSpeech}
+                      onChange={(e) =>
+                        handleSettingChange({
+                          enableTextToSpeech: e.target.checked,
+                        })
+                      }
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-accent-300 dark:peer-focus:ring-accent-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-accent-600"></div>
+                  </label>
                 </div>
               </div>
             )}

@@ -15,7 +15,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { useUI, useModels, useChat, type PageType } from "@/store";
+import { useUI, useModels, useChat, useSettings, type PageType } from "@/store";
 import { Button } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import { OvmsStatusDialog } from "../settings";
@@ -43,6 +43,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   } = useUI();
 
   const { loadedModels, getLoadedModels } = useModels();
+  const { settings } = useSettings();
 
   const {
     chatSessions,
@@ -54,12 +55,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
     temporarySession,
     clearTemporarySession,
     clearCurrentChatMessages,
+    isStreaming,
   } = useChat();
 
   const [, setLoadingChatSessions] = useState(false);
   const [ovmsStatusDialogOpen, setOvmsStatusDialogOpen] = useState(false);
 
-  const menuItems: MenuItem[] = [
+  // Debug: Log isStreaming changes
+  useEffect(() => {
+    console.log("Sidebar: isStreaming changed to:", isStreaming);
+  }, [isStreaming]);
+
+  const allMenuItems: MenuItem[] = [
     {
       id: "models",
       label: "Models",
@@ -91,6 +98,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
       icon: <Clock className="h-5 w-5" />,
     },
   ];
+
+  // Filter menu items based on feature flags
+  const menuItems = allMenuItems.filter((item) => {
+    if (item.id === "gallery" && !settings.enableImageGeneration) return false;
+    if (item.id === "documents" && !settings.enableRag) return false;
+    return true;
+  });
 
   const createNewChat = async () => {
     try {
@@ -230,9 +244,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
               variant="outline"
               className={cn(
                 "w-full justify-start",
-                isCollapsed && "justify-center px-0"
+                isCollapsed && "justify-center px-0",
+                isStreaming && "opacity-50 cursor-not-allowed"
               )}
               onClick={createNewChat}
+              disabled={isStreaming}
+              title={isStreaming ? "Please wait for the current response to finish" : "Start a new chat"}
             >
               <Plus className="h-5 w-5" />
               {!isCollapsed && <span className="ml-2">New Chat</span>}

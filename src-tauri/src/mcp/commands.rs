@@ -683,3 +683,10 @@ pub struct AllToolsResponse {
     pub builtin_tools: Vec<BuiltinTool>,
     pub external_servers: HashMap<String, Vec<String>>, // server_name -> tool_names
 }
+
+/// Get all builtin tools with their names and descriptions
+#[tauri::command]
+pub fn get_all_builtin_tools() -> Result<Vec<BuiltinTool>, String> {
+    let tools = BUILTIN_TOOLS.lock().map_err(|e| format!("Lock error: {}", e))?;
+    Ok(tools.list_tools())
+}

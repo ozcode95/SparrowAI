@@ -227,16 +227,16 @@ pub async fn fetch_marketplace() -> Result<SkillsMarketplace> {
     }
     
     // Fetch from GitHub
-    println!("Fetching skills from GitHub...");
+    tracing::info!("Fetching skills from GitHub...");
     let response = reqwest::get(SKILLS_JSON_URL)
         .await
         .context("Failed to fetch skills marketplace")?;
     
     let status = response.status();
-    println!("GitHub response status: {}", status);
+    tracing::info!("GitHub response status: {}", status);
     
     let text = response.text().await.context("Failed to read response text")?;
-    println!("Response length: {} bytes", text.len());
+    tracing::info!("Response length: {} bytes", text.len());
     
     // Parse the JSON with lenient error handling
     let marketplace: SkillsMarketplace = serde_json::from_str(&text)
@@ -246,7 +246,7 @@ pub async fn fetch_marketplace() -> Result<SkillsMarketplace> {
             anyhow::anyhow!("JSON parse error: {} (response preview: {})", e, &text[..text.len().min(200)])
         })?;
     
-    println!("Successfully parsed {} skills from marketplace", marketplace.skills.len());
+    tracing::info!("Successfully parsed {} skills from marketplace", marketplace.skills.len());
     
     // Save to cache
     let _ = ensure_skills_dir();
