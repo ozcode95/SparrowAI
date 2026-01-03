@@ -47,13 +47,16 @@ export const ChatPage = () => {
     setCurrentChatMessages,
     temporarySession,
     setActiveChatSessionId,
+    isStreaming,
+    currentStreamingMessage,
+    setIsStreaming,
+    appendToStreamingMessage,
+    clearStreamingMessage,
   } = useAppStore();
   const { settings } = useAppStore();
   const { downloadedModels, loadedModelsByType, setLoadedModelByType } =
     useAppStore();
   const [input, setInput] = useState("");
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [currentStreamingMessage, setCurrentStreamingMessage] = useState("");
   const [, setToolCalls] = useState<ToolCall[]>([]);
   const [, setUsageData] = useState<{
     promptTokens: number;
@@ -313,7 +316,6 @@ export const ChatPage = () => {
 
   // Listen for streaming tokens
   useEffect(() => {
-    let accumulatedMessage = "";
     let accumulatedToolCalls: ToolCall[] = [];
     let streamStartTime: number | null = null;
 
@@ -328,8 +330,11 @@ export const ChatPage = () => {
       };
     }>("chat-token", async (event) => {
       if (event.payload.finished) {
+        // Get the current message from the store (not from closure)
+        const finalMessage = useAppStore.getState().currentStreamingMessage;
+
         logDebug("Chat streaming finished", {
-          messageLength: accumulatedMessage.length,
+          messageLength: finalMessage.length,
           cancelled: event.payload.cancelled,
         });
 
@@ -357,7 +362,7 @@ export const ChatPage = () => {
         }
 
         // Save the complete assistant message to chat session
-        if (accumulatedMessage.trim()) {
+        if (finalMessage.trim()) {
           try {
             // Save to backend
             if (activeChatSessionId) {
@@ -369,7 +374,7 @@ export const ChatPage = () => {
               await invoke("add_message_to_session", {
                 sessionId: activeChatSessionId,
                 role: "assistant",
-                content: accumulatedMessage,
+                content: finalMessage,
                 tokensPerSecond: tokensPerSecond,
                 isError: false,
                 promptTokens: usageFromPayload?.promptTokens ?? null,
@@ -378,7 +383,7 @@ export const ChatPage = () => {
               });
               logInfo("Assistant message saved", {
                 sessionId: activeChatSessionId,
-                contentLength: accumulatedMessage.length,
+                contentLength: finalMessage.length,
                 cancelled: event.payload.cancelled,
               });
 
@@ -386,7 +391,7 @@ export const ChatPage = () => {
               const assistantMessage: ChatMessageType = {
                 id: crypto.randomUUID(),
                 role: "assistant",
-                content: accumulatedMessage,
+                content: finalMessage,
                 timestamp: Date.now(),
                 tokens_per_second: tokensPerSecond,
                 completion_tokens: usageFromPayload?.completionTokens,
@@ -409,11 +414,10 @@ export const ChatPage = () => {
         }
 
         // Clear streaming state
-        setCurrentStreamingMessage("");
-        setToolCalls([]);
         setIsStreaming(false);
+        clearStreamingMessage();
+        setToolCalls([]);
         setUsageData(null); // Clear usage data for next message
-        accumulatedMessage = "";
         accumulatedToolCalls = [];
         streamStartTime = null;
       } else {
@@ -422,16 +426,21 @@ export const ChatPage = () => {
           streamStartTime = Date.now();
         }
 
-        // Accumulate the token
-        accumulatedMessage += event.payload.token;
-        setCurrentStreamingMessage((prev) => prev + event.payload.token);
+        // Append token to global streaming message
+        appendToStreamingMessage(event.payload.token);
       }
     });
 
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, [activeChatSessionId, addMessageToCurrentChat]);
+  }, [
+    activeChatSessionId,
+    addMessageToCurrentChat,
+    appendToStreamingMessage,
+    clearStreamingMessage,
+    setIsStreaming,
+  ]);
 
   // Listen for tool calls
   useEffect(() => {
@@ -468,7 +477,7 @@ export const ChatPage = () => {
   useEffect(() => {
     const unlisten = listen<{ error: string }>("chat-error", (event) => {
       setIsStreaming(false);
-      setCurrentStreamingMessage("");
+      clearStreamingMessage();
       logError("Chat error occurred", new Error(event.payload.error));
 
       const errorMessage: ChatMessageType = {
@@ -483,7 +492,7 @@ export const ChatPage = () => {
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, [addMessageToCurrentChat]);
+  }, [addMessageToCurrentChat, setIsStreaming, clearStreamingMessage]);
 
   const handleSend = async () => {
     if (!input.trim() || isStreaming) return;
@@ -695,7 +704,7 @@ export const ChatPage = () => {
 
       logInfo("Chat streaming stopped", { sessionId: sessionToStop });
       setIsStreaming(false);
-      setCurrentStreamingMessage("");
+      clearStreamingMessage();
     } catch (error) {
       logError("Failed to stop streaming", error as Error);
     }

@@ -41,6 +41,10 @@ interface BuiltinTool {
   hidden_from_task_creation?: boolean;
 }
 
+interface BuiltinToolsConfig {
+  tools: Record<string, boolean>;
+}
+
 interface McpServerInfo {
   name: string;
   config: McpServerConfig;
@@ -68,6 +72,8 @@ export const McpPage = () => {
   const [isBuiltinToolsOpen, setIsBuiltinToolsOpen] = useState(false);
   const [builtinTools, setBuiltinTools] = useState<BuiltinTool[]>([]);
   const [loadingBuiltinTools, setLoadingBuiltinTools] = useState(false);
+  const [builtinToolsConfig, setBuiltinToolsConfig] =
+    useState<BuiltinToolsConfig | null>(null);
   const [isServerDetailsOpen, setIsServerDetailsOpen] = useState(false);
   const [detailsServer, setDetailsServer] = useState<McpServerInfo | null>(
     null
@@ -119,16 +125,52 @@ export const McpPage = () => {
     try {
       const tools = await invoke<BuiltinTool[]>("get_builtin_tools");
       setBuiltinTools(tools);
+
+      // Load the config to show enabled/disabled status
+      const config = await invoke<BuiltinToolsConfig>(
+        "get_builtin_tools_config"
+      );
+      setBuiltinToolsConfig(config);
+
       setIsBuiltinToolsOpen(true);
     } catch (error) {
       console.error("Failed to fetch builtin tools:", error);
       setBuiltinTools([]);
+      setBuiltinToolsConfig(null);
     } finally {
       setLoadingBuiltinTools(false);
     }
   };
 
   // auto-connect helper removed (unused) — MCP auto-connect can be triggered via settings or explicit action
+
+  const handleToggleBuiltinTool = async (
+    toolName: string,
+    enabled: boolean
+  ) => {
+    if (!builtinToolsConfig) return;
+
+    // Update local state immediately
+    setBuiltinToolsConfig({
+      ...builtinToolsConfig,
+      tools: {
+        ...builtinToolsConfig.tools,
+        [toolName]: enabled,
+      },
+    });
+
+    // Save to backend
+    try {
+      await invoke("set_builtin_tool_enabled", {
+        toolName,
+        enabled,
+      });
+    } catch (error) {
+      console.error("Failed to update builtin tool status:", error);
+      // Reload config on error
+      fetchBuiltinTools();
+    }
+  };
 
   const handleToggleAutoConnect = async (
     serverName: string,
@@ -763,23 +805,42 @@ export const McpPage = () => {
               </div>
             ) : (
               <div className="space-y-3">
-                {builtinTools.map((tool, index) => (
-                  <Card key={index} className="p-4">
-                    <div className="flex items-start gap-3">
-                      <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                        <Wrench className="w-5 h-5 text-primary" />
+                {builtinTools.map((tool, index) => {
+                  const isEnabled =
+                    builtinToolsConfig?.tools[tool.name] ?? true;
+
+                  return (
+                    <Card key={index} className="p-4">
+                      <div className="flex items-start gap-3">
+                        <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
+                          <Wrench className="w-5 h-5 text-primary" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <h3 className="font-semibold text-sm mb-1">
+                            {tool.name}
+                          </h3>
+                          <p className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap">
+                            {tool.description}
+                          </p>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                          <input
+                            type="checkbox"
+                            checked={isEnabled}
+                            onChange={(e) =>
+                              handleToggleBuiltinTool(
+                                tool.name,
+                                e.target.checked
+                              )
+                            }
+                            className="sr-only peer"
+                          />
+                          <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-accent-300 dark:peer-focus:ring-accent-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-accent-600"></div>
+                        </label>
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <h3 className="font-semibold text-sm mb-1">
-                          {tool.name}
-                        </h3>
-                        <p className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap">
-                          {tool.description}
-                        </p>
-                      </div>
-                    </div>
-                  </Card>
-                ))}
+                    </Card>
+                  );
+                })}
               </div>
             )}
           </div>

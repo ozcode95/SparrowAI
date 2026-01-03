@@ -161,10 +161,18 @@ export interface ChatSlice {
   activeChatSessionId: string | null;
   currentChatMessages: ChatMessage[];
   temporarySession: ChatSession | null;
+  // Streaming state
+  isStreaming: boolean;
+  currentStreamingMessage: string;
   setChatSessions: (sessions: Record<string, ChatSession>) => void;
   setActiveChatSessionId: (sessionId: string | null) => void;
   setCurrentChatMessages: (messages: ChatMessage[]) => void;
   setTemporarySession: (session: ChatSession | null) => void;
+  // Streaming actions
+  setIsStreaming: (isStreaming: boolean) => void;
+  setCurrentStreamingMessage: (message: string) => void;
+  appendToStreamingMessage: (token: string) => void;
+  clearStreamingMessage: () => void;
   addChatSession: (session: ChatSession) => void;
   updateChatSession: (sessionId: string, updates: Partial<ChatSession>) => void;
   removeChatSession: (sessionId: string) => void;

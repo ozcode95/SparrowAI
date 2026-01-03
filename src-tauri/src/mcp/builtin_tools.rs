@@ -124,9 +124,35 @@ impl BuiltinToolRegistry {
     }
 
     /// Convert built-in tools to OpenAI ChatCompletionTool format
+    /// Filters out disabled tools based on builtin_tools_config.json
     pub fn to_openai_tools(&self) -> Result<Vec<ChatCompletionTool>, String> {
+        // Load the tools config to check which tools are enabled
+        let tools_config = match super::builtin_tools_config::BuiltinToolsConfig::load() {
+            Ok(config) => config,
+            Err(e) => {
+                tracing::warn!("Failed to load builtin tools config: {}, using all tools", e);
+                // Return all tools if config can't be loaded
+                return self.tools.values().map(|tool| {
+                    let tool_name = format!("builtin_{}", tool.name);
+                    let function = FunctionObjectArgs::default()
+                        .name(tool_name)
+                        .description(tool.description.clone())
+                        .parameters(tool.input_schema.clone())
+                        .build()
+                        .map_err(|e| format!("Failed to build function object: {}", e))?;
+                    Ok(ChatCompletionTool { function })
+                }).collect();
+            }
+        };
         
-        self.tools.values().map(|tool| {
+        self.tools.values().filter_map(|tool| {
+            // Check if this tool is enabled in config
+            if !tools_config.is_tool_enabled(&tool.name) {
+                tracing::debug!("Skipping disabled tool: {} (enabled in config: {})", 
+                    tool.name, tools_config.is_tool_enabled(&tool.name));
+                return None;
+            }
+            
             let tool_name = format!("builtin_{}", tool.name);
             tracing::debug!("Registering builtin tool for chat: {} (hidden_from_task_creation: {})", 
                 tool_name, tool.hidden_from_task_creation);
@@ -136,9 +162,10 @@ impl BuiltinToolRegistry {
                 .description(tool.description.clone())
                 .parameters(tool.input_schema.clone())
                 .build()
-                .map_err(|e| format!("Failed to build function object: {}", e))?;
+                .map_err(|e| format!("Failed to build function object: {}", e))
+                .ok()?;
             
-            Ok(ChatCompletionTool { function })
+            Some(Ok(ChatCompletionTool { function }))
         }).collect()
     }
 

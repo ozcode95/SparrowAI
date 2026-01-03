@@ -7,6 +7,7 @@ mod log_utils;
 mod errors;
 mod paths;
 mod constants;
+mod config;
 mod models;
 mod huggingface;
 mod ovms;
@@ -18,6 +19,9 @@ mod autostart;
 mod tasks;
 mod gallery;
 mod skills;
+
+// Import builtin_tools_config for direct command access
+use mcp::builtin_tools_config;
 
 #[tauri::command]
 async fn get_default_download_path() -> Result<String, String> {
@@ -461,6 +465,12 @@ pub fn run() {
                 mcp::reload_skill_tools,
                 mcp::execute_builtin_tool,
                 mcp::get_all_available_tools,
+                config::get_app_config,
+                config::save_app_config,
+                config::update_app_config,
+                builtin_tools_config::get_builtin_tools_config,
+                builtin_tools_config::save_builtin_tools_config,
+                builtin_tools_config::set_builtin_tool_enabled,
                 autostart::enable_autostart,
                 autostart::disable_autostart,
                 autostart::is_autostart_enabled,

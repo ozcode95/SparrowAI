@@ -26,19 +26,19 @@ export const SettingsDialog: React.FC = () => {
   const { settingsDialogOpen, setSettingsDialogOpen } = useUI();
   const { settings, updateSettings, resetSettings } = useSettings();
 
-  // Load current autostart status when dialog opens
+  // Load settings from backend when dialog opens
   useEffect(() => {
     if (settingsDialogOpen) {
-      loadAutostartStatus();
+      loadSettings();
     }
   }, [settingsDialogOpen]);
 
-  const loadAutostartStatus = async () => {
+  const loadSettings = async () => {
     try {
-      const enabled = await invoke<boolean>("is_autostart_enabled");
-      updateSettings({ enableAutostart: enabled });
+      const config = await invoke<typeof settings>("get_app_config");
+      updateSettings(config);
     } catch (error) {
-      console.error("Failed to load autostart status:", error);
+      console.error("Failed to load settings:", error);
     }
   };
 
@@ -51,10 +51,14 @@ export const SettingsDialog: React.FC = () => {
         await invoke("disable_autostart");
       }
       updateSettings({ enableAutostart: checked });
+      // Save to backend config
+      await invoke("update_app_config", {
+        updates: { enable_autostart: checked },
+      });
     } catch (error) {
       console.error("Failed to toggle autostart:", error);
-      // Revert on error
-      loadAutostartStatus();
+      // Reload settings on error
+      loadSettings();
     } finally {
       setIsLoadingAutostart(false);
     }
@@ -62,6 +66,28 @@ export const SettingsDialog: React.FC = () => {
 
   const handleClose = () => {
     setSettingsDialogOpen(false);
+  };
+
+  // Helper to update both local state and backend config
+  const handleSettingChange = async (updates: Partial<typeof settings>) => {
+    updateSettings(updates);
+    try {
+      // Convert camelCase to snake_case for backend
+      const backendUpdates: any = {};
+      Object.entries(updates).forEach(([key, value]) => {
+        // Special handling for certain keys
+        let snakeKey: string;
+        if (key === "useRAG") {
+          snakeKey = "use_rag";
+        } else {
+          snakeKey = key.replace(/([A-Z])/g, "_$1").toLowerCase();
+        }
+        backendUpdates[snakeKey] = value;
+      });
+      await invoke("update_app_config", { updates: backendUpdates });
+    } catch (error) {
+      console.error("Failed to save settings:", error);
+    }
   };
 
   const tabs = [
@@ -135,7 +161,9 @@ export const SettingsDialog: React.FC = () => {
                       type="checkbox"
                       checked={settings.startMinimized}
                       onChange={(e) =>
-                        updateSettings({ startMinimized: e.target.checked })
+                        handleSettingChange({
+                          startMinimized: e.target.checked,
+                        })
                       }
                       disabled={!settings.enableAutostart}
                       className="h-4 w-4 rounded text-accent-600 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -160,7 +188,7 @@ export const SettingsDialog: React.FC = () => {
                       type="checkbox"
                       checked={settings.includeConversationHistory}
                       onChange={(e) =>
-                        updateSettings({
+                        handleSettingChange({
                           includeConversationHistory: e.target.checked,
                         })
                       }
@@ -181,7 +209,7 @@ export const SettingsDialog: React.FC = () => {
                       type="checkbox"
                       checked={settings.useRAG}
                       onChange={(e) =>
-                        updateSettings({ useRAG: e.target.checked })
+                        handleSettingChange({ useRAG: e.target.checked })
                       }
                       className="h-4 w-4 rounded text-accent-600"
                     />
@@ -201,7 +229,7 @@ export const SettingsDialog: React.FC = () => {
                   <Textarea
                     value={settings.systemPrompt}
                     onChange={(e) =>
-                      updateSettings({ systemPrompt: e.target.value })
+                      handleSettingChange({ systemPrompt: e.target.value })
                     }
                     rows={4}
                     placeholder="Enter system prompt..."
@@ -227,7 +255,7 @@ export const SettingsDialog: React.FC = () => {
                     step="0.1"
                     value={settings.temperature}
                     onChange={(e) =>
-                      updateSettings({
+                      handleSettingChange({
                         temperature: parseFloat(e.target.value),
                       })
                     }
@@ -249,7 +277,7 @@ export const SettingsDialog: React.FC = () => {
                     step="0.05"
                     value={settings.topP}
                     onChange={(e) =>
-                      updateSettings({ topP: parseFloat(e.target.value) })
+                      handleSettingChange({ topP: parseFloat(e.target.value) })
                     }
                     className="w-full"
                   />
@@ -267,7 +295,7 @@ export const SettingsDialog: React.FC = () => {
                       type="number"
                       value={settings.seed || ""}
                       onChange={(e) =>
-                        updateSettings({
+                        handleSettingChange({
                           seed: e.target.value
                             ? parseInt(e.target.value)
                             : null,
@@ -285,7 +313,7 @@ export const SettingsDialog: React.FC = () => {
                       type="number"
                       value={settings.maxTokens || ""}
                       onChange={(e) =>
-                        updateSettings({
+                        handleSettingChange({
                           maxTokens: e.target.value
                             ? parseInt(e.target.value)
                             : null,
@@ -302,10 +330,7 @@ export const SettingsDialog: React.FC = () => {
 
         <DialogFooter>
           <div className="flex justify-between w-full">
-            <Button 
-              variant="outline" 
-              onClick={resetSettings}
-            >
+            <Button variant="outline" onClick={resetSettings}>
               Reset to Defaults
             </Button>
             <Button variant="outline" onClick={handleClose}>

@@ -10,6 +10,9 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (
   activeChatSessionId: null,
   currentChatMessages: [],
   temporarySession: null,
+  // Streaming state
+  isStreaming: false,
+  currentStreamingMessage: "",
 
   setChatSessions: (sessions) => set({ chatSessions: sessions }),
   setActiveChatSessionId: (sessionId) => {
@@ -19,6 +22,17 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (
   setCurrentChatMessages: (messages) =>
     set({ currentChatMessages: Array.isArray(messages) ? messages : [] }),
   setTemporarySession: (session) => set({ temporarySession: session }),
+
+  // Streaming actions
+  setIsStreaming: (isStreaming) => set({ isStreaming }),
+  setCurrentStreamingMessage: (message) =>
+    set({ currentStreamingMessage: message }),
+  appendToStreamingMessage: (token) =>
+    set((state) => ({
+      currentStreamingMessage: state.currentStreamingMessage + token,
+    })),
+  clearStreamingMessage: () =>
+    set({ currentStreamingMessage: "", isStreaming: false }),
 
   addChatSession: (session) => {
     logStateChange("chat", "addChatSession", {
