@@ -46,6 +46,8 @@ pub struct AttachmentInfo {
     pub file_type: String,
     #[serde(default)]
     pub is_image: bool,
+    #[serde(default)]
+    pub is_video: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

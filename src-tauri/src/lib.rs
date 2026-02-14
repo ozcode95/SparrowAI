@@ -20,6 +20,7 @@ mod autostart;
 mod tasks;
 mod gallery;
 mod skills;
+mod video;
 
 // Import builtin_tools_config for direct command access
 use mcp::builtin_tools_config;
@@ -433,6 +434,9 @@ pub fn run() {
                 speech::generate_tts_for_message,
                 speech::transcribe_audio,
                 speech::translate_audio,
+                video::transcribe_video,
+                video::analyze_video_content,
+                video::query_video_for_object,
                 rag::documents::process_document,
                 rag::documents::save_temp_file,
                 rag::embeddings::create_document_embeddings,

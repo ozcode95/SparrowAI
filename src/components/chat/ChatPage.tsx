@@ -20,6 +20,7 @@ import {
   ChevronUp,
   Mic,
   Square,
+  Video,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { ChatMessage as ChatMessageType } from "@/store/types";
@@ -107,6 +108,68 @@ interface AttachmentInfo {
   file_name: string;
   file_type: string;
   is_image?: boolean;
+  is_video?: boolean;
+}
+
+interface VideoTranscriptionResult {
+  transcript: string;
+  extractedAudioPath: string;
+}
+
+interface VideoAnalysisResult {
+  answer: string;
+  framePaths: string[];
+  framesAnalyzed: number;
+  sampleIntervalSeconds: number;
+}
+
+function isVideoExtension(ext: string): boolean {
+  return ["mp4", "mov", "mkv", "avi", "webm", "m4v"].includes(
+    ext.toLowerCase(),
+  );
+}
+
+function extractObjectQueryTarget(message: string): string | null {
+  const patterns = [
+    /are\s+there\s+any\s+(.+?)\s+(?:in|on)\s+the\s+video\??/i,
+    /any\s+(.+?)\s+(?:in|on)\s+the\s+video\??/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = message.match(pattern);
+    if (match?.[1]) {
+      return match[1].trim();
+    }
+  }
+
+  return null;
+}
+
+function inferVideoAction(
+  message: string,
+):
+  | { type: "transcribe" }
+  | { type: "object_query"; objectName: string }
+  | { type: "analyze" } {
+  const trimmed = message.trim();
+  const lower = trimmed.toLowerCase();
+
+  const isTranscriptionRequest =
+    lower.includes("transcribe") ||
+    lower.includes("transcription") ||
+    lower.includes("subtitle") ||
+    lower.includes("speech to text");
+
+  if (isTranscriptionRequest) {
+    return { type: "transcribe" };
+  }
+
+  const objectName = extractObjectQueryTarget(trimmed);
+  if (objectName) {
+    return { type: "object_query", objectName };
+  }
+
+  return { type: "analyze" };
 }
 
 export const ChatPage = () => {
@@ -252,7 +315,19 @@ export const ChatPage = () => {
       // Determine allowed file extensions based on feature flags
       const allowedExtensions: string[] = [];
       if (settings.enableImageCaptioning) {
-        allowedExtensions.push("png", "jpg", "jpeg", "webp", "gif");
+        allowedExtensions.push(
+          "png",
+          "jpg",
+          "jpeg",
+          "webp",
+          "gif",
+          "mp4",
+          "mov",
+          "mkv",
+          "avi",
+          "webm",
+          "m4v",
+        );
       }
       if (settings.enableRag) {
         allowedExtensions.push("pdf", "docx", "xlsx", "xls");
@@ -269,9 +344,9 @@ export const ChatPage = () => {
           {
             name:
               settings.enableImageCaptioning && settings.enableRag
-                ? "Documents & Images"
+                ? "Documents, Images & Videos"
                 : settings.enableImageCaptioning
-                  ? "Images"
+                  ? "Images & Videos"
                   : "Documents",
             extensions: allowedExtensions,
           },
@@ -287,15 +362,18 @@ export const ChatPage = () => {
 
       for (const filePath of filePaths) {
         try {
-          // Check if file is an image
+          // Check attachment type
           const extension = filePath.split(".").pop()?.toLowerCase() || "";
           const isImage = ["png", "jpg", "jpeg", "webp", "gif"].includes(
             extension,
           );
+          const isVideo = isVideoExtension(extension);
 
-          if (isImage && settings.enableImageCaptioning) {
-            // Images don't go through RAG processing, just add directly to attachments
-            logInfo(`Added image file ${filePath} (skipping RAG processing)`);
+          if ((isImage || isVideo) && settings.enableImageCaptioning) {
+            // Images/videos don't go through RAG processing, just add directly to attachments
+            logInfo(
+              `Added ${isVideo ? "video" : "image"} file ${filePath} (skipping RAG processing)`,
+            );
             const fileName = filePath.split(/[\\/]/).pop() || filePath;
             setAttachments((prev) => [
               ...prev,
@@ -303,10 +381,11 @@ export const ChatPage = () => {
                 file_path: filePath,
                 file_name: fileName,
                 file_type: extension,
-                is_image: true,
+                is_image: isImage,
+                is_video: isVideo,
               },
             ]);
-          } else if (!isImage && settings.enableRag) {
+          } else if (!isImage && !isVideo && settings.enableRag) {
             // Process document into chunks for RAG
             const documents = await invoke<any[]>("process_document", {
               filePath,
@@ -352,6 +431,7 @@ export const ChatPage = () => {
         const isImage = ["png", "jpg", "jpeg", "webp", "gif"].includes(
           extension,
         );
+        const isVideo = isVideoExtension(extension);
         const fileName = filePath.split(/[\\/]/).pop() || filePath;
 
         return [
@@ -361,6 +441,7 @@ export const ChatPage = () => {
             file_name: fileName,
             file_type: extension,
             is_image: isImage,
+            is_video: isVideo,
           },
         ];
       }
@@ -595,20 +676,23 @@ export const ChatPage = () => {
     };
   }, [addMessageToCurrentChat, setIsStreaming, clearStreamingMessage]);
 
-  const handleSend = async (overrideMessage?: string) => {
+  const handleSendWithMessage = async (overrideMessage?: string) => {
     const messageToSend = overrideMessage || input.trim();
     if (!messageToSend || isStreaming) return;
 
-    // Check if images are attached
+    // Check if visual attachments are attached
     const hasImageAttachments = attachments.some((a) => a.is_image);
+    const hasVideoAttachments = attachments.some((a) => a.is_video);
 
-    // Check if vision model is loaded when images are attached (and feature is enabled)
+    // Check if vision model is loaded when visual attachments are attached (and feature is enabled)
     if (
-      hasImageAttachments &&
+      (hasImageAttachments || hasVideoAttachments) &&
       settings.enableImageCaptioning &&
       !loadedModelsByType["image-to-text"]
     ) {
-      alert("Please select a Vision (Image-to-Text) model to process images");
+      alert(
+        "Please select a Vision (Image-to-Text) model to process image/video attachments",
+      );
       return;
     }
 
@@ -744,6 +828,97 @@ export const ChatPage = () => {
       // Start streaming chat with all configuration
       // Use vision model if images are attached, otherwise use text model
       const hasImageAttachments = currentAttachments.some((a) => a.is_image);
+      const hasVideoAttachments = currentAttachments.some((a) => a.is_video);
+
+      // Video attachment flow: invoke backend video actions from chat input
+      if (hasVideoAttachments) {
+        const videoAttachment = currentAttachments.find((a) => a.is_video);
+        if (!videoAttachment) {
+          throw new Error("Video attachment metadata is missing");
+        }
+
+        const action = inferVideoAction(messageContent);
+
+        if (action.type === "transcribe") {
+          if (!loadedModelsByType["speech-to-text"]) {
+            throw new Error(
+              "No Speech-to-Text model selected. Please load a Speech-to-Text model to transcribe video.",
+            );
+          }
+
+          const transcription = await invoke<VideoTranscriptionResult>(
+            "transcribe_video",
+            {
+              videoFilePath: videoAttachment.file_path,
+              modelId: loadedModelsByType["speech-to-text"],
+              language: null,
+            },
+          );
+
+          const assistantContent = transcription.transcript?.trim()
+            ? transcription.transcript
+            : "No speech was detected in the attached video.";
+
+          if (sessionToUse) {
+            await invoke("add_message_to_session", {
+              sessionId: sessionToUse,
+              role: "assistant",
+              content: assistantContent,
+              tokensPerSecond: null,
+              isError: false,
+              promptTokens: null,
+              completionTokens: null,
+              totalTokens: null,
+            });
+          }
+
+          addMessageToCurrentChat({
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: assistantContent,
+            timestamp: Date.now(),
+          });
+
+          setIsStreaming(false);
+          return;
+        } else {
+          const visionModel = loadedModelsByType["image-to-text"];
+          if (!visionModel) {
+            throw new Error(
+              "No Vision (Image-to-Text) model selected. Please load a vision model for video analysis.",
+            );
+          }
+
+          const visionModelName = visionModel.startsWith("OpenVINO/")
+            ? visionModel.substring("OpenVINO/".length)
+            : visionModel;
+
+          if (action.type === "object_query") {
+            await invoke<VideoAnalysisResult>("query_video_for_object", {
+              videoFilePath: videoAttachment.file_path,
+              modelName: visionModelName,
+              objectName: action.objectName,
+              sampleIntervalSeconds: 1,
+              maxFrames: 8,
+            });
+          } else {
+            await invoke<VideoAnalysisResult>("analyze_video_content", {
+              videoFilePath: videoAttachment.file_path,
+              modelName: visionModelName,
+              query: messageContent,
+              sampleIntervalSeconds: 1,
+              maxFrames: 8,
+            });
+          }
+
+          // For visual video analysis, the backend command streams tokens through
+          // the shared chat-token events. The streaming listener handles persisting
+          // and appending the final assistant message. Avoid adding another manual
+          // message here to prevent duplicates.
+          return;
+        }
+      }
+
       const modelToUse = hasImageAttachments
         ? loadedModelsByType["image-to-text"]!
         : loadedModelsByType.text!;
@@ -779,8 +954,10 @@ export const ChatPage = () => {
         // RAG-specific parameters (only used if chatCommand is chat_with_rag_streaming)
         useRag:
           (settings.enableRag && settings.useRAG) ||
-          currentAttachments.some((a) => !a.is_image), // Use RAG if enabled OR if there are document attachments
-        ragLimit: currentAttachments.some((a) => !a.is_image) ? null : 5, // null means use only attached documents
+          currentAttachments.some((a) => !a.is_image && !a.is_video), // Use RAG if enabled OR if there are document attachments
+        ragLimit: currentAttachments.some((a) => !a.is_image && !a.is_video)
+          ? null
+          : 5, // null means use only attached documents
         // Pass full attachment objects (includes both images and documents)
         attachments: currentAttachments.length > 0 ? currentAttachments : null,
       });
@@ -790,6 +967,10 @@ export const ChatPage = () => {
       });
       setIsStreaming(false);
     }
+  };
+
+  const handleSend = async () => {
+    await handleSendWithMessage();
   };
 
   const handleKeyPress = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -878,7 +1059,7 @@ export const ChatPage = () => {
       logInfo("Audio transcribed successfully", { text: transcribedText });
 
       // Send the transcribed text as a message directly
-      await handleSend(transcribedText);
+      await handleSendWithMessage(transcribedText);
     } catch (error) {
       logError("Failed to process recorded audio", error as Error);
       alert("Failed to transcribe audio. Please try again.");
@@ -1220,8 +1401,10 @@ export const ChatPage = () => {
                       <Paperclip className="w-3 h-3" />
                       <span>
                         Attached{" "}
-                        {message.attachments.some((a) => a.is_image)
-                          ? "documents & images"
+                        {message.attachments.some(
+                          (a) => a.is_image || a.is_video,
+                        )
+                          ? "documents, images & videos"
                           : "documents"}
                         :
                       </span>
@@ -1243,6 +1426,20 @@ export const ChatPage = () => {
                               className="max-w-[200px] max-h-[200px] object-cover"
                               title={attachment.file_name}
                             />
+                          </div>
+                        ) : attachment.is_video ? (
+                          <div
+                            key={idx}
+                            className={`text-xs px-2 py-1 rounded flex items-center gap-1.5 ${
+                              message.role === "user"
+                                ? "bg-white/20"
+                                : "bg-gray-100 dark:bg-gray-800"
+                            }`}
+                          >
+                            <Video className="w-3 h-3" />
+                            <span className="max-w-[150px] truncate">
+                              {attachment.file_name}
+                            </span>
                           </div>
                         ) : (
                           <div
@@ -1428,7 +1625,7 @@ export const ChatPage = () => {
                         {isUploadingFile ? (
                           <Loader2 className="w-4 h-4 animate-spin" />
                         ) : (
-                          "Upload Image"
+                          "Upload Image/Video"
                         )}
                       </Button>
                     )}
@@ -1554,18 +1751,18 @@ export const ChatPage = () => {
                     {/* Attached count */}
                     <div className="text-xs text-gray-600 dark:text-gray-400">
                       {attachments.length > 0
-                        ? `${attachments.length} document${
+                        ? `${attachments.length} attachment${
                             attachments.length !== 1 ? "s" : ""
                           } attached`
-                        : "No documents attached"}
+                        : "No attachments selected"}
                     </div>
                   </>
                 )}
               </div>
             )}
 
-            {/* Warning for images without vision model */}
-            {attachments.some((a) => a.is_image) &&
+            {/* Warning for visual attachments without vision model */}
+            {attachments.some((a) => a.is_image || a.is_video) &&
               !loadedModelsByType["image-to-text"] && (
                 <div className="flex items-center gap-2 px-3 py-2 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg text-sm text-yellow-800 dark:text-yellow-200">
                   <svg
@@ -1583,13 +1780,13 @@ export const ChatPage = () => {
                     <line x1="12" y1="17" x2="12.01" y2="17"></line>
                   </svg>
                   <span>
-                    Image attached. Please select a Vision (Image-to-Text) model
-                    above to process images.
+                    Visual attachment detected. Please select a Vision
+                    (Image-to-Text) model above to process images/videos.
                   </span>
                 </div>
               )}
 
-            {/* Attached Documents and Images */}
+            {/* Attached Documents, Images and Videos */}
             {attachments.length > 0 && (
               <div className="flex flex-wrap gap-2 pb-3 border-b border-gray-200 dark:border-gray-700">
                 {attachments.map((attachment) => (
@@ -1604,6 +1801,13 @@ export const ChatPage = () => {
                           alt={attachment.file_name}
                           className="w-8 h-8 object-cover rounded"
                         />
+                        <span className="max-w-[200px] truncate">
+                          {attachment.file_name}
+                        </span>
+                      </>
+                    ) : attachment.is_video ? (
+                      <>
+                        <Video className="w-3.5 h-3.5" />
                         <span className="max-w-[200px] truncate">
                           {attachment.file_name}
                         </span>
@@ -1646,7 +1850,7 @@ export const ChatPage = () => {
                     disabled={isStreaming}
                     size="icon"
                     variant="outline"
-                    title="Attach Documents"
+                    title="Attach files"
                   >
                     <Paperclip className="w-5 h-5" />
                   </Button>
@@ -1710,7 +1914,7 @@ export const ChatPage = () => {
                     onClick={handleSend}
                     disabled={
                       !loadedModelsByType.text ||
-                      (attachments.some((a) => a.is_image) &&
+                      (attachments.some((a) => a.is_image || a.is_video) &&
                         !loadedModelsByType["image-to-text"])
                     }
                     size="icon"
@@ -1745,7 +1949,7 @@ export const ChatPage = () => {
                     disabled={
                       !input.trim() ||
                       !loadedModelsByType.text ||
-                      (attachments.some((a) => a.is_image) &&
+                      (attachments.some((a) => a.is_image || a.is_video) &&
                         !loadedModelsByType["image-to-text"])
                     }
                     size="icon"

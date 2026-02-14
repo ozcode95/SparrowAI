@@ -40,7 +40,7 @@ export interface UISlice {
   showNotification: (
     message: string,
     type?: NotificationType,
-    timeout?: number | null
+    timeout?: number | null,
   ) => void;
   clearNotification: () => void;
 }
@@ -92,7 +92,7 @@ export interface ModelsSlice {
   setDownloadProgress: (
     modelId: string,
     progress: number,
-    currentFile?: string
+    currentFile?: string,
   ) => void;
   getDownloadProgress: (modelId: string) => {
     progress: number;
@@ -106,7 +106,7 @@ export interface ModelsSlice {
   getLoadedModels: () => Promise<string[]>;
   setLoadedModelByType: (
     modelType: ModelCategory,
-    modelId: string | null
+    modelId: string | null,
   ) => void;
   getLoadedModelByType: (modelType: ModelCategory) => string | null;
 }
@@ -149,6 +149,7 @@ export interface ChatMessage {
     file_name: string;
     file_type: string;
     is_image?: boolean;
+    is_video?: boolean;
   }>;
   audio_path?: string;
   [key: string]: any;
@@ -213,7 +214,8 @@ export interface GeneratedImage {
 }
 
 export interface AppState
-  extends ThemeSlice,
+  extends
+    ThemeSlice,
     UISlice,
     ModelsSlice,
     SettingsSlice,
