@@ -14,6 +14,12 @@ import {
   StopCircle,
   Paperclip,
   X,
+  Copy,
+  Volume2,
+  ChevronDown,
+  ChevronUp,
+  Mic,
+  Square,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { ChatMessage as ChatMessageType } from "@/store/types";
@@ -25,6 +31,70 @@ import {
   logDebug,
   logWarn,
 } from "@/lib/logger";
+
+// Helper function to convert AudioBuffer to WAV format
+function audioBufferToWav(buffer: AudioBuffer): Promise<Blob> {
+  return new Promise((resolve) => {
+    const numberOfChannels = buffer.numberOfChannels;
+    const sampleRate = buffer.sampleRate;
+    const format = 1; // PCM
+    const bitDepth = 16;
+
+    const bytesPerSample = bitDepth / 8;
+    const blockAlign = numberOfChannels * bytesPerSample;
+
+    const data = new Float32Array(buffer.length * numberOfChannels);
+    for (let channel = 0; channel < numberOfChannels; channel++) {
+      const channelData = buffer.getChannelData(channel);
+      for (let i = 0; i < buffer.length; i++) {
+        data[i * numberOfChannels + channel] = channelData[i];
+      }
+    }
+
+    const dataLength = data.length * bytesPerSample;
+    const headerLength = 44;
+    const totalLength = headerLength + dataLength;
+
+    const arrayBuffer = new ArrayBuffer(totalLength);
+    const view = new DataView(arrayBuffer);
+
+    // RIFF chunk descriptor
+    writeString(view, 0, "RIFF");
+    view.setUint32(4, totalLength - 8, true);
+    writeString(view, 8, "WAVE");
+
+    // fmt sub-chunk
+    writeString(view, 12, "fmt ");
+    view.setUint32(16, 16, true); // fmt chunk size
+    view.setUint16(20, format, true);
+    view.setUint16(22, numberOfChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * blockAlign, true); // byte rate
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitDepth, true);
+
+    // data sub-chunk
+    writeString(view, 36, "data");
+    view.setUint32(40, dataLength, true);
+
+    // write PCM samples
+    let offset = 44;
+    for (let i = 0; i < data.length; i++) {
+      const sample = Math.max(-1, Math.min(1, data[i]));
+      const value = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+      view.setInt16(offset, value, true);
+      offset += 2;
+    }
+
+    resolve(new Blob([arrayBuffer], { type: "audio/wav" }));
+  });
+}
+
+function writeString(view: DataView, offset: number, str: string) {
+  for (let i = 0; i < str.length; i++) {
+    view.setUint8(offset + i, str.charCodeAt(i));
+  }
+}
 
 interface ToolCall {
   tool_name: string;
@@ -90,6 +160,17 @@ export const ChatPage = () => {
   const [isLoadingFiles, setIsLoadingFiles] = useState(false);
   const [isUploadingFile, setIsUploadingFile] = useState(false);
   const [fileSearchQuery, setFileSearchQuery] = useState("");
+  const [showStatsForMessage, setShowStatsForMessage] = useState<string | null>(
+    null,
+  );
+  const [generatingTTSFor, setGeneratingTTSFor] = useState<string | null>(null);
+  const [playingAudioFor, setPlayingAudioFor] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(
+    null,
+  );
+  const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -107,7 +188,7 @@ export const ChatPage = () => {
     console.log(
       "[ChatPage] downloadedModels changed:",
       downloadedModels.size,
-      Array.from(downloadedModels)
+      Array.from(downloadedModels),
     );
 
     const categorized: {
@@ -135,6 +216,16 @@ export const ChatPage = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [currentChatMessages, currentStreamingMessage]);
 
+  // Clean up audio on unmount
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+    };
+  }, []);
+
   const loadAvailableFiles = async () => {
     setIsLoadingFiles(true);
     try {
@@ -157,7 +248,7 @@ export const ChatPage = () => {
   const handleFileUpload = async () => {
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
-      
+
       // Determine allowed file extensions based on feature flags
       const allowedExtensions: string[] = [];
       if (settings.enableImageCaptioning) {
@@ -166,21 +257,22 @@ export const ChatPage = () => {
       if (settings.enableRag) {
         allowedExtensions.push("pdf", "docx", "xlsx", "xls");
       }
-      
+
       // If no features enabled, don't open dialog
       if (allowedExtensions.length === 0) {
         return;
       }
-      
+
       const selected = await open({
         multiple: true,
         filters: [
           {
-            name: settings.enableImageCaptioning && settings.enableRag 
-              ? "Documents & Images" 
-              : settings.enableImageCaptioning 
-                ? "Images" 
-                : "Documents",
+            name:
+              settings.enableImageCaptioning && settings.enableRag
+                ? "Documents & Images"
+                : settings.enableImageCaptioning
+                  ? "Images"
+                  : "Documents",
             extensions: allowedExtensions,
           },
         ],
@@ -198,7 +290,7 @@ export const ChatPage = () => {
           // Check if file is an image
           const extension = filePath.split(".").pop()?.toLowerCase() || "";
           const isImage = ["png", "jpg", "jpeg", "webp", "gif"].includes(
-            extension
+            extension,
           );
 
           if (isImage && settings.enableImageCaptioning) {
@@ -221,7 +313,7 @@ export const ChatPage = () => {
             });
             const embeddedDocs = await invoke<any[]>(
               "create_document_embeddings",
-              { documents }
+              { documents },
             );
             await invoke("store_documents", { documents: embeddedDocs });
             logInfo(`Successfully processed and stored ${filePath}`);
@@ -258,7 +350,7 @@ export const ChatPage = () => {
         // Add it
         const extension = filePath.split(".").pop()?.toLowerCase() || "";
         const isImage = ["png", "jpg", "jpeg", "webp", "gif"].includes(
-          extension
+          extension,
         );
         const fileName = filePath.split(/[\\/]/).pop() || filePath;
 
@@ -503,14 +595,19 @@ export const ChatPage = () => {
     };
   }, [addMessageToCurrentChat, setIsStreaming, clearStreamingMessage]);
 
-  const handleSend = async () => {
-    if (!input.trim() || isStreaming) return;
+  const handleSend = async (overrideMessage?: string) => {
+    const messageToSend = overrideMessage || input.trim();
+    if (!messageToSend || isStreaming) return;
 
     // Check if images are attached
     const hasImageAttachments = attachments.some((a) => a.is_image);
 
     // Check if vision model is loaded when images are attached (and feature is enabled)
-    if (hasImageAttachments && settings.enableImageCaptioning && !loadedModelsByType["image-to-text"]) {
+    if (
+      hasImageAttachments &&
+      settings.enableImageCaptioning &&
+      !loadedModelsByType["image-to-text"]
+    ) {
       alert("Please select a Vision (Image-to-Text) model to process images");
       return;
     }
@@ -525,7 +622,7 @@ export const ChatPage = () => {
     const userMessage: ChatMessageType = {
       id: crypto.randomUUID(),
       role: "user",
-      content: input.trim(),
+      content: messageToSend,
       timestamp: Date.now(),
       attachments:
         currentAttachments.length > 0 ? currentAttachments : undefined,
@@ -534,7 +631,7 @@ export const ChatPage = () => {
     // Add user message to UI immediately
     addMessageToCurrentChat(userMessage);
 
-    const messageContent = input.trim();
+    const messageContent = messageToSend;
     setInput("");
     setAttachments([]); // Clear attachments after sending
     setIsStreaming(true);
@@ -657,9 +754,10 @@ export const ChatPage = () => {
         : modelToUse;
 
       // Choose the appropriate chat function based on RAG setting
-      const chatCommand = (settings.enableRag && settings.useRAG)
-        ? "chat_with_rag_streaming"
-        : "chat_with_loaded_model_streaming";
+      const chatCommand =
+        settings.enableRag && settings.useRAG
+          ? "chat_with_rag_streaming"
+          : "chat_with_loaded_model_streaming";
 
       logDebug(`Using chat command: ${chatCommand}`, {
         useRAG: settings.useRAG,
@@ -679,7 +777,9 @@ export const ChatPage = () => {
         maxTokens: effectiveMaxTokens,
         maxCompletionTokens: settings.maxCompletionTokens,
         // RAG-specific parameters (only used if chatCommand is chat_with_rag_streaming)
-        useRag: (settings.enableRag && settings.useRAG) || currentAttachments.some((a) => !a.is_image), // Use RAG if enabled OR if there are document attachments
+        useRag:
+          (settings.enableRag && settings.useRAG) ||
+          currentAttachments.some((a) => !a.is_image), // Use RAG if enabled OR if there are document attachments
         ragLimit: currentAttachments.some((a) => !a.is_image) ? null : 5, // null means use only attached documents
         // Pass full attachment objects (includes both images and documents)
         attachments: currentAttachments.length > 0 ? currentAttachments : null,
@@ -696,6 +796,92 @@ export const ChatPage = () => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
+    }
+  };
+
+  const handleStartRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream, {
+        mimeType: "audio/webm",
+      });
+
+      const chunks: Blob[] = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          chunks.push(e.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        const audioBlob = new Blob(chunks, { type: "audio/webm" });
+        await handleAudioRecorded(audioBlob);
+
+        // Stop all tracks
+        stream.getTracks().forEach((track) => track.stop());
+      };
+
+      recorder.start();
+      setMediaRecorder(recorder);
+      setAudioChunks(chunks);
+      setIsRecording(true);
+      logInfo("Started audio recording");
+    } catch (error) {
+      logError("Failed to start recording", error as Error);
+      alert("Failed to access microphone. Please check permissions.");
+    }
+  };
+
+  const handleStopRecording = () => {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+      mediaRecorder.stop();
+      setIsRecording(false);
+      logInfo("Stopped audio recording");
+    }
+  };
+
+  const handleAudioRecorded = async (audioBlob: Blob) => {
+    try {
+      // Convert WebM to WAV using Web Audio API
+      const arrayBuffer = await audioBlob.arrayBuffer();
+      const audioContext = new AudioContext();
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+      // Convert to WAV format
+      const wavBlob = await audioBufferToWav(audioBuffer);
+      const wavArrayBuffer = await wavBlob.arrayBuffer();
+      const uint8Array = new Uint8Array(wavArrayBuffer);
+
+      // Save to temporary file
+      const tempFileName = `recording_${Date.now()}.wav`;
+      const tempFilePath = await invoke<string>("save_temp_file", {
+        fileName: tempFileName,
+        fileData: Array.from(uint8Array),
+      });
+
+      logInfo("Audio saved to temporary file", { path: tempFilePath });
+
+      // Get the loaded STT model
+      const sttModel = loadedModelsByType["speech-to-text"];
+      if (!sttModel) {
+        throw new Error("No STT model loaded");
+      }
+
+      // Transcribe the audio
+      const transcribedText = await invoke<string>("transcribe_audio", {
+        audioFilePath: tempFilePath,
+        modelId: sttModel,
+        language: "en", // Optional: can be made configurable
+      });
+
+      logInfo("Audio transcribed successfully", { text: transcribedText });
+
+      // Send the transcribed text as a message directly
+      await handleSend(transcribedText);
+    } catch (error) {
+      logError("Failed to process recorded audio", error as Error);
+      alert("Failed to transcribe audio. Please try again.");
     }
   };
 
@@ -722,7 +908,7 @@ export const ChatPage = () => {
 
   const handleLoadModel = async (
     modelId: string,
-    modelType: "text" | "image-to-text"
+    modelType: "text" | "image-to-text",
   ) => {
     setIsLoadingModel((prev) => ({ ...prev, [modelType]: true }));
     try {
@@ -737,6 +923,86 @@ export const ChatPage = () => {
       alert(`Failed to load model: ${error}`);
     } finally {
       setIsLoadingModel((prev) => ({ ...prev, [modelType]: false }));
+    }
+  };
+
+  // Helper function to strip XML tags from content for copying/TTS
+  const stripXmlTags = (content: string): string => {
+    return content
+      .replace(/<tool_call>.*?<\/tool_call>/gs, "")
+      .replace(/<tool_response>.*?<\/tool_response>/gs, "")
+      .replace(/<think>.*?<\/think>/gs, "")
+      .trim();
+  };
+
+  // Copy message to clipboard
+  const handleCopyMessage = async (content: string) => {
+    try {
+      const cleanContent = stripXmlTags(content);
+      await navigator.clipboard.writeText(cleanContent);
+      logUserAction("Copy message to clipboard");
+    } catch (error) {
+      logError("Failed to copy message", error as Error);
+    }
+  };
+
+  // Generate and play TTS for message
+  const handleTTS = async (messageId: string, content: string) => {
+    try {
+      const sessionId = activeChatSessionId || "temp";
+      const cleanContent = stripXmlTags(content);
+
+      if (!cleanContent) {
+        logWarn("No content to convert to speech");
+        return;
+      }
+
+      setGeneratingTTSFor(messageId);
+      logUserAction("Generate TTS for message", { messageId });
+
+      // Get the loaded TTS model (will be null since TTS is disabled)
+      const ttsModel = loadedModelsByType["text-to-speech"];
+      if (!ttsModel) {
+        throw new Error("No TTS model loaded");
+      }
+
+      const audioPath = await invoke<string>("generate_tts_for_message", {
+        sessionId,
+        messageId,
+        text: cleanContent,
+        modelId: ttsModel,
+      });
+
+      logInfo("TTS audio generated", { audioPath });
+
+      // Stop any currently playing audio
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+
+      // Play the audio
+      const audio = new Audio(convertFileSrc(audioPath));
+      audioRef.current = audio;
+      setPlayingAudioFor(messageId);
+
+      audio.onended = () => {
+        setPlayingAudioFor(null);
+        audioRef.current = null;
+      };
+
+      audio.onerror = () => {
+        logError("Failed to play audio", new Error("Audio playback error"));
+        setPlayingAudioFor(null);
+        audioRef.current = null;
+      };
+
+      await audio.play();
+    } catch (error) {
+      logError("Failed to generate TTS", error as Error, { messageId });
+      alert(`Failed to generate speech: ${error}`);
+    } finally {
+      setGeneratingTTSFor(null);
     }
   };
 
@@ -851,21 +1117,89 @@ export const ChatPage = () => {
                 {message.role === "assistant" ? (
                   <>
                     <MessageContent content={message.content} />
-                    {/* Display tokens per second and usage info */}
-                    {(message.tokens_per_second || message.total_tokens) && (
-                      <div className="mt-3 pt-2 border-t border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400 flex items-center gap-4">
-                        {message.tokens_per_second && (
-                          <span className="font-mono">
-                            ⚡ {message.tokens_per_second.toFixed(2)} tokens/s
-                          </span>
+                    {/* Action buttons and stats for assistant messages */}
+                    <div className="mt-3 pt-2 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between gap-2">
+                      {/* Action buttons on the left */}
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => handleCopyMessage(message.content)}
+                          className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 flex items-center gap-1 px-2 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                          title="Copy message"
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Copy</span>
+                        </button>
+                        {settings.enableTextToSpeech && (
+                          <button
+                            onClick={() =>
+                              handleTTS(message.id, message.content)
+                            }
+                            disabled={generatingTTSFor === message.id}
+                            className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 flex items-center gap-1 px-2 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Text to speech"
+                          >
+                            <Volume2
+                              className={`w-3.5 h-3.5 ${
+                                playingAudioFor === message.id
+                                  ? "animate-pulse"
+                                  : ""
+                              }`}
+                            />
+                            <span>
+                              {generatingTTSFor === message.id
+                                ? "Generating..."
+                                : playingAudioFor === message.id
+                                  ? "Playing..."
+                                  : "Voice"}
+                            </span>
+                          </button>
                         )}
-                        {message.total_tokens && (
-                          <span className="font-mono">
-                            📊 {message.completion_tokens || 0} tokens
-                          </span>
+                        {/* Stats toggle button */}
+                        {(message.tokens_per_second ||
+                          message.total_tokens) && (
+                          <button
+                            onClick={() =>
+                              setShowStatsForMessage(
+                                showStatsForMessage === message.id
+                                  ? null
+                                  : message.id,
+                              )
+                            }
+                            className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 flex items-center gap-1 px-2 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                            title="Show statistics"
+                          >
+                            {showStatsForMessage === message.id ? (
+                              <ChevronUp className="w-3.5 h-3.5" />
+                            ) : (
+                              <ChevronDown className="w-3.5 h-3.5" />
+                            )}
+                            <span>Stats</span>
+                          </button>
                         )}
                       </div>
-                    )}
+                    </div>
+                    {/* Collapsible stats */}
+                    {showStatsForMessage === message.id &&
+                      (message.tokens_per_second || message.total_tokens) && (
+                        <div className="mt-2 text-xs text-gray-500 dark:text-gray-400 flex items-center gap-4 font-mono bg-gray-50 dark:bg-gray-800/50 rounded p-2">
+                          {message.tokens_per_second && (
+                            <span>
+                              ⚡ {message.tokens_per_second.toFixed(2)} tokens/s
+                            </span>
+                          )}
+                          {message.total_tokens && (
+                            <>
+                              <span>
+                                📊 {message.completion_tokens || 0} tokens
+                              </span>
+                              <span>
+                                📝 {message.prompt_tokens || 0} prompt
+                              </span>
+                              <span>∑ {message.total_tokens} total</span>
+                            </>
+                          )}
+                        </div>
+                      )}
                   </>
                 ) : (
                   <div className="prose prose-sm max-w-none dark:prose-invert">
@@ -924,7 +1258,7 @@ export const ChatPage = () => {
                               {attachment.file_name}
                             </span>
                           </div>
-                        )
+                        ),
                       )}
                     </div>
                   </div>
@@ -1014,7 +1348,7 @@ export const ChatPage = () => {
                     value={
                       localTemperature !== null
                         ? localTemperature
-                        : settings.temperature ?? ""
+                        : (settings.temperature ?? "")
                     }
                     onChange={(e) =>
                       setLocalTemperature(parseFloat(e.target.value))
@@ -1032,7 +1366,9 @@ export const ChatPage = () => {
                     min="0"
                     max="1"
                     step="0.1"
-                    value={localTopP !== null ? localTopP : settings.topP ?? ""}
+                    value={
+                      localTopP !== null ? localTopP : (settings.topP ?? "")
+                    }
                     onChange={(e) => setLocalTopP(parseFloat(e.target.value))}
                     disabled={isStreaming}
                     className="px-2 py-1 border rounded text-sm w-20 bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600"
@@ -1050,7 +1386,7 @@ export const ChatPage = () => {
                     value={
                       localMaxTokens !== null
                         ? localMaxTokens
-                        : settings.maxTokens ?? ""
+                        : (settings.maxTokens ?? "")
                     }
                     onChange={(e) =>
                       setLocalMaxTokens(parseInt(e.target.value))
@@ -1156,7 +1492,7 @@ export const ChatPage = () => {
                       ) : availableFiles.filter((f) =>
                           f.file_name
                             .toLowerCase()
-                            .includes(fileSearchQuery.toLowerCase())
+                            .includes(fileSearchQuery.toLowerCase()),
                         ).length === 0 ? (
                         <div className="p-4 text-center text-sm text-gray-500 dark:text-gray-400">
                           {fileSearchQuery
@@ -1169,11 +1505,11 @@ export const ChatPage = () => {
                             .filter((f) =>
                               f.file_name
                                 .toLowerCase()
-                                .includes(fileSearchQuery.toLowerCase())
+                                .includes(fileSearchQuery.toLowerCase()),
                             )
                             .map((file) => {
                               const isAttached = attachments.some(
-                                (a) => a.file_path === file.file_path
+                                (a) => a.file_path === file.file_path,
                               );
                               return (
                                 <div
@@ -1284,8 +1620,8 @@ export const ChatPage = () => {
                       onClick={() =>
                         setAttachments((prev) =>
                           prev.filter(
-                            (a) => a.file_path !== attachment.file_path
-                          )
+                            (a) => a.file_path !== attachment.file_path,
+                          ),
                         )
                       }
                       disabled={isStreaming}
@@ -1369,6 +1705,40 @@ export const ChatPage = () => {
                   >
                     <StopCircle className="w-5 h-5" />
                   </Button>
+                ) : input.trim() ? (
+                  <Button
+                    onClick={handleSend}
+                    disabled={
+                      !loadedModelsByType.text ||
+                      (attachments.some((a) => a.is_image) &&
+                        !loadedModelsByType["image-to-text"])
+                    }
+                    size="icon"
+                    title="Send message"
+                  >
+                    <Send className="w-5 h-5" />
+                  </Button>
+                ) : isRecording ? (
+                  <Button
+                    onClick={handleStopRecording}
+                    variant="destructive"
+                    size="icon"
+                    title="Stop recording"
+                    className="animate-pulse"
+                  >
+                    <Square className="w-5 h-5" />
+                  </Button>
+                ) : settings.enableSpeechToText &&
+                  loadedModelsByType["speech-to-text"] ? (
+                  <Button
+                    onClick={handleStartRecording}
+                    disabled={!loadedModelsByType.text}
+                    size="icon"
+                    variant="outline"
+                    title="Record audio message"
+                  >
+                    <Mic className="w-5 h-5" />
+                  </Button>
                 ) : (
                   <Button
                     onClick={handleSend}
@@ -1379,6 +1749,7 @@ export const ChatPage = () => {
                         !loadedModelsByType["image-to-text"])
                     }
                     size="icon"
+                    title="Send message"
                   >
                     <Send className="w-5 h-5" />
                   </Button>

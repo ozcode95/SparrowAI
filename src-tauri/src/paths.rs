@@ -94,6 +94,13 @@ pub fn get_images_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// Get the audio directory path
+pub fn get_audio_dir() -> Result<PathBuf> {
+    let dir = get_sparrow_dir()?.join("audio");
+    ensure_dir_exists(&dir)?;
+    Ok(dir)
+}
+
 /// Get the OpenVINO model path for a specific model
 #[allow(dead_code)]
 pub fn get_openvino_model_path(model_name: &str) -> Result<PathBuf> {

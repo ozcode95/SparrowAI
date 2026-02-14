@@ -150,6 +150,7 @@ export interface ChatMessage {
     file_type: string;
     is_image?: boolean;
   }>;
+  audio_path?: string;
   [key: string]: any;
 }
 

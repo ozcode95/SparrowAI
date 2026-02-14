@@ -249,7 +249,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
               )}
               onClick={createNewChat}
               disabled={isStreaming}
-              title={isStreaming ? "Please wait for the current response to finish" : "Start a new chat"}
+              title={
+                isStreaming
+                  ? "Please wait for the current response to finish"
+                  : "Start a new chat"
+              }
             >
               <Plus className="h-5 w-5" />
               {!isCollapsed && <span className="ml-2">New Chat</span>}

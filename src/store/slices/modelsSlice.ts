@@ -153,6 +153,10 @@ export const createModelsSlice: StateCreator<AppState, [], [], ModelsSlice> = (
               modelType === "image-generation"
             ) {
               loadedByType["image-gen"] = modelIdToStore;
+            } else if (modelType === "speech-to-text" || modelType === "stt") {
+              loadedByType["speech-to-text"] = modelIdToStore;
+            } else if (modelType === "text-to-speech" || modelType === "tts") {
+              loadedByType["text-to-speech"] = modelIdToStore;
             }
           }
         });

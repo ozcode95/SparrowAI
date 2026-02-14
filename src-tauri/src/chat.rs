@@ -60,6 +60,7 @@ pub struct ChatMessage {
     pub completion_tokens: Option<u32>,
     pub total_tokens: Option<u32>,
     pub attachments: Option<Vec<AttachmentInfo>>,
+    pub audio_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,11 +88,11 @@ impl Default for ChatSessionsStorage {
     }
 }
 
-fn get_chat_sessions_path() -> Result<PathBuf, String> {
+pub fn get_chat_sessions_path() -> Result<PathBuf, String> {
     paths::get_chat_sessions_path().map_err(|e| e.to_string())
 }
 
-fn load_chat_sessions() -> Result<ChatSessionsStorage, String> {
+pub fn load_chat_sessions() -> Result<ChatSessionsStorage, String> {
     debug!("Loading chat sessions");
     let path = get_chat_sessions_path()?;
     
@@ -135,7 +136,7 @@ fn load_chat_sessions() -> Result<ChatSessionsStorage, String> {
     result
 }
 
-fn save_chat_sessions(storage: &ChatSessionsStorage) -> Result<(), String> {
+pub fn save_chat_sessions(storage: &ChatSessionsStorage) -> Result<(), String> {
     debug!(session_count = storage.sessions.len(), "Saving chat sessions");
     let path = get_chat_sessions_path()?;
 
@@ -203,6 +204,7 @@ fn generate_chat_title(content: &str) -> String {
 }
 
 // Helper function to determine if model should use modern tool format
+#[allow(unused_variables)]
 fn should_use_modern_tool_format(model_name: &str) -> bool {
     // let model_lower = model_name.to_lowercase();
     // model_lower.contains("qwen3") ||
@@ -1060,6 +1062,7 @@ pub async fn add_message_to_session(
         completion_tokens,
         total_tokens,
         attachments,
+        audio_path: None,
     };
 
     session.messages.push(message.clone());
@@ -1133,6 +1136,7 @@ pub async fn add_message_to_temporary_session(
         completion_tokens,
         total_tokens,
         attachments,
+        audio_path: None,
     };
 
     session.messages.push(message.clone());

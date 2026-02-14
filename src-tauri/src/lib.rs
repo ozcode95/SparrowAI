@@ -12,6 +12,7 @@ mod models;
 mod huggingface;
 mod ovms;
 mod chat;
+mod speech;
 mod rag;
 mod mcp;
 mod logging;
@@ -429,6 +430,9 @@ pub fn run() {
                 chat::get_conversation_history,
                 chat::stop_chat_streaming,
                 chat::chat_with_rag_streaming,
+                speech::generate_tts_for_message,
+                speech::transcribe_audio,
+                speech::translate_audio,
                 rag::documents::process_document,
                 rag::documents::save_temp_file,
                 rag::embeddings::create_document_embeddings,
