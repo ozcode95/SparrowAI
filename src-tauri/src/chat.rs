@@ -48,6 +48,8 @@ pub struct AttachmentInfo {
     pub is_image: bool,
     #[serde(default)]
     pub is_video: bool,
+    #[serde(default)]
+    pub is_audio: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,7 +224,9 @@ fn should_use_modern_tool_format(model_name: &str) -> bool {
 async fn build_system_message(
     app: AppHandle,
     system_prompt: Option<String>,
-    use_modern_format: bool
+    use_modern_format: bool,
+    attachments: Option<&Vec<AttachmentInfo>>,
+    loaded_models: Option<Vec<String>>
 ) -> Result<(String, Vec<ChatCompletionTool>), String> {
     // Get MCP tools
     let mcp_tools = match mcp::get_all_mcp_tools_for_chat(app.clone()).await {
@@ -241,7 +245,7 @@ async fn build_system_message(
         }
     };
 
-    let base_system_message = system_prompt.unwrap_or_else(|| {
+    let mut base_system_message = system_prompt.unwrap_or_else(|| {
         "You are a helpful AI assistant with access to various functions/tools.
 
         Tool Usage Guidelines:
@@ -253,6 +257,33 @@ async fn build_system_message(
         
         When a tool would be helpful, use it. Otherwise, respond conversationally.".to_string()
     });
+
+    // Add attachment information if present
+    if let Some(attachments_list) = attachments {
+        if !attachments_list.is_empty() {
+            base_system_message.push_str("\n\n# Attached Files\n\nThe user has attached the following files:\n");
+            for att in attachments_list {
+                base_system_message.push_str(&format!(
+                    "- {} (type: {}, full path: {})\n",
+                    att.file_name,
+                    if att.is_image { "image" } else if att.is_video { "video" } else if att.is_audio { "audio" } else { "file" },
+                    att.file_path
+                ));
+            }
+            base_system_message.push_str("\nIMPORTANT: When using tools that require file paths (e.g., transcribe_file), you MUST use the FULL PATH shown above, not just the filename.\n");
+        }
+    }
+
+    // Add loaded models information if present
+    if let Some(models) = loaded_models {
+        if !models.is_empty() {
+            base_system_message.push_str("\n\n# Loaded Models\n\nThe following models are currently loaded and available:\n");
+            for model in &models {
+                base_system_message.push_str(&format!("- {}\n", model));
+            }
+            base_system_message.push_str("\nIMPORTANT: When using tools that require a model_id (e.g., transcribe_file), you MUST use one of the loaded models listed above. For transcription, look for models with 'whisper' in the name.\n");
+        }
+    }
 
     if use_modern_format {
         // Modern format: tools go in the request, minimal system message
@@ -413,15 +444,19 @@ fn build_user_message_content(
     attachments: Option<Vec<AttachmentInfo>>
 ) -> Result<ChatCompletionRequestUserMessageContent, String> {
     if let Some(ref attachment_list) = attachments {
-        let image_attachments: Vec<&AttachmentInfo> = attachment_list
-            .iter()
-            .filter(|a| a.is_image)
-            .collect();
-
-        if !image_attachments.is_empty() {
+        // Check if there are any attachments that need multimodal handling
+        if !attachment_list.is_empty() {
+            let image_count = attachment_list.iter().filter(|a| a.is_image).count();
+            let audio_count = attachment_list.iter().filter(|a| a.is_audio).count();
+            let video_count = attachment_list.iter().filter(|a| a.is_video).count();
+            let file_count = attachment_list.iter().filter(|a| !a.is_image && !a.is_audio && !a.is_video).count();
+            
             tracing::debug!(
-                image_count = image_attachments.len(),
-                "Building multimodal message with images"
+                image_count = image_count,
+                audio_count = audio_count,
+                video_count = video_count,
+                file_count = file_count,
+                "Building multimodal message with attachments"
             );
 
             let mut content_parts: Vec<ChatCompletionRequestUserMessageContentPart> = vec![
@@ -430,43 +465,96 @@ fn build_user_message_content(
                 }.into()
             ];
 
-            for img_attachment in image_attachments {
-                match fs::read(&img_attachment.file_path) {
-                    Ok(image_data) => {
-                        let base64_data = base64::engine::general_purpose::STANDARD.encode(&image_data);
-                        
-                        let mime_type = match img_attachment.file_type.to_lowercase().as_str() {
-                            "png" => "image/png",
-                            "jpg" | "jpeg" => "image/jpeg",
-                            "gif" => "image/gif",
-                            "webp" => "image/webp",
-                            _ => "image/jpeg",
-                        };
-                        
-                        let data_url = format!("data:{};base64,{}", mime_type, base64_data);
-                        
-                        tracing::debug!(
-                            file_name = %img_attachment.file_name,
-                            data_url_length = data_url.len(),
-                            "Added image to message"
-                        );
+            // Process all attachments
+            for attachment in attachment_list {
+                if attachment.is_image {
+                    // Handle image attachments
+                    match fs::read(&attachment.file_path) {
+                        Ok(image_data) => {
+                            let base64_data = base64::engine::general_purpose::STANDARD.encode(&image_data);
+                            
+                            let mime_type = match attachment.file_type.to_lowercase().as_str() {
+                                "png" => "image/png",
+                                "jpg" | "jpeg" => "image/jpeg",
+                                "gif" => "image/gif",
+                                "webp" => "image/webp",
+                                _ => "image/jpeg",
+                            };
+                            
+                            let data_url = format!("data:{};base64,{}", mime_type, base64_data);
+                            
+                            tracing::debug!(
+                                file_name = %attachment.file_name,
+                                data_url_length = data_url.len(),
+                                "Added image to message"
+                            );
 
-                        content_parts.push(
-                            ChatCompletionRequestMessageContentPartImage {
-                                image_url: ImageUrl {
-                                    url: data_url,
-                                    detail: Some(ImageDetail::Auto),
-                                }
-                            }.into()
-                        );
+                            content_parts.push(
+                                ChatCompletionRequestMessageContentPartImage {
+                                    image_url: ImageUrl {
+                                        url: data_url,
+                                        detail: Some(ImageDetail::Auto),
+                                    }
+                                }.into()
+                            );
+                        }
+                        Err(e) => {
+                            log_warning!(
+                                "Failed to read image file",
+                                error = %e,
+                                file_path = %attachment.file_path
+                            );
+                        }
                     }
-                    Err(e) => {
-                        log_warning!(
-                            "Failed to read image file",
-                            error = %e,
-                            file_path = %img_attachment.file_path
-                        );
-                    }
+                } else if attachment.is_audio {
+                    // Handle audio attachments
+                    // Note: ChatCompletionRequestMessageContentPartAudio is not available in current async-openai version
+                    // For now, we'll add a text description as a workaround
+                    tracing::warn!(
+                        file_name = %attachment.file_name,
+                        "Audio attachment detected but direct audio support not available in current API version"
+                    );
+                    
+                    // Add a note about the audio file in the text
+                    let audio_note = format!("\n[Audio file attached: {}]", attachment.file_name);
+                    content_parts.push(
+                        ChatCompletionRequestMessageContentPartText {
+                            text: audio_note,
+                        }.into()
+                    );
+                } else if attachment.is_video {
+                    // Handle video attachments as file notes
+                    // Note: ChatCompletionRequestMessageContentPartFile is not available in current async-openai version
+                    // For now, we'll add a text description as a workaround
+                    tracing::warn!(
+                        file_name = %attachment.file_name,
+                        "Video attachment detected but direct file support not available in current API version"
+                    );
+                    
+                    // Add a note about the video file in the text
+                    let video_note = format!("\n[Video file attached: {}]", attachment.file_name);
+                    content_parts.push(
+                        ChatCompletionRequestMessageContentPartText {
+                            text: video_note,
+                        }.into()
+                    );
+                } else {
+                    // Handle other file attachments
+                    // Note: ChatCompletionRequestMessageContentPartFile is not available in current async-openai version
+                    // For now, we'll add a text description as a workaround
+                    tracing::warn!(
+                        file_name = %attachment.file_name,
+                        file_type = %attachment.file_type,
+                        "File attachment detected but direct file support not available in current API version"
+                    );
+                    
+                    // Add a note about the file in the text
+                    let file_note = format!("\n[File attached: {} (type: {})]", attachment.file_name, attachment.file_type);
+                    content_parts.push(
+                        ChatCompletionRequestMessageContentPartText {
+                            text: file_note,
+                        }.into()
+                    );
                 }
             }
 
@@ -1231,11 +1319,16 @@ pub async fn chat_with_loaded_model_streaming(
         "Determined tool format"
     );
 
+    // Get loaded models to provide context
+    let loaded_models = crate::ovms::get_loaded_models(app.clone()).await.ok();
+
     // Build system message and get tools
     let (system_message, tools) = build_system_message(
         app.clone(),
         system_prompt,
-        use_modern_format
+        use_modern_format,
+        attachments.as_ref(),
+        loaded_models
     ).await?;
 
     // Build messages array

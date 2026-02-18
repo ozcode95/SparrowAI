@@ -23,13 +23,6 @@ pub const OVMS_DOWNLOAD_URL: &str =
 /// OVMS zip file name
 pub const OVMS_ZIP_FILE: &str = "ovms_windows_python_off.zip";
 
-/// FFmpeg portable build download URL (Windows)
-pub const FFMPEG_WINDOWS_DOWNLOAD_URL: &str =
-    "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
-
-/// FFmpeg executable name
-pub const FFMPEG_EXE_NAME: &str = "ffmpeg.exe";
-
 /// OVMS executable name
 pub const OVMS_EXE_NAME: &str = "ovms.exe";
 

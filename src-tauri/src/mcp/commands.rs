@@ -419,24 +419,14 @@ pub async fn call_mcp_tool(
             None => Value::Object(serde_json::Map::new()),
         };
         
-        // Extract what we need before releasing the lock
-        let maybe_skill = {
-            let builtin_tools = BUILTIN_TOOLS.lock().map_err(|e| format!("Lock error: {}", e))?;
-            builtin_tools.get_skill_if_skill_tool(actual_tool_name)
-        };
-        
-        // Execute built-in tool outside the lock
-        let result = if let Some(skill) = maybe_skill {
-            super::builtin_tools::execute_skill_tool(&skill, args_value).await?
-        } else {
-            // For non-skill tools, we need to execute synchronously
-            match actual_tool_name {
-                "get_system_info" => super::builtin_tools::execute_get_system_info().await?,
-                "get_current_time" => super::builtin_tools::execute_get_current_time(args_value).await?,
-                "list_directory" => super::builtin_tools::execute_list_directory(args_value).await?,
-                "create_task" => super::builtin_tools::execute_create_task(args_value).await?,
-                _ => return Err(format!("Unknown builtin tool: {}", actual_tool_name)),
-            }
+        // Execute built-in tool
+        let result = match actual_tool_name {
+            "get_system_info" => super::builtin_tools::execute_get_system_info().await?,
+            "get_current_time" => super::builtin_tools::execute_get_current_time(args_value).await?,
+            "list_directory" => super::builtin_tools::execute_list_directory(args_value).await?,
+            "transcribe_file" => super::builtin_tools::execute_transcribe_file(args_value).await?,
+            "create_task" => super::builtin_tools::execute_create_task(args_value).await?,
+            _ => return Err(format!("Unknown builtin tool: {}", actual_tool_name)),
         };
         
         // Extract text from ToolResult
@@ -607,11 +597,11 @@ pub async fn get_builtin_tools() -> Result<Vec<BuiltinTool>, String> {
 }
 
 /// Reload skill tools after installing/uninstalling skills
+/// Note: Skills are now handled by the skillz MCP server
 #[tauri::command]
 pub async fn reload_skill_tools() -> Result<String, String> {
-    let mut builtin_tools = BUILTIN_TOOLS.lock().map_err(|e| format!("Lock error: {}", e))?;
-    builtin_tools.reload_skill_tools();
-    Ok("Skill tools reloaded successfully".to_string())
+    // Skills are managed by the skillz MCP server, no action needed
+    Ok("Skills are managed by the skillz MCP server".to_string())
 }
 
 /// Execute a built-in tool
@@ -622,24 +612,14 @@ pub async fn execute_builtin_tool(
 ) -> Result<ToolResult, String> {
     tracing::debug!(tool = %tool_name, args = ?arguments, "Executing built-in tool");
     
-    // Extract what we need before releasing the lock
-    let maybe_skill = {
-        let builtin_tools = BUILTIN_TOOLS.lock().map_err(|e| format!("Lock error: {}", e))?;
-        builtin_tools.get_skill_if_skill_tool(&tool_name)
-    };
-    
-    // Now execute outside the lock
-    if let Some(skill) = maybe_skill {
-        super::builtin_tools::execute_skill_tool(&skill, arguments).await
-    } else {
-        // For non-skill tools, execute directly
-        match tool_name.as_str() {
-            "get_system_info" => super::builtin_tools::execute_get_system_info().await,
-            "get_current_time" => super::builtin_tools::execute_get_current_time(arguments).await,
-            "list_directory" => super::builtin_tools::execute_list_directory(arguments).await,
-            "create_task" => super::builtin_tools::execute_create_task(arguments).await,
-            _ => Err(format!("Unknown builtin tool: {}", tool_name)),
-        }
+    // Execute built-in tool
+    match tool_name.as_str() {
+        "get_system_info" => super::builtin_tools::execute_get_system_info().await,
+        "get_current_time" => super::builtin_tools::execute_get_current_time(arguments).await,
+        "list_directory" => super::builtin_tools::execute_list_directory(arguments).await,
+        "transcribe_file" => super::builtin_tools::execute_transcribe_file(arguments).await,
+        "create_task" => super::builtin_tools::execute_create_task(arguments).await,
+        _ => Err(format!("Unknown builtin tool: {}", tool_name)),
     }
 }
 

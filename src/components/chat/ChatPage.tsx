@@ -97,6 +97,13 @@ function writeString(view: DataView, offset: number, str: string) {
   }
 }
 
+// Helper to check if file extension is a video
+function isVideoExtension(ext: string): boolean {
+  return ["mp4", "mov", "mkv", "avi", "webm", "m4v"].includes(
+    ext.toLowerCase(),
+  );
+}
+
 interface ToolCall {
   tool_name: string;
   arguments: string;
@@ -109,67 +116,6 @@ interface AttachmentInfo {
   file_type: string;
   is_image?: boolean;
   is_video?: boolean;
-}
-
-interface VideoTranscriptionResult {
-  transcript: string;
-  extractedAudioPath: string;
-}
-
-interface VideoAnalysisResult {
-  answer: string;
-  framePaths: string[];
-  framesAnalyzed: number;
-  sampleIntervalSeconds: number;
-}
-
-function isVideoExtension(ext: string): boolean {
-  return ["mp4", "mov", "mkv", "avi", "webm", "m4v"].includes(
-    ext.toLowerCase(),
-  );
-}
-
-function extractObjectQueryTarget(message: string): string | null {
-  const patterns = [
-    /are\s+there\s+any\s+(.+?)\s+(?:in|on)\s+the\s+video\??/i,
-    /any\s+(.+?)\s+(?:in|on)\s+the\s+video\??/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = message.match(pattern);
-    if (match?.[1]) {
-      return match[1].trim();
-    }
-  }
-
-  return null;
-}
-
-function inferVideoAction(
-  message: string,
-):
-  | { type: "transcribe" }
-  | { type: "object_query"; objectName: string }
-  | { type: "analyze" } {
-  const trimmed = message.trim();
-  const lower = trimmed.toLowerCase();
-
-  const isTranscriptionRequest =
-    lower.includes("transcribe") ||
-    lower.includes("transcription") ||
-    lower.includes("subtitle") ||
-    lower.includes("speech to text");
-
-  if (isTranscriptionRequest) {
-    return { type: "transcribe" };
-  }
-
-  const objectName = extractObjectQueryTarget(trimmed);
-  if (objectName) {
-    return { type: "object_query", objectName };
-  }
-
-  return { type: "analyze" };
 }
 
 export const ChatPage = () => {
@@ -321,17 +267,13 @@ export const ChatPage = () => {
           "jpeg",
           "webp",
           "gif",
-          "mp4",
-          "mov",
-          "mkv",
-          "avi",
-          "webm",
-          "m4v",
         );
       }
       if (settings.enableRag) {
         allowedExtensions.push("pdf", "docx", "xlsx", "xls");
       }
+      // Always allow video files (MCP will handle processing)
+      allowedExtensions.push("mp4", "mov", "mkv", "avi", "webm", "m4v");
 
       // If no features enabled, don't open dialog
       if (allowedExtensions.length === 0) {
@@ -347,7 +289,9 @@ export const ChatPage = () => {
                 ? "Documents, Images & Videos"
                 : settings.enableImageCaptioning
                   ? "Images & Videos"
-                  : "Documents",
+                  : settings.enableRag
+                    ? "Documents & Videos"
+                    : "Videos",
             extensions: allowedExtensions,
           },
         ],
@@ -369,8 +313,8 @@ export const ChatPage = () => {
           );
           const isVideo = isVideoExtension(extension);
 
-          if ((isImage || isVideo) && settings.enableImageCaptioning) {
-            // Images/videos don't go through RAG processing, just add directly to attachments
+          if ((isImage && settings.enableImageCaptioning) || isVideo) {
+            // Images and videos don't go through RAG processing, just add directly to attachments
             logInfo(
               `Added ${isVideo ? "video" : "image"} file ${filePath} (skipping RAG processing)`,
             );
@@ -682,16 +626,15 @@ export const ChatPage = () => {
 
     // Check if visual attachments are attached
     const hasImageAttachments = attachments.some((a) => a.is_image);
-    const hasVideoAttachments = attachments.some((a) => a.is_video);
 
     // Check if vision model is loaded when visual attachments are attached (and feature is enabled)
     if (
-      (hasImageAttachments || hasVideoAttachments) &&
+      hasImageAttachments &&
       settings.enableImageCaptioning &&
       !loadedModelsByType["image-to-text"]
     ) {
       alert(
-        "Please select a Vision (Image-to-Text) model to process image/video attachments",
+        "Please select a Vision (Image-to-Text) model to process image attachments",
       );
       return;
     }
@@ -828,96 +771,6 @@ export const ChatPage = () => {
       // Start streaming chat with all configuration
       // Use vision model if images are attached, otherwise use text model
       const hasImageAttachments = currentAttachments.some((a) => a.is_image);
-      const hasVideoAttachments = currentAttachments.some((a) => a.is_video);
-
-      // Video attachment flow: invoke backend video actions from chat input
-      if (hasVideoAttachments) {
-        const videoAttachment = currentAttachments.find((a) => a.is_video);
-        if (!videoAttachment) {
-          throw new Error("Video attachment metadata is missing");
-        }
-
-        const action = inferVideoAction(messageContent);
-
-        if (action.type === "transcribe") {
-          if (!loadedModelsByType["speech-to-text"]) {
-            throw new Error(
-              "No Speech-to-Text model selected. Please load a Speech-to-Text model to transcribe video.",
-            );
-          }
-
-          const transcription = await invoke<VideoTranscriptionResult>(
-            "transcribe_video",
-            {
-              videoFilePath: videoAttachment.file_path,
-              modelId: loadedModelsByType["speech-to-text"],
-              language: null,
-            },
-          );
-
-          const assistantContent = transcription.transcript?.trim()
-            ? transcription.transcript
-            : "No speech was detected in the attached video.";
-
-          if (sessionToUse) {
-            await invoke("add_message_to_session", {
-              sessionId: sessionToUse,
-              role: "assistant",
-              content: assistantContent,
-              tokensPerSecond: null,
-              isError: false,
-              promptTokens: null,
-              completionTokens: null,
-              totalTokens: null,
-            });
-          }
-
-          addMessageToCurrentChat({
-            id: crypto.randomUUID(),
-            role: "assistant",
-            content: assistantContent,
-            timestamp: Date.now(),
-          });
-
-          setIsStreaming(false);
-          return;
-        } else {
-          const visionModel = loadedModelsByType["image-to-text"];
-          if (!visionModel) {
-            throw new Error(
-              "No Vision (Image-to-Text) model selected. Please load a vision model for video analysis.",
-            );
-          }
-
-          const visionModelName = visionModel.startsWith("OpenVINO/")
-            ? visionModel.substring("OpenVINO/".length)
-            : visionModel;
-
-          if (action.type === "object_query") {
-            await invoke<VideoAnalysisResult>("query_video_for_object", {
-              videoFilePath: videoAttachment.file_path,
-              modelName: visionModelName,
-              objectName: action.objectName,
-              sampleIntervalSeconds: 1,
-              maxFrames: 8,
-            });
-          } else {
-            await invoke<VideoAnalysisResult>("analyze_video_content", {
-              videoFilePath: videoAttachment.file_path,
-              modelName: visionModelName,
-              query: messageContent,
-              sampleIntervalSeconds: 1,
-              maxFrames: 8,
-            });
-          }
-
-          // For visual video analysis, the backend command streams tokens through
-          // the shared chat-token events. The streaming listener handles persisting
-          // and appending the final assistant message. Avoid adding another manual
-          // message here to prevent duplicates.
-          return;
-        }
-      }
 
       const modelToUse = hasImageAttachments
         ? loadedModelsByType["image-to-text"]!
@@ -954,8 +807,8 @@ export const ChatPage = () => {
         // RAG-specific parameters (only used if chatCommand is chat_with_rag_streaming)
         useRag:
           (settings.enableRag && settings.useRAG) ||
-          currentAttachments.some((a) => !a.is_image && !a.is_video), // Use RAG if enabled OR if there are document attachments
-        ragLimit: currentAttachments.some((a) => !a.is_image && !a.is_video)
+          currentAttachments.some((a) => !a.is_image), // Use RAG if enabled OR if there are document attachments
+        ragLimit: currentAttachments.some((a) => !a.is_image)
           ? null
           : 5, // null means use only attached documents
         // Pass full attachment objects (includes both images and documents)
@@ -1401,11 +1254,14 @@ export const ChatPage = () => {
                       <Paperclip className="w-3 h-3" />
                       <span>
                         Attached{" "}
-                        {message.attachments.some(
-                          (a) => a.is_image || a.is_video,
-                        )
+                        {message.attachments.some((a) => a.is_image) &&
+                        message.attachments.some((a) => a.is_video)
                           ? "documents, images & videos"
-                          : "documents"}
+                          : message.attachments.some((a) => a.is_image)
+                            ? "documents & images"
+                            : message.attachments.some((a) => a.is_video)
+                              ? "documents & videos"
+                              : "documents"}
                         :
                       </span>
                     </div>
@@ -1430,14 +1286,14 @@ export const ChatPage = () => {
                         ) : attachment.is_video ? (
                           <div
                             key={idx}
-                            className={`text-xs px-2 py-1 rounded flex items-center gap-1.5 ${
+                            className={`flex items-center gap-2 px-3 py-2 rounded ${
                               message.role === "user"
-                                ? "bg-white/20"
-                                : "bg-gray-100 dark:bg-gray-800"
+                                ? "bg-white/10 border border-white/20"
+                                : "bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700"
                             }`}
                           >
-                            <Video className="w-3 h-3" />
-                            <span className="max-w-[150px] truncate">
+                            <Video className="w-4 h-4" />
+                            <span className="text-xs max-w-[150px] truncate">
                               {attachment.file_name}
                             </span>
                           </div>
@@ -1762,7 +1618,7 @@ export const ChatPage = () => {
             )}
 
             {/* Warning for visual attachments without vision model */}
-            {attachments.some((a) => a.is_image || a.is_video) &&
+            {attachments.some((a) => a.is_image) &&
               !loadedModelsByType["image-to-text"] && (
                 <div className="flex items-center gap-2 px-3 py-2 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg text-sm text-yellow-800 dark:text-yellow-200">
                   <svg
@@ -1781,12 +1637,12 @@ export const ChatPage = () => {
                   </svg>
                   <span>
                     Visual attachment detected. Please select a Vision
-                    (Image-to-Text) model above to process images/videos.
+                    (Image-to-Text) model above to process images.
                   </span>
                 </div>
               )}
 
-            {/* Attached Documents, Images and Videos */}
+            {/* Attached Documents and Images */}
             {attachments.length > 0 && (
               <div className="flex flex-wrap gap-2 pb-3 border-b border-gray-200 dark:border-gray-700">
                 {attachments.map((attachment) => (
@@ -1914,7 +1770,7 @@ export const ChatPage = () => {
                     onClick={handleSend}
                     disabled={
                       !loadedModelsByType.text ||
-                      (attachments.some((a) => a.is_image || a.is_video) &&
+                      (attachments.some((a) => a.is_image) &&
                         !loadedModelsByType["image-to-text"])
                     }
                     size="icon"
@@ -1949,7 +1805,7 @@ export const ChatPage = () => {
                     disabled={
                       !input.trim() ||
                       !loadedModelsByType.text ||
-                      (attachments.some((a) => a.is_image || a.is_video) &&
+                      (attachments.some((a) => a.is_image) &&
                         !loadedModelsByType["image-to-text"])
                     }
                     size="icon"
