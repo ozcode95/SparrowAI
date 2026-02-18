@@ -6,6 +6,7 @@ use chrono::Local;
 use std::fs;
 use std::path::Path;
 use async_openai::types::chat::{ChatCompletionTool, FunctionObjectArgs};
+use base64::Engine;
 
 /// Represents a built-in MCP tool with its metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -362,6 +363,45 @@ impl BuiltinToolRegistry {
                     "required": ["name", "action_type", "trigger_time"]
                 }),
                 hidden_from_task_creation: true,
+            },
+        );
+
+        // Tool 6: Analyze video frames
+        self.tools.insert(
+            "analyze_video_frames".to_string(),
+            BuiltinTool {
+                name: "analyze_video_frames".to_string(),
+                description: "Extract frames from a video file and analyze them using a vision-capable LLM. Useful for understanding video content, identifying objects, reading text/graphs, summarizing presentations, etc.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "FULL absolute path to the video file (not just filename). Use the full path from the attached files list."
+                        },
+                        "model_id": {
+                            "type": "string",
+                            "description": "Model ID of a LOADED vision-capable model for frame analysis. Must be one of the currently loaded models that supports image input."
+                        },
+                        "frame_interval": {
+                            "type": "number",
+                            "description": "Seconds between frames to extract (default: 5.0). Lower values extract more frames.",
+                            "minimum": 0.5
+                        },
+                        "max_frames": {
+                            "type": "integer",
+                            "description": "Maximum number of frames to analyze (default: 10). Limits API calls and processing time.",
+                            "minimum": 1,
+                            "maximum": 50
+                        },
+                        "analysis_prompt": {
+                            "type": "string",
+                            "description": "Optional custom prompt for frame analysis. If not provided, a default comprehensive analysis prompt will be used."
+                        }
+                    },
+                    "required": ["file_path", "model_id"]
+                }),
+                hidden_from_task_creation: false,
             },
         );
     }
@@ -851,6 +891,193 @@ pub async fn execute_create_task(arguments: Value) -> Result<ToolResult, String>
         "next_run": task.next_run,
     });
 
+    Ok(ToolResult::text(serde_json::to_string_pretty(&result).unwrap()))
+}
+
+pub async fn execute_analyze_video_frames(arguments: Value) -> Result<ToolResult, String> {
+    use std::process::Command;
+    use std::path::PathBuf;
+    use async_openai::{Client, config::OpenAIConfig};
+    use async_openai::types::chat::{
+        CreateChatCompletionRequestArgs,
+        ChatCompletionRequestMessage,
+        ChatCompletionRequestUserMessageArgs,
+        ChatCompletionRequestUserMessageContent,
+        ChatCompletionRequestUserMessageContentPart,
+        ChatCompletionRequestMessageContentPartText,
+        ChatCompletionRequestMessageContentPartImage,
+        ImageUrl,
+        ImageDetail,
+    };
+    
+    // Extract parameters
+    let file_path = arguments.get("file_path")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing 'file_path' parameter")?;
+    
+    let model_id = arguments.get("model_id")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing 'model_id' parameter")?;
+    
+    let frame_interval = arguments.get("frame_interval")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(5.0);
+    
+    let max_frames = arguments.get("max_frames")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(10) as usize;
+    
+    let analysis_prompt = arguments.get("analysis_prompt")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            "Describe what you see in this video frame in detail. \
+            If there are any graphs, charts, diagrams, or text visible, describe them. \
+            Mention any important objects, people, actions, or scenes.".to_string()
+        });
+    
+    // Verify file exists
+    let file_path_buf = PathBuf::from(file_path);
+    if !file_path_buf.exists() {
+        return Err(format!("File not found: {}", file_path));
+    }
+    
+    // Create temp directory for frames
+    let temp_dir = std::env::temp_dir();
+    let frames_dir = temp_dir.join(format!("sparrow_video_frames_{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&frames_dir)
+        .map_err(|e| format!("Failed to create temp directory: {}", e))?;
+    
+    tracing::info!("Extracting frames from video to: {:?}", frames_dir);
+    
+    // Use ffmpeg to extract frames at specified intervals
+    let frame_pattern = frames_dir.join("frame_%04d.jpg");
+    let output = Command::new("ffmpeg")
+        .args([
+            "-i", file_path,
+            "-vf", &format!("fps=1/{}", frame_interval), // Extract one frame every N seconds
+            "-vframes", &max_frames.to_string(), // Limit number of frames
+            "-q:v", "2", // High quality JPEG
+            frame_pattern.to_str().unwrap(),
+        ])
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                "ffmpeg not found. Please install ffmpeg to extract frames from video files.".to_string()
+            } else {
+                format!("Failed to run ffmpeg: {}", e)
+            }
+        })?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Clean up
+        let _ = fs::remove_dir_all(&frames_dir);
+        return Err(format!("Failed to extract frames: {}", stderr));
+    }
+    
+    // Get list of extracted frames
+    let mut frame_files: Vec<PathBuf> = fs::read_dir(&frames_dir)
+        .map_err(|e| format!("Failed to read frames directory: {}", e))?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("jpg"))
+        .collect();
+    
+    frame_files.sort();
+    
+    if frame_files.is_empty() {
+        let _ = fs::remove_dir_all(&frames_dir);
+        return Err("No frames were extracted from the video".to_string());
+    }
+    
+    tracing::info!("Extracted {} frames, analyzing...", frame_files.len());
+    
+    // Setup OpenAI client for vision analysis
+    let config = OpenAIConfig::new()
+        .with_api_key("not-needed")
+        .with_api_base("http://localhost:1114/v3");
+    let client = Client::with_config(config);
+    
+    // Analyze each frame
+    let mut frame_analyses = Vec::new();
+    
+    for (idx, frame_path) in frame_files.iter().enumerate() {
+        tracing::debug!("Analyzing frame {}/{}: {:?}", idx + 1, frame_files.len(), frame_path);
+        
+        // Read and encode frame as base64
+        let frame_data = fs::read(frame_path)
+            .map_err(|e| format!("Failed to read frame: {}", e))?;
+        let base64_frame = base64::engine::general_purpose::STANDARD.encode(&frame_data);
+        let data_url = format!("data:image/jpeg;base64,{}", base64_frame);
+        
+        // Build message with image
+        let user_message = ChatCompletionRequestUserMessageArgs::default()
+            .content(ChatCompletionRequestUserMessageContent::Array(vec![
+                ChatCompletionRequestUserMessageContentPart::Text(
+                    ChatCompletionRequestMessageContentPartText {
+                        text: format!("Frame {} (at ~{}s): {}", idx + 1, (idx as f64) * frame_interval, analysis_prompt),
+                        ..Default::default()
+                    }
+                ),
+                ChatCompletionRequestUserMessageContentPart::ImageUrl(
+                    ChatCompletionRequestMessageContentPartImage {
+                        image_url: ImageUrl {
+                            url: data_url,
+                            detail: Some(ImageDetail::High),
+                        },
+                        ..Default::default()
+                    }
+                ),
+            ]))
+            .build()
+            .map_err(|e| format!("Failed to build message: {}", e))?;
+        
+        // Make API request
+        let request = CreateChatCompletionRequestArgs::default()
+            .model(model_id)
+            .messages(vec![ChatCompletionRequestMessage::User(user_message)])
+            .max_tokens(500u32)
+            .temperature(0.3)
+            .build()
+            .map_err(|e| format!("Failed to build request: {}", e))?;
+        
+        let response = client
+            .chat()
+            .create(request)
+            .await
+            .map_err(|e| format!("Failed to analyze frame {}: {}", idx + 1, e))?;
+        
+        if let Some(choice) = response.choices.first() {
+            let analysis = choice.message.content.as_ref()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "No response".to_string());
+            
+            frame_analyses.push(json!({
+                "frame_number": idx + 1,
+                "timestamp_seconds": (idx as f64) * frame_interval,
+                "analysis": analysis
+            }));
+            
+            tracing::debug!("Frame {} analysis: {}", idx + 1, analysis);
+        }
+    }
+    
+    // Clean up temp files
+    if let Err(e) = fs::remove_dir_all(&frames_dir) {
+        tracing::warn!("Failed to remove temp frames directory: {}", e);
+    }
+    
+    // Build comprehensive summary
+    let result = json!({
+        "success": true,
+        "file_path": file_path,
+        "frames_analyzed": frame_analyses.len(),
+        "frame_interval_seconds": frame_interval,
+        "frame_analyses": frame_analyses,
+        "summary": "Video analysis complete. See frame_analyses for detailed descriptions of each frame."
+    });
+    
     Ok(ToolResult::text(serde_json::to_string_pretty(&result).unwrap()))
 }
 

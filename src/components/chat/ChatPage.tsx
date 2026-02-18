@@ -261,13 +261,7 @@ export const ChatPage = () => {
       // Determine allowed file extensions based on feature flags
       const allowedExtensions: string[] = [];
       if (settings.enableImageCaptioning) {
-        allowedExtensions.push(
-          "png",
-          "jpg",
-          "jpeg",
-          "webp",
-          "gif",
-        );
+        allowedExtensions.push("png", "jpg", "jpeg", "webp", "gif");
       }
       if (settings.enableRag) {
         allowedExtensions.push("pdf", "docx", "xlsx", "xls");
@@ -808,9 +802,7 @@ export const ChatPage = () => {
         useRag:
           (settings.enableRag && settings.useRAG) ||
           currentAttachments.some((a) => !a.is_image), // Use RAG if enabled OR if there are document attachments
-        ragLimit: currentAttachments.some((a) => !a.is_image)
-          ? null
-          : 5, // null means use only attached documents
+        ragLimit: currentAttachments.some((a) => !a.is_image) ? null : 5, // null means use only attached documents
         // Pass full attachment objects (includes both images and documents)
         attachments: currentAttachments.length > 0 ? currentAttachments : null,
       });

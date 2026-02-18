@@ -426,6 +426,7 @@ pub async fn call_mcp_tool(
             "list_directory" => super::builtin_tools::execute_list_directory(args_value).await?,
             "transcribe_file" => super::builtin_tools::execute_transcribe_file(args_value).await?,
             "create_task" => super::builtin_tools::execute_create_task(args_value).await?,
+            "analyze_video_frames" => super::builtin_tools::execute_analyze_video_frames(args_value).await?,
             _ => return Err(format!("Unknown builtin tool: {}", actual_tool_name)),
         };
         
@@ -619,6 +620,7 @@ pub async fn execute_builtin_tool(
         "list_directory" => super::builtin_tools::execute_list_directory(arguments).await,
         "transcribe_file" => super::builtin_tools::execute_transcribe_file(arguments).await,
         "create_task" => super::builtin_tools::execute_create_task(arguments).await,
+        "analyze_video_frames" => super::builtin_tools::execute_analyze_video_frames(arguments).await,
         _ => Err(format!("Unknown builtin tool: {}", tool_name)),
     }
 }
