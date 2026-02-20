@@ -553,6 +553,7 @@ struct GitHubContent {
     #[serde(rename = "type")]
     content_type: String,
     download_url: Option<String>,
+    #[allow(dead_code)]
     url: String,
 }
 
@@ -564,6 +565,7 @@ struct GistResponse {
 
 #[derive(Debug, Deserialize)]
 struct GistFile {
+    #[allow(dead_code)]
     filename: String,
     raw_url: Option<String>,
 }

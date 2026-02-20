@@ -24,9 +24,11 @@ pub const OVMS_DOWNLOAD_URL: &str =
 pub const OVMS_ZIP_FILE: &str = "ovms_windows_python_off.zip";
 
 /// OVMS executable name
+#[allow(dead_code)]
 pub const OVMS_EXE_NAME: &str = "ovms.exe";
 
 /// OVMS config file name
+#[allow(dead_code)]
 pub const OVMS_CONFIG_FILE: &str = "models_config.json";
 
 /// Default OVMS port
@@ -85,6 +87,7 @@ pub const USER_AGENT: &str = "SparrowAI/1.0";
 pub const HUGGINGFACE_API_BASE: &str = "https://huggingface.co/api";
 
 /// Default log level filter
+#[allow(dead_code)]
 pub const DEFAULT_LOG_FILTER: &str = "info,sparrow=debug";
 
 /// Environment variable names

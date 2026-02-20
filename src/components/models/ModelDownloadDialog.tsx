@@ -172,7 +172,7 @@ export const ModelDownloadDialog = ({
 
   const updateParam = <K extends keyof GraphGenerationParams>(
     key: K,
-    value: GraphGenerationParams[K]
+    value: GraphGenerationParams[K],
   ) => {
     setGraphParams((prev) => ({ ...prev, [key]: value }));
   };
@@ -327,7 +327,7 @@ export const ModelDownloadDialog = ({
                       onChange={(e) =>
                         updateParam(
                           "max_num_seqs",
-                          parseInt(e.target.value) || 256
+                          parseInt(e.target.value) || 256,
                         )
                       }
                       min="1"
@@ -344,7 +344,7 @@ export const ModelDownloadDialog = ({
                       onChange={(e) =>
                         updateParam(
                           "kv_cache_precision",
-                          e.target.value || undefined
+                          e.target.value || undefined,
                         )
                       }
                       className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm"
@@ -366,7 +366,7 @@ export const ModelDownloadDialog = ({
                       onChange={(e) =>
                         updateParam(
                           "max_num_batched_tokens",
-                          parseInt(e.target.value) || undefined
+                          parseInt(e.target.value) || undefined,
                         )
                       }
                       placeholder="Optional"
@@ -446,7 +446,7 @@ export const ModelDownloadDialog = ({
                       onChange={(e) =>
                         updateParam(
                           "default_resolution",
-                          e.target.value || undefined
+                          e.target.value || undefined,
                         )
                       }
                       placeholder="512x512"
@@ -464,7 +464,7 @@ export const ModelDownloadDialog = ({
                       onChange={(e) =>
                         updateParam(
                           "max_resolution",
-                          e.target.value || undefined
+                          e.target.value || undefined,
                         )
                       }
                       placeholder="1024x1024"
@@ -483,7 +483,7 @@ export const ModelDownloadDialog = ({
                       onChange={(e) =>
                         updateParam(
                           "guidance_scale",
-                          e.target.value || undefined
+                          e.target.value || undefined,
                         )
                       }
                       placeholder="7.5"
@@ -501,7 +501,7 @@ export const ModelDownloadDialog = ({
                       onChange={(e) =>
                         updateParam(
                           "max_num_inference_steps",
-                          parseInt(e.target.value) || undefined
+                          parseInt(e.target.value) || undefined,
                         )
                       }
                       placeholder="50"

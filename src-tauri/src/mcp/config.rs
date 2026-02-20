@@ -75,7 +75,7 @@ pub struct McpConfig {
 
 impl Default for McpConfig {
     fn default() -> Self {
-        let mut mcp_servers = HashMap::new();
+        let mcp_servers = HashMap::new();
         
         // Add skillz MCP server by default
         // Skills directory path: ~/.sparrow/skills

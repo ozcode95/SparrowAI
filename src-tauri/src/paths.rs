@@ -88,6 +88,7 @@ pub fn get_tasks_path() -> Result<PathBuf> {
 }
 
 /// Get the images directory path
+#[allow(dead_code)]
 pub fn get_images_dir() -> Result<PathBuf> {
     let dir = get_sparrow_dir()?.join("images");
     ensure_dir_exists(&dir)?;

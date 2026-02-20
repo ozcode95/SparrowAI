@@ -13,6 +13,7 @@ pub struct BuiltinToolsConfig {
 
 impl BuiltinToolsConfig {
     /// Create config from actual builtin tools registry
+    #[allow(dead_code)]
     pub fn from_registry(registry: &super::builtin_tools::BuiltinToolRegistry) -> Self {
         let mut tools = HashMap::new();
         
@@ -102,6 +103,7 @@ impl BuiltinToolsConfig {
     }
 
     /// Get all enabled tool names
+    #[allow(dead_code)]
     pub fn get_enabled_tools(&self) -> Vec<String> {
         self.tools
             .iter()
