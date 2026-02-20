@@ -82,11 +82,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       label: "Documents",
       icon: <FileText className="h-5 w-5" />,
     },
-    {
-      id: "skills",
-      label: "Skills",
-      icon: <Sparkles className="h-5 w-5" />,
-    },
+    // {
+    //   id: "skills",
+    //   label: "Skills",
+    //   icon: <Sparkles className="h-5 w-5" />,
+    // },
     {
       id: "mcp",
       label: "MCP",
@@ -206,7 +206,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const chatSessionsArray = Object.values(chatSessions).sort(
-    (a, b) => b.updated_at - a.updated_at
+    (a, b) => b.updated_at - a.updated_at,
   );
 
   return (
@@ -214,7 +214,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div
         className={cn(
           "flex h-screen flex-col border-r border-gray-200 bg-white transition-all duration-300 dark:border-gray-800 dark:bg-gray-950",
-          isCollapsed ? "w-16" : "w-60"
+          isCollapsed ? "w-16" : "w-60",
         )}
       >
         {/* Header */}
@@ -245,7 +245,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               className={cn(
                 "w-full justify-start",
                 isCollapsed && "justify-center px-0",
-                isStreaming && "opacity-50 cursor-not-allowed"
+                isStreaming && "opacity-50 cursor-not-allowed",
               )}
               onClick={createNewChat}
               disabled={isStreaming}
@@ -271,7 +271,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   currentPage === item.id
                     ? "bg-accent-100 text-accent-900 dark:bg-accent-900/20 dark:text-accent-100"
                     : "text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800",
-                  isCollapsed && "justify-center"
+                  isCollapsed && "justify-center",
                 )}
               >
                 {item.icon}
@@ -300,7 +300,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       "group flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs transition-colors cursor-pointer",
                       isActive
                         ? "bg-accent-100 text-accent-900 dark:bg-accent-900/20 dark:text-accent-100"
-                        : "hover:bg-gray-100 dark:hover:bg-gray-800"
+                        : "hover:bg-gray-100 dark:hover:bg-gray-800",
                     )}
                     onClick={() => selectChatSession(session.id)}
                   >
@@ -327,7 +327,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             variant="ghost"
             className={cn(
               "w-full justify-start",
-              isCollapsed && "justify-center px-0"
+              isCollapsed && "justify-center px-0",
             )}
             onClick={() => {
               getLoadedModels(); // Refresh model status on click
@@ -341,7 +341,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             variant="ghost"
             className={cn(
               "w-full justify-start",
-              isCollapsed && "justify-center px-0"
+              isCollapsed && "justify-center px-0",
             )}
             onClick={() => setSettingsDialogOpen(true)}
           >

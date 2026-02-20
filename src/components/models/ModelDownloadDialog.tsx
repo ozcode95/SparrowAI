@@ -102,7 +102,7 @@ export const ModelDownloadDialog = ({
     target_device: "GPU",
     num_streams: 1,
     // Text generation defaults
-    enable_prefix_caching: false,
+    enable_prefix_caching: true,
     cache_size: 2,
     max_num_seqs: 256,
     // Embeddings defaults
@@ -120,7 +120,7 @@ export const ModelDownloadDialog = ({
 
     // Add task-specific defaults
     if (newType === "text_generation") {
-      baseParams.enable_prefix_caching = false;
+      baseParams.enable_prefix_caching = true;
       baseParams.cache_size = 2;
       baseParams.max_num_seqs = 256;
     } else if (newType === "embeddings_ov") {

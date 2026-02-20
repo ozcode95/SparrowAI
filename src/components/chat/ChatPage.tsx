@@ -21,6 +21,7 @@ import {
   Mic,
   Square,
   Video,
+  Info,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { ChatMessage as ChatMessageType } from "@/store/types";
@@ -258,35 +259,13 @@ export const ChatPage = () => {
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
 
-      // Determine allowed file extensions based on feature flags
-      const allowedExtensions: string[] = [];
-      if (settings.enableImageCaptioning) {
-        allowedExtensions.push("png", "jpg", "jpeg", "webp", "gif");
-      }
-      if (settings.enableRag) {
-        allowedExtensions.push("pdf", "docx", "xlsx", "xls");
-      }
-      // Always allow video files (MCP will handle processing)
-      allowedExtensions.push("mp4", "mov", "mkv", "avi", "webm", "m4v");
-
-      // If no features enabled, don't open dialog
-      if (allowedExtensions.length === 0) {
-        return;
-      }
-
+      // Accept any file type
       const selected = await open({
         multiple: true,
         filters: [
           {
-            name:
-              settings.enableImageCaptioning && settings.enableRag
-                ? "Documents, Images & Videos"
-                : settings.enableImageCaptioning
-                  ? "Images & Videos"
-                  : settings.enableRag
-                    ? "Documents & Videos"
-                    : "Videos",
-            extensions: allowedExtensions,
+            name: "All Files",
+            extensions: ["*"],
           },
         ],
       });
@@ -306,34 +285,43 @@ export const ChatPage = () => {
             extension,
           );
           const isVideo = isVideoExtension(extension);
+          const fileName = filePath.split(/[\\/]/).pop() || filePath;
 
-          if ((isImage && settings.enableImageCaptioning) || isVideo) {
-            // Images and videos don't go through RAG processing, just add directly to attachments
-            logInfo(
-              `Added ${isVideo ? "video" : "image"} file ${filePath} (skipping RAG processing)`,
-            );
-            const fileName = filePath.split(/[\\/]/).pop() || filePath;
-            setAttachments((prev) => [
-              ...prev,
-              {
-                file_path: filePath,
-                file_name: fileName,
-                file_type: extension,
-                is_image: isImage,
-                is_video: isVideo,
-              },
-            ]);
-          } else if (!isImage && !isVideo && settings.enableRag) {
-            // Process document into chunks for RAG
-            const documents = await invoke<any[]>("process_document", {
-              filePath,
-            });
-            const embeddedDocs = await invoke<any[]>(
-              "create_document_embeddings",
-              { documents },
-            );
-            await invoke("store_documents", { documents: embeddedDocs });
-            logInfo(`Successfully processed and stored ${filePath}`);
+          // Add all files to attachments
+          setAttachments((prev) => [
+            ...prev,
+            {
+              file_path: filePath,
+              file_name: fileName,
+              file_type: extension,
+              is_image: isImage,
+              is_video: isVideo,
+            },
+          ]);
+
+          logInfo(
+            `Added ${isVideo ? "video" : isImage ? "image" : "document"} file ${filePath}`,
+          );
+
+          // Additionally process documents through RAG if enabled
+          if (!isImage && !isVideo && settings.enableRag) {
+            try {
+              const documents = await invoke<any[]>("process_document", {
+                filePath,
+              });
+              const embeddedDocs = await invoke<any[]>(
+                "create_document_embeddings",
+                { documents },
+              );
+              await invoke("store_documents", { documents: embeddedDocs });
+              logInfo(`Successfully processed and stored ${filePath} in RAG`);
+            } catch (ragError) {
+              logError(
+                `Failed to process ${filePath} through RAG`,
+                ragError as Error,
+              );
+              // Don't fail the whole upload if RAG processing fails
+            }
           }
         } catch (error) {
           logError(`Failed to process ${filePath}`, error as Error);
@@ -345,8 +333,8 @@ export const ChatPage = () => {
       if (showFileSelector) {
         await loadAvailableFiles();
       }
-      // Close the panel after upload
-      setShowAttachmentPanel(false);
+      // Keep the panel open so user can see attachments
+      // Only close file selector if it was open
       setShowFileSelector(false);
     } catch (error) {
       console.error("Upload failed:", error);
@@ -620,6 +608,14 @@ export const ChatPage = () => {
 
     // Check if visual attachments are attached
     const hasImageAttachments = attachments.some((a) => a.is_image);
+
+    // Check if image captioning is disabled but images are attached
+    if (hasImageAttachments && !settings.enableImageCaptioning) {
+      alert(
+        "Image captioning is disabled. Please enable it in Settings to send images.",
+      );
+      return;
+    }
 
     // Check if vision model is loaded when visual attachments are attached (and feature is enabled)
     if (
@@ -1155,31 +1151,32 @@ export const ChatPage = () => {
                           <Copy className="w-3.5 h-3.5" />
                           <span>Copy</span>
                         </button>
-                        {settings.enableTextToSpeech && (
-                          <button
-                            onClick={() =>
-                              handleTTS(message.id, message.content)
-                            }
-                            disabled={generatingTTSFor === message.id}
-                            className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 flex items-center gap-1 px-2 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                            title="Text to speech"
-                          >
-                            <Volume2
-                              className={`w-3.5 h-3.5 ${
-                                playingAudioFor === message.id
-                                  ? "animate-pulse"
-                                  : ""
-                              }`}
-                            />
-                            <span>
-                              {generatingTTSFor === message.id
-                                ? "Generating..."
-                                : playingAudioFor === message.id
-                                  ? "Playing..."
-                                  : "Voice"}
-                            </span>
-                          </button>
-                        )}
+                        {settings.enableTextToSpeech &&
+                          loadedModelsByType["text-to-speech"] && (
+                            <button
+                              onClick={() =>
+                                handleTTS(message.id, message.content)
+                              }
+                              disabled={generatingTTSFor === message.id}
+                              className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 flex items-center gap-1 px-2 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="Text to speech"
+                            >
+                              <Volume2
+                                className={`w-3.5 h-3.5 ${
+                                  playingAudioFor === message.id
+                                    ? "animate-pulse"
+                                    : ""
+                                }`}
+                              />
+                              <span>
+                                {generatingTTSFor === message.id
+                                  ? "Generating..."
+                                  : playingAudioFor === message.id
+                                    ? "Playing..."
+                                    : "Voice"}
+                              </span>
+                            </button>
+                          )}
                         {/* Stats toggle button */}
                         {(message.tokens_per_second ||
                           message.total_tokens) && (
@@ -1462,21 +1459,20 @@ export const ChatPage = () => {
                 {!showFileSelector ? (
                   // Two button interface
                   <div className="flex items-center gap-2">
-                    {settings.enableImageCaptioning && (
-                      <Button
-                        onClick={handleFileUpload}
-                        disabled={isUploadingFile}
-                        size="sm"
-                        variant="outline"
-                        className="flex-1"
-                      >
-                        {isUploadingFile ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
-                          "Upload Image/Video"
-                        )}
-                      </Button>
-                    )}
+                    <Button
+                      onClick={handleFileUpload}
+                      disabled={isUploadingFile}
+                      size="sm"
+                      variant="outline"
+                      className="flex-1"
+                    >
+                      {isUploadingFile ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        "Set Attachment(s)"
+                      )}
+                    </Button>
+
                     {settings.enableRag && (
                       <Button
                         onClick={() => {
@@ -1686,24 +1682,34 @@ export const ChatPage = () => {
               </div>
             )}
 
-            <div className="flex gap-3">
-              {(settings.enableImageCaptioning || settings.enableRag) && (
-                <div className="flex items-end">
-                  <Button
-                    onClick={() => {
-                      setShowAttachmentPanel(!showAttachmentPanel);
-                      setShowFileSelector(false);
-                      setFileSearchQuery("");
-                    }}
-                    disabled={isStreaming}
-                    size="icon"
-                    variant="outline"
-                    title="Attach files"
-                  >
-                    <Paperclip className="w-5 h-5" />
-                  </Button>
+            {/* Warning when image captioning is disabled but images are attached */}
+            {attachments.some((a) => a.is_image) &&
+              !settings.enableImageCaptioning && (
+                <div className="flex items-center gap-2 px-4 py-2 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg mb-3">
+                  <Info className="w-4 h-4 text-yellow-600 dark:text-yellow-500 flex-shrink-0" />
+                  <span className="text-sm text-yellow-800 dark:text-yellow-200">
+                    Image captioning is disabled. Please enable it in Settings
+                    to send images, or remove the image attachments to continue.
+                  </span>
                 </div>
               )}
+
+            <div className="flex gap-3">
+              <div className="flex items-end">
+                <Button
+                  onClick={() => {
+                    setShowAttachmentPanel(!showAttachmentPanel);
+                    setShowFileSelector(false);
+                    setFileSearchQuery("");
+                  }}
+                  disabled={isStreaming}
+                  size="icon"
+                  variant="outline"
+                  title="Attach files"
+                >
+                  <Paperclip className="w-5 h-5" />
+                </Button>
+              </div>
               <textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
@@ -1763,7 +1769,8 @@ export const ChatPage = () => {
                     disabled={
                       !loadedModelsByType.text ||
                       (attachments.some((a) => a.is_image) &&
-                        !loadedModelsByType["image-to-text"])
+                        (!settings.enableImageCaptioning ||
+                          !loadedModelsByType["image-to-text"]))
                     }
                     size="icon"
                     title="Send message"
@@ -1798,7 +1805,8 @@ export const ChatPage = () => {
                       !input.trim() ||
                       !loadedModelsByType.text ||
                       (attachments.some((a) => a.is_image) &&
-                        !loadedModelsByType["image-to-text"])
+                        (!settings.enableImageCaptioning ||
+                          !loadedModelsByType["image-to-text"]))
                     }
                     size="icon"
                     title="Send message"

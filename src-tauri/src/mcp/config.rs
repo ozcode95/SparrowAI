@@ -79,22 +79,22 @@ impl Default for McpConfig {
         
         // Add skillz MCP server by default
         // Skills directory path: ~/.sparrow/skills
-        let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        let skills_dir = home_dir.join(".sparrow").join("skills");
+        // let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        // let skills_dir = home_dir.join(".sparrow").join("skills");
         
-        mcp_servers.insert(
-            "skillz".to_string(),
-            McpServerConfig {
-                command: Some("uvx".to_string()),
-                args: Some(vec![
-                    "skillz@latest".to_string(),
-                    skills_dir.to_string_lossy().to_string(),
-                ]),
-                env: None,
-                url: None,
-                auto_connect: true,
-            },
-        );
+        // mcp_servers.insert(
+        //     "skillz".to_string(),
+        //     McpServerConfig {
+        //         command: Some("uvx".to_string()),
+        //         args: Some(vec![
+        //             "skillz@latest".to_string(),
+        //             skills_dir.to_string_lossy().to_string(),
+        //         ]),
+        //         env: None,
+        //         url: None,
+        //         auto_connect: true,
+        //     },
+        // );
         
         Self { mcp_servers }
     }

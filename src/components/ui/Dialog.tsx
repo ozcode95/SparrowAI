@@ -26,8 +26,7 @@ export const Dialog: React.FC<DialogProps> = ({
   );
 };
 
-export interface DialogContentProps
-  extends React.HTMLAttributes<HTMLDivElement> {
+export interface DialogContentProps extends React.HTMLAttributes<HTMLDivElement> {
   onClose?: () => void;
 }
 
@@ -39,7 +38,7 @@ export const DialogContent = forwardRef<HTMLDivElement, DialogContentProps>(
         className={cn(
           "relative w-full max-w-lg rounded-xl border border-gray-200 bg-white p-6 shadow-lg",
           "dark:border-gray-800 dark:bg-gray-900",
-          className
+          className,
         )}
         {...props}
       >
@@ -54,7 +53,7 @@ export const DialogContent = forwardRef<HTMLDivElement, DialogContentProps>(
         {children}
       </div>
     );
-  }
+  },
 );
 DialogContent.displayName = "DialogContent";
 
@@ -65,7 +64,7 @@ export const DialogHeader: React.FC<React.HTMLAttributes<HTMLDivElement>> = ({
   <div
     className={cn(
       "flex flex-col space-y-1.5 text-center sm:text-left",
-      className
+      className,
     )}
     {...props}
   />
@@ -78,7 +77,7 @@ export const DialogTitle: React.FC<
   <h2
     className={cn(
       "text-lg font-semibold leading-none tracking-tight",
-      className
+      className,
     )}
     {...props}
   />
@@ -102,7 +101,7 @@ export const DialogFooter: React.FC<React.HTMLAttributes<HTMLDivElement>> = ({
   <div
     className={cn(
       "flex flex-col-reverse gap-2 sm:flex-row sm:justify-end",
-      className
+      className,
     )}
     {...props}
   />

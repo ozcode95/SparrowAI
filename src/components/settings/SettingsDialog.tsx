@@ -5,8 +5,9 @@ import {
   Sliders,
   Settings,
   Sparkles,
+  Info,
 } from "lucide-react";
-import { useUI, useSettings } from "@/store";
+import { useUI, useSettings, useModels } from "@/store";
 import {
   Dialog,
   DialogContent,
@@ -23,9 +24,11 @@ export const SettingsDialog: React.FC = () => {
     "general" | "chat" | "advanced" | "features"
   >("general");
   const [isLoadingAutostart, setIsLoadingAutostart] = useState(false);
+  const [infoTooltip, setInfoTooltip] = useState<string | null>(null);
 
   const { settingsDialogOpen, setSettingsDialogOpen } = useUI();
   const { settings, updateSettings, resetSettings } = useSettings();
+  const { loadedModelsByType } = useModels();
 
   // Load settings from backend when dialog opens
   useEffect(() => {
@@ -40,6 +43,47 @@ export const SettingsDialog: React.FC = () => {
       updateSettings(config);
     } catch (error) {
       console.error("Failed to load settings:", error);
+    }
+  };
+
+  // Check if required models are loaded for each feature
+  const isImageCaptioningAvailable =
+    loadedModelsByType["image-to-text"] !== null;
+  const isImageGenerationAvailable = loadedModelsByType["image-gen"] !== null;
+  const isRagAvailable =
+    loadedModelsByType.embedding !== null &&
+    loadedModelsByType.reranker !== null;
+  const isSpeechToTextAvailable = loadedModelsByType["speech-to-text"] !== null;
+
+  // Get missing models message for each feature
+  const getFeatureRequirementMessage = (feature: string): string => {
+    switch (feature) {
+      case "image-captioning":
+        return isImageCaptioningAvailable
+          ? "All required models are loaded."
+          : "This feature requires an Image-to-Text model to be downloaded and loaded. Go to Models page, download an Image-to-Text model, and load it.";
+      case "image-generation":
+        return isImageGenerationAvailable
+          ? "All required models are loaded."
+          : "This feature requires an Image Generation model to be downloaded and loaded. Go to Models page, download an Image-Gen model, and load it.";
+      case "rag":
+        if (
+          loadedModelsByType.embedding === null &&
+          loadedModelsByType.reranker === null
+        ) {
+          return "This feature requires both an Embedding model and a Reranker model to be downloaded and loaded. Go to Models page, download both model types, and load them.";
+        } else if (loadedModelsByType.embedding === null) {
+          return "This feature requires an Embedding model to be downloaded and loaded. Go to Models page, download an Embedding model, and load it.";
+        } else if (loadedModelsByType.reranker === null) {
+          return "This feature requires a Reranker model to be downloaded and loaded. Go to Models page, download a Reranker model, and load it.";
+        }
+        return "All required models are loaded.";
+      case "speech-to-text":
+        return isSpeechToTextAvailable
+          ? "All required models are loaded."
+          : "This feature requires a Speech-to-Text model to be downloaded and loaded. Go to Models page, download a Speech-to-Text model, and load it.";
+      default:
+        return "";
     }
   };
 
@@ -124,7 +168,7 @@ export const SettingsDialog: React.FC = () => {
                     "flex items-center gap-3 rounded-lg px-2 py-2.5 text-sm font-medium transition-colors",
                     activeTab === tab.id
                       ? "bg-accent-100 text-accent-900 dark:bg-accent-900/20 dark:text-accent-100"
-                      : "text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+                      : "text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800",
                   )}
                 >
                   <Icon className="h-4 w-4" />
@@ -163,7 +207,7 @@ export const SettingsDialog: React.FC = () => {
                 <div
                   className={cn(
                     "flex items-start justify-between",
-                    !settings.enableAutostart && "opacity-50"
+                    !settings.enableAutostart && "opacity-50",
                   )}
                 >
                   <div className="flex-1">
@@ -326,7 +370,12 @@ export const SettingsDialog: React.FC = () => {
             {/* Features Tab */}
             {activeTab === "features" && (
               <div className="space-y-6 pb-6">
-                <div className="flex items-start justify-between">
+                <div
+                  className={cn(
+                    "flex items-start justify-between",
+                    !isImageCaptioningAvailable && "opacity-50",
+                  )}
+                >
                   <div className="flex-1">
                     <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
                       Image Captioning (Vision-to-Text)
@@ -336,22 +385,51 @@ export const SettingsDialog: React.FC = () => {
                       attachments in chat
                     </p>
                   </div>
-                  <label className="relative inline-flex items-center cursor-pointer ml-4">
-                    <input
-                      type="checkbox"
-                      checked={settings.enableImageCaptioning}
-                      onChange={(e) =>
-                        handleSettingChange({
-                          enableImageCaptioning: e.target.checked,
-                        })
-                      }
-                      className="sr-only peer"
-                    />
-                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-accent-300 dark:peer-focus:ring-accent-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-accent-600"></div>
-                  </label>
+                  <div className="flex items-center gap-2 ml-4">
+                    <div className="relative">
+                      <button
+                        onClick={() =>
+                          setInfoTooltip(
+                            infoTooltip === "image-captioning"
+                              ? null
+                              : "image-captioning",
+                          )
+                        }
+                        className="p-1 rounded-md hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                      >
+                        <Info className="h-4 w-4 text-gray-600 dark:text-gray-400" />
+                      </button>
+                      {infoTooltip === "image-captioning" && (
+                        <div className="absolute right-0 top-8 z-50 w-72 rounded-lg border border-gray-300 bg-white p-3 shadow-2xl backdrop-blur-sm dark:border-gray-600 dark:bg-gray-900">
+                          <p className="text-xs text-gray-900 dark:text-gray-100">
+                            {getFeatureRequirementMessage("image-captioning")}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={settings.enableImageCaptioning}
+                        onChange={(e) =>
+                          handleSettingChange({
+                            enableImageCaptioning: e.target.checked,
+                          })
+                        }
+                        disabled={!isImageCaptioningAvailable}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-accent-300 dark:peer-focus:ring-accent-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-accent-600 peer-disabled:opacity-50 peer-disabled:cursor-not-allowed"></div>
+                    </label>
+                  </div>
                 </div>
 
-                <div className="flex items-start justify-between">
+                <div
+                  className={cn(
+                    "flex items-start justify-between",
+                    !isImageGenerationAvailable && "opacity-50",
+                  )}
+                >
                   <div className="flex-1">
                     <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
                       Image Generation
@@ -360,22 +438,51 @@ export const SettingsDialog: React.FC = () => {
                       Show the Gallery page for generating images
                     </p>
                   </div>
-                  <label className="relative inline-flex items-center cursor-pointer ml-4">
-                    <input
-                      type="checkbox"
-                      checked={settings.enableImageGeneration}
-                      onChange={(e) =>
-                        handleSettingChange({
-                          enableImageGeneration: e.target.checked,
-                        })
-                      }
-                      className="sr-only peer"
-                    />
-                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-accent-300 dark:peer-focus:ring-accent-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-accent-600"></div>
-                  </label>
+                  <div className="flex items-center gap-2 ml-4">
+                    <div className="relative">
+                      <button
+                        onClick={() =>
+                          setInfoTooltip(
+                            infoTooltip === "image-generation"
+                              ? null
+                              : "image-generation",
+                          )
+                        }
+                        className="p-1 rounded-md hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                      >
+                        <Info className="h-4 w-4 text-gray-600 dark:text-gray-400" />
+                      </button>
+                      {infoTooltip === "image-generation" && (
+                        <div className="absolute right-0 top-8 z-50 w-72 rounded-lg border border-gray-300 bg-white p-3 shadow-2xl backdrop-blur-sm dark:border-gray-600 dark:bg-gray-900">
+                          <p className="text-xs text-gray-900 dark:text-gray-100">
+                            {getFeatureRequirementMessage("image-generation")}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={settings.enableImageGeneration}
+                        onChange={(e) =>
+                          handleSettingChange({
+                            enableImageGeneration: e.target.checked,
+                          })
+                        }
+                        disabled={!isImageGenerationAvailable}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-accent-300 dark:peer-focus:ring-accent-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-accent-600 peer-disabled:opacity-50 peer-disabled:cursor-not-allowed"></div>
+                    </label>
+                  </div>
                 </div>
 
-                <div className="flex items-start justify-between">
+                <div
+                  className={cn(
+                    "flex items-start justify-between",
+                    !isRagAvailable && "opacity-50",
+                  )}
+                >
                   <div className="flex-1">
                     <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
                       RAG (Retrieval Augmented Generation)
@@ -385,22 +492,47 @@ export const SettingsDialog: React.FC = () => {
                       attachments
                     </p>
                   </div>
-                  <label className="relative inline-flex items-center cursor-pointer ml-4">
-                    <input
-                      type="checkbox"
-                      checked={settings.enableRag}
-                      onChange={(e) =>
-                        handleSettingChange({
-                          enableRag: e.target.checked,
-                        })
-                      }
-                      className="sr-only peer"
-                    />
-                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-accent-300 dark:peer-focus:ring-accent-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-accent-600"></div>
-                  </label>
+                  <div className="flex items-center gap-2 ml-4">
+                    <div className="relative">
+                      <button
+                        onClick={() =>
+                          setInfoTooltip(infoTooltip === "rag" ? null : "rag")
+                        }
+                        className="p-1 rounded-md hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                      >
+                        <Info className="h-4 w-4 text-gray-600 dark:text-gray-400" />
+                      </button>
+                      {infoTooltip === "rag" && (
+                        <div className="absolute right-0 top-8 z-50 w-72 rounded-lg border border-gray-300 bg-white p-3 shadow-2xl backdrop-blur-sm dark:border-gray-600 dark:bg-gray-900">
+                          <p className="text-xs text-gray-900 dark:text-gray-100">
+                            {getFeatureRequirementMessage("rag")}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={settings.enableRag}
+                        onChange={(e) =>
+                          handleSettingChange({
+                            enableRag: e.target.checked,
+                          })
+                        }
+                        disabled={!isRagAvailable}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-accent-300 dark:peer-focus:ring-accent-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-accent-600 peer-disabled:opacity-50 peer-disabled:cursor-not-allowed"></div>
+                    </label>
+                  </div>
                 </div>
 
-                <div className="flex items-start justify-between">
+                <div
+                  className={cn(
+                    "flex items-start justify-between",
+                    !isSpeechToTextAvailable && "opacity-50",
+                  )}
+                >
                   <div className="flex-1">
                     <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
                       Speech-to-Text
@@ -409,19 +541,43 @@ export const SettingsDialog: React.FC = () => {
                       Enable microphone button for voice input in chat
                     </p>
                   </div>
-                  <label className="relative inline-flex items-center cursor-pointer ml-4">
-                    <input
-                      type="checkbox"
-                      checked={settings.enableSpeechToText}
-                      onChange={(e) =>
-                        handleSettingChange({
-                          enableSpeechToText: e.target.checked,
-                        })
-                      }
-                      className="sr-only peer"
-                    />
-                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-accent-300 dark:peer-focus:ring-accent-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-accent-600"></div>
-                  </label>
+                  <div className="flex items-center gap-2 ml-4">
+                    <div className="relative">
+                      <button
+                        onClick={() =>
+                          setInfoTooltip(
+                            infoTooltip === "speech-to-text"
+                              ? null
+                              : "speech-to-text",
+                          )
+                        }
+                        className="p-1 rounded-md hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                      >
+                        <Info className="h-4 w-4 text-gray-600 dark:text-gray-400" />
+                      </button>
+                      {infoTooltip === "speech-to-text" && (
+                        <div className="absolute right-0 top-8 z-50 w-72 rounded-lg border border-gray-300 bg-white p-3 shadow-2xl backdrop-blur-sm dark:border-gray-600 dark:bg-gray-900">
+                          <p className="text-xs text-gray-900 dark:text-gray-100">
+                            {getFeatureRequirementMessage("speech-to-text")}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={settings.enableSpeechToText}
+                        onChange={(e) =>
+                          handleSettingChange({
+                            enableSpeechToText: e.target.checked,
+                          })
+                        }
+                        disabled={!isSpeechToTextAvailable}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-accent-300 dark:peer-focus:ring-accent-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-accent-600 peer-disabled:opacity-50 peer-disabled:cursor-not-allowed"></div>
+                    </label>
+                  </div>
                 </div>
 
                 <div className="flex items-start justify-between opacity-50">

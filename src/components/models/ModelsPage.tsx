@@ -31,14 +31,17 @@ import {
   CheckCircle,
   Loader2,
   Package,
+  Play,
 } from "lucide-react";
 
 const RECOMMENDED_MODELS = [
   "OpenVINO/Qwen3-8B-int4-ov",
-  "OpenVINO/Qwen3-4B-int8-ov",
-  "OpenVINO/Mistral-7B-Instruct-v0.3-int4-ov",
-  "OpenVINO/Phi-4-mini-instruct-int4-ov",
+  "OpenVINO/Qwen2.5-7B-Instruct-int8-ov",
   "OpenVINO/Qwen2.5-VL-7B-Instruct-int4-ov",
+  "OpenVINO/stable-diffusion-v1-5-int8-ov",
+  "OpenVINO/whisper-base-int8-ov",
+  "OpenVINO/Qwen3-Embedding-0.6B-int8-ov",
+  "OpenVINO/Qwen3-Reranker-0.6B-fp16-ov",
 ];
 
 export const ModelsPage = () => {
@@ -64,7 +67,7 @@ export const ModelsPage = () => {
   const [selectedModel, setSelectedModel] = useState<ModelInfo | null>(null);
   const [, setLoadingModelInfo] = useState<string | null>(null);
   const [modelInfoCache, setModelInfoCache] = useState<Map<string, ModelInfo>>(
-    new Map()
+    new Map(),
   );
   const [modelMetadata, setModelMetadata] = useState<
     Record<string, ModelMetadata>
@@ -105,7 +108,7 @@ export const ModelsPage = () => {
   const loadModelMetadata = async () => {
     try {
       const metadata = await invoke<Record<string, ModelMetadata>>(
-        "get_all_model_metadata"
+        "get_all_model_metadata",
       );
       setModelMetadata(metadata);
       console.log("metadata", metadata);
@@ -146,7 +149,7 @@ export const ModelsPage = () => {
             loadDownloadedModels();
           }, 500);
         }
-      }
+      },
     );
 
     return () => {
@@ -166,13 +169,13 @@ export const ModelsPage = () => {
       console.log("Search results:", result.model_ids.length, "models");
       console.log(
         "Has more?",
-        result.model_ids.length === searchLimit && searchLimit < 100
+        result.model_ids.length === searchLimit && searchLimit < 100,
       );
       setSearchResults(result.model_ids);
       // Show load more if we got exactly what we asked for (likely more available)
       // or if search limit is less than 100 and we have results
       setHasMoreResults(
-        result.model_ids.length === searchLimit && searchLimit < 100
+        result.model_ids.length === searchLimit && searchLimit < 100,
       );
     } catch (error) {
       console.error("Search failed:", error);
@@ -378,7 +381,7 @@ export const ModelsPage = () => {
                             {category && (
                               <span
                                 className={`inline-block px-2 py-0.5 text-xs rounded-full ${getCategoryColor(
-                                  category
+                                  category,
                                 )}`}
                               >
                                 {getCategoryDisplayName(category)}
@@ -392,30 +395,54 @@ export const ModelsPage = () => {
                           </div>
                         </div>
 
-                        <div className="flex flex-col gap-1">
+                        <div className="flex flex-row gap-1">
                           {downloaded ? (
-                            <Button
-                              variant="primary"
-                              size="sm"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDelete(modelId);
-                              }}
-                              disabled={deletingModelId === modelId}
-                              className="bg-red-600 hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700 w-28"
-                            >
-                              {deletingModelId === modelId ? (
-                                <>
-                                  <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                                  Deleting...
-                                </>
-                              ) : (
-                                <>
-                                  <Trash2 className="w-3 h-3 mr-1" />
-                                  Delete
-                                </>
-                              )}
-                            </Button>
+                            <>
+                              {category &&
+                                loadedModelsByType[category] !== modelId && (
+                                  <Button
+                                    variant="primary"
+                                    size="sm"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleLoadModel(modelId, category);
+                                    }}
+                                    disabled={loadingModelId === modelId}
+                                    className="bg-blue-600 hover:bg-blue-700 dark:bg-blue-600 dark:hover:bg-blue-700 w-24"
+                                  >
+                                    {loadingModelId === modelId ? (
+                                      <Loader2 className="w-3 h-3 animate-spin" />
+                                    ) : (
+                                      <>
+                                        <Play className="w-3 h-3 mr-1" />
+                                        Load
+                                      </>
+                                    )}
+                                  </Button>
+                                )}
+                              <Button
+                                variant="primary"
+                                size="sm"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDelete(modelId);
+                                }}
+                                disabled={deletingModelId === modelId}
+                                className="bg-red-600 hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700 w-24"
+                              >
+                                {deletingModelId === modelId ? (
+                                  <>
+                                    <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                                    Deleting...
+                                  </>
+                                ) : (
+                                  <>
+                                    <Trash2 className="w-3 h-3 mr-1" />
+                                    Delete
+                                  </>
+                                )}
+                              </Button>
+                            </>
                           ) : downloading ? (
                             <div className="space-y-2 min-w-[120px]">
                               <div className="flex items-center gap-1 text-xs text-primary">
@@ -493,7 +520,7 @@ export const ModelsPage = () => {
                         {category && (
                           <span
                             className={`inline-block px-2 py-0.5 text-xs rounded-full ${getCategoryColor(
-                              category
+                              category,
                             )}`}
                           >
                             {getCategoryDisplayName(category)}
@@ -507,30 +534,54 @@ export const ModelsPage = () => {
                       </div>
                     </div>
 
-                    <div className="flex flex-col gap-1">
+                    <div className="flex flex-row gap-1">
                       {downloaded ? (
-                        <Button
-                          variant="primary"
-                          size="sm"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDelete(modelId);
-                          }}
-                          disabled={deletingModelId === modelId}
-                          className="bg-red-600 hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700 w-28"
-                        >
-                          {deletingModelId === modelId ? (
-                            <>
-                              <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                              Deleting...
-                            </>
-                          ) : (
-                            <>
-                              <Trash2 className="w-3 h-3 mr-1" />
-                              Delete
-                            </>
-                          )}
-                        </Button>
+                        <>
+                          {category &&
+                            loadedModelsByType[category] !== modelId && (
+                              <Button
+                                variant="primary"
+                                size="sm"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleLoadModel(modelId, category);
+                                }}
+                                disabled={loadingModelId === modelId}
+                                className="bg-blue-600 hover:bg-blue-700 dark:bg-blue-600 dark:hover:bg-blue-700 w-24"
+                              >
+                                {loadingModelId === modelId ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <>
+                                    <Play className="w-3 h-3 mr-1" />
+                                    Load
+                                  </>
+                                )}
+                              </Button>
+                            )}
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDelete(modelId);
+                            }}
+                            disabled={deletingModelId === modelId}
+                            className="bg-red-600 hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700 w-24"
+                          >
+                            {deletingModelId === modelId ? (
+                              <>
+                                <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                                Deleting...
+                              </>
+                            ) : (
+                              <>
+                                <Trash2 className="w-3 h-3 mr-1" />
+                                Delete
+                              </>
+                            )}
+                          </Button>
+                        </>
                       ) : downloading ? (
                         <div className="space-y-1 min-w-[120px]">
                           <div className="flex items-center gap-1 text-xs text-primary">

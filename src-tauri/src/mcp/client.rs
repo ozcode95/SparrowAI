@@ -266,13 +266,55 @@ impl McpManager {
         arguments: Option<serde_json::Map<String, Value>>
     ) -> Result<String, Box<dyn std::error::Error>> {
         // Parse server name and actual tool name from the prefixed name
-        let parts: Vec<&str> = tool_name.splitn(2, '_').collect();
-        if parts.len() != 2 {
-            return Err("Invalid tool name format. Expected: server_toolname".into());
-        }
-
-        let server_name = parts[0];
-        let actual_tool_name = parts[1];
+        let (server_name, actual_tool_name) = if tool_name.starts_with("builtin_") {
+            // For builtin tools, split by underscore after the builtin prefix
+            let parts: Vec<&str> = tool_name.splitn(2, '_').collect();
+            if parts.len() != 2 {
+                return Err("Invalid builtin tool name format. Expected: builtin_toolname".into());
+            }
+            (parts[0], parts[1])
+        } else if tool_name.contains(':') {
+            // For server:toolname format (used by tasks)
+            let parts: Vec<&str> = tool_name.splitn(2, ':').collect();
+            if parts.len() != 2 {
+                return Err("Invalid tool name format. Expected: server:toolname".into());
+            }
+            (parts[0], parts[1])
+        } else if tool_name.contains('_') {
+            // For server_toolname format, split at first underscore and check if it's a valid server
+            let parts: Vec<&str> = tool_name.splitn(2, '_').collect();
+            if parts.len() == 2 && self.clients.contains_key(parts[0]) {
+                (parts[0], parts[1])
+            } else {
+                // The underscore is part of the tool name itself, not a separator
+                // Try to find which server has this tool
+                if self.clients.len() == 1 {
+                    // Only one server, use it
+                    let (server, _) = self.clients.iter().next().unwrap();
+                    (server.as_str(), tool_name)
+                } else {
+                    return Err(format!(
+                        "Tool '{}' format is ambiguous. Use 'server:toolname' or 'server_toolname' format. Connected servers: {:?}",
+                        tool_name,
+                        self.clients.keys().collect::<Vec<_>>()
+                    ).into());
+                }
+            }
+        } else {
+            // No separator, tool name only - use first/only connected server
+            if self.clients.len() == 1 {
+                let (server, _) = self.clients.iter().next().unwrap();
+                (server.as_str(), tool_name)
+            } else if self.clients.is_empty() {
+                return Err("No MCP servers connected".into());
+            } else {
+                return Err(format!(
+                    "Tool '{}' format is ambiguous. Use 'server:toolname' or 'server_toolname' format. Connected servers: {:?}",
+                    tool_name,
+                    self.clients.keys().collect::<Vec<_>>()
+                ).into());
+            }
+        };
 
         let client = self.clients
             .get(server_name)
