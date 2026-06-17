@@ -1,0 +1,15 @@
+allowBuilds:
+  esbuild: set this to true or false
+
+# pnpm 11+ workspace / settings file. Even for a single-package project,
+# pnpm only reads its settings from here (not from `package.json` anymore).
+onlyBuiltDependencies:
+  - esbuild
+
+# Don't auto-run `pnpm install` every time a script runs.
+verifyDepsBeforeRun: false
+
+# pnpm 11 made an unapproved build script a fatal error by default. We've
+# explicitly approved esbuild above; this turns the strict gate off for any
+# other package that might join the tree later.
+strictDepBuilds: false

@@ -1,0 +1,350 @@
+@import "tailwindcss";
+
+/* ─── Fluent Design v2 tokens (Windows 11 dark) ───────────────────────────
+ *
+ * The `--color-tui-*` names are kept for source-compat with the existing
+ * markup — the *values* are remapped to Fluent neutral / accent palette
+ * so every page that uses them inherits the new look. Additional
+ * `--fluent-*` tokens exist for new components.
+ */
+@theme {
+    /* Layered Mica-style surfaces. The shell uses `bg` as the window
+   * canvas, `bg-elev` as the elevated chrome (sidebar, titlebar
+   * accents), and `bg-card` as the Mica-card surface for panels. */
+    --color-tui-bg: #202020;
+    --color-tui-bg-elev: #2b2b2b;
+    --color-tui-bg-card: #2d2d2d;
+
+    /* Text on dark Mica per FluentUI text fill ramp. */
+    --color-tui-fg: #ffffff;
+    --color-tui-fg-dim: rgba(255, 255, 255, 0.7861);
+    --color-tui-fg-muted: rgba(255, 255, 255, 0.5442);
+
+    /* Windows 11 accent in dark mode — bright cyan-blue used for accent
+   * text / hyperlinks, with the saturated `accent-dim` reserved for
+   * filled primary buttons. */
+    --color-tui-accent: #60cdff;
+    --color-tui-accent-dim: #0078d4;
+
+    /* Status: subdued so they read at small sizes against the dark canvas. */
+    --color-tui-warn: #fce100;
+    --color-tui-err: #ff99a4;
+    --color-tui-ok: #6ccb5f;
+
+    /* Hairline strokes per Fluent neutralStroke. */
+    --color-tui-border: rgba(255, 255, 255, 0.0837);
+    --color-tui-border-focus: #60cdff;
+    --color-tui-selection: rgba(96, 205, 255, 0.12);
+
+    /* Fluent-only additions. */
+    --fluent-bg-subtle: rgba(255, 255, 255, 0.0326);
+    --fluent-bg-subtle-hover: rgba(255, 255, 255, 0.0605);
+    --fluent-bg-subtle-pressed: rgba(255, 255, 255, 0.0837);
+    --fluent-bg-subtle-selected: rgba(255, 255, 255, 0.1024);
+    --fluent-accent-hover: #1a8de0;
+    --fluent-accent-pressed: #0067b8;
+    --fluent-stroke-strong: rgba(255, 255, 255, 0.1395);
+    --fluent-stroke-control: rgba(255, 255, 255, 0.0698);
+    --fluent-stroke-control-strong: rgba(255, 255, 255, 0.5442);
+
+    /* Fluent elevation shadows (depth 2 / 4 / 8 / 16 from spec). */
+    --fluent-shadow-2:
+        0 1px 2px rgba(0, 0, 0, 0.28), 0 0 2px rgba(0, 0, 0, 0.24);
+    --fluent-shadow-4:
+        0 2px 4px rgba(0, 0, 0, 0.32), 0 0 2px rgba(0, 0, 0, 0.24);
+    --fluent-shadow-8:
+        0 4px 8px rgba(0, 0, 0, 0.32), 0 0 2px rgba(0, 0, 0, 0.24);
+    --fluent-shadow-16:
+        0 8px 16px rgba(0, 0, 0, 0.32), 0 0 2px rgba(0, 0, 0, 0.24);
+    --fluent-shadow-28:
+        0 14px 28px rgba(0, 0, 0, 0.4), 0 0 4px rgba(0, 0, 0, 0.32);
+
+    /* Fluent curves — Fast (acceleration) / Decel (decel) / Standard. */
+    --fluent-curve-decel: cubic-bezier(0.1, 0.9, 0.2, 1);
+    --fluent-curve-accel: cubic-bezier(0.7, 0, 1, 0.5);
+    --fluent-curve-standard: cubic-bezier(0.55, 0.55, 0, 1);
+
+    /* Type ramp — Segoe UI Variable is the Windows 11 system font; the
+   * fallback chain covers macOS / Linux dev. Monospace is reserved
+   * for code blocks (parsed tool calls, JSON pretty-prints). */
+    --font-sans:
+        "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI",
+        -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --font-display:
+        "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI",
+        -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --font-mono:
+        "Cascadia Code", "JetBrains Mono", Consolas, ui-monospace,
+        SFMono-Regular, Menlo, monospace;
+}
+
+/* ─── Base ────────────────────────────────────────────────────────────────── */
+html,
+body,
+#root {
+    height: 100%;
+    margin: 0;
+}
+
+body {
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.4;
+    font-feature-settings: "ss01", "cv01";
+    letter-spacing: 0;
+    overflow: hidden;
+    -webkit-user-select: none;
+    user-select: none;
+    background-color: var(--color-tui-bg);
+    color: var(--color-tui-fg);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* A *very* subtle mica-style radial wash so the shell doesn't look
+     * uniformly flat under the elevated panels. Pulled from the Win11
+     * dark wallpaper accent. */
+    background-image:
+        radial-gradient(
+            circle at 100% 0%,
+            rgba(96, 205, 255, 0.05),
+            transparent 45%
+        ),
+        radial-gradient(
+            circle at 0% 100%,
+            rgba(96, 205, 255, 0.03),
+            transparent 55%
+        );
+}
+
+code,
+pre,
+kbd,
+samp {
+    font-family: var(--font-mono);
+}
+
+.allow-select,
+.allow-select * {
+    -webkit-user-select: text;
+    user-select: text;
+}
+
+/* ─── Scrollbar (thin, themed, Fluent feel) ───────────────────────────── */
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.16);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.28);
+    background-clip: padding-box;
+    border: 2px solid transparent;
+}
+::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
+/* ─── Focus ring (Fluent 2 reveal) ───────────────────────────────────── */
+:focus {
+    outline: none;
+}
+:focus-visible {
+    outline: 2px solid var(--color-tui-border-focus);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+/* Form fields manage their own focus indicator (the Fluent 2 bottom
+ * underline). Suppressing the global ring here prevents the rounded
+ * outline + the per-field accent border from stacking into a visible
+ * "double bottom border" around inputs, textareas, and selects. */
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+    outline: none;
+}
+
+/* ─── Form chrome — native checkboxes get the system accent so they
+ * look like Fluent toggles without us re-implementing them everywhere.
+ * Per-field overrides live in their own components. */
+input,
+textarea,
+select {
+    caret-color: var(--color-tui-accent);
+    font-family: inherit;
+}
+input[type="checkbox"],
+input[type="radio"] {
+    accent-color: var(--color-tui-accent-dim);
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+
+/* Fluent-styled native select: matches the standard input chrome so
+ * dropdowns visually line up with text fields. */
+select {
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='none' stroke='%23ffffffb0' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round' d='m2 4 3 3 3-3'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    padding-right: 26px !important;
+}
+select option {
+    background-color: #2b2b2b;
+    color: #fff;
+}
+
+/* ─── Fluent ProgressRing (spinner) ──────────────────────────────────── */
+@keyframes fluent-ring-rotate {
+    to {
+        transform: rotate(360deg);
+    }
+}
+.fluent-ring {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.16);
+    border-top-color: var(--color-tui-accent);
+    animation: fluent-ring-rotate 0.9s linear infinite;
+    vertical-align: -2px;
+}
+.fluent-ring-sm {
+    width: 12px;
+    height: 12px;
+    border-width: 1.5px;
+}
+.fluent-ring-lg {
+    width: 20px;
+    height: 20px;
+    border-width: 2px;
+}
+
+/* ─── Streaming dot (replaces the blinking ▊ block cursor) ───────────── */
+@keyframes fluent-pulse {
+    0%,
+    100% {
+        opacity: 0.4;
+        transform: scale(0.85);
+    }
+    50% {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+.fluent-typing::after {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-left: 6px;
+    border-radius: 50%;
+    background: var(--color-tui-accent);
+    animation: fluent-pulse 1.2s ease-in-out infinite;
+    vertical-align: middle;
+}
+
+/* ─── Acrylic backdrop for overlays ──────────────────────────────────── */
+.fluent-acrylic {
+    background-color: rgba(36, 36, 36, 0.78);
+    backdrop-filter: blur(60px) saturate(125%);
+    -webkit-backdrop-filter: blur(60px) saturate(125%);
+}
+
+/* Subtle Mica fill used for panels and side rails. Layers a soft
+ * highlight on top of the elevated surface so cards feel like they
+ * sit on a translucent material rather than a flat block. */
+.fluent-mica {
+    background-color: var(--color-tui-bg-card);
+    background-image:
+        linear-gradient(
+            180deg,
+            rgba(255, 255, 255, 0.018) 0%,
+            rgba(255, 255, 255, 0) 60%
+        ),
+        radial-gradient(
+            120% 80% at 0% 0%,
+            rgba(96, 205, 255, 0.04),
+            transparent 60%
+        );
+}
+
+/* ─── Card surface helper (rounded + stroke + shadow) ────────────────── */
+.fluent-card {
+    background-color: var(--color-tui-bg-card);
+    border: 1px solid var(--color-tui-border);
+    border-radius: 8px;
+    box-shadow: var(--fluent-shadow-2);
+}
+
+/* ─── View fade — applied to the page wrapper inside <main> so route
+ * changes get the Win11 connected-animations "fade-in + slide-up"
+ * feel without us setting up a router. */
+@keyframes fluent-view-in {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+.fluent-view {
+    animation: fluent-view-in 220ms var(--fluent-curve-decel) both;
+}
+
+/* ─── Fluent reveal — soft luminous outline that follows the pointer
+ * over groups of interactive surfaces. Pure CSS so we don't need a
+ * JS pointer-tracker. */
+.fluent-reveal {
+    position: relative;
+    isolation: isolate;
+}
+.fluent-reveal::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: radial-gradient(
+        120px 120px at var(--mx, 50%) var(--my, 50%),
+        rgba(255, 255, 255, 0.06),
+        transparent 60%
+    );
+    opacity: 0;
+    transition: opacity 200ms var(--fluent-curve-decel);
+    z-index: 0;
+}
+.fluent-reveal:hover::before {
+    opacity: 1;
+}
+.fluent-reveal > * {
+    position: relative;
+    z-index: 1;
+}
+
+/* Fluent popover appear (scale + fade) */
+@keyframes fluent-popover-in {
+    from {
+        opacity: 0;
+        transform: translateY(-4px) scale(0.97);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+.fluent-popover-in {
+    animation: fluent-popover-in 180ms var(--fluent-curve-decel) both;
+    transform-origin: top center;
+}

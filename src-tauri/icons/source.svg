@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  keai brand mark.
+
+  Source for all platform icons. Re-generate every size with:
+
+      pnpm tauri icon src-tauri/icons/source.svg
+
+  Colors match the in-app TUI theme (see `src/index.css`):
+    background : #0b0d10
+    accent     : #00d3a7
+    border     : #2a3038
+-->
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 1024 1024"
+     width="1024" height="1024"
+     shape-rendering="geometricPrecision">
+
+  <!-- Rounded-square background matching the app shell. -->
+  <rect width="1024" height="1024" rx="192" ry="192" fill="#0b0d10"/>
+
+  <!-- Hairline inner border (same value as the tui-border CSS token). -->
+  <rect x="6" y="6" width="1012" height="1012" rx="186" ry="186"
+        fill="none" stroke="#2a3038" stroke-width="2"/>
+
+  <!--
+    Stylised lowercase `k` rendered as primitives (no font dependency,
+    so resvg / Tauri's icon pipeline produce identical raster output
+    on every host).
+
+    Construction:
+      stem        : 128×544 rect, left-aligned within the glyph box
+      diagonals   : 128-stroke paths emanating from the stem's right edge
+                    at vertical centre, reaching the upper- and lower-right
+                    glyph corners.
+
+    The whole glyph spans x=272..752 (width 480) and y=240..784
+    (height 544), centred on (512, 512).
+  -->
+  <g fill="#00d3a7" stroke="#00d3a7">
+    <rect x="272" y="240" width="128" height="544" stroke="none"/>
+    <path d="M 400 512 L 688 256" stroke-width="128" fill="none"/>
+    <path d="M 400 512 L 688 768" stroke-width="128" fill="none"/>
+  </g>
+</svg>
