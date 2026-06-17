@@ -146,6 +146,10 @@ pub fn system_cache() -> Result<PathBuf> {
     Ok(root()?.join("system.json"))
 }
 
+pub fn recommended_models_cache() -> Result<PathBuf> {
+    Ok(root()?.join("recommended_models.json"))
+}
+
 pub fn settings_file() -> Result<PathBuf> {
     Ok(root()?.join("settings.json"))
 }

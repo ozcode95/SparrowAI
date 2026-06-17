@@ -35,24 +35,21 @@ export const TASK_CATEGORIES: readonly TaskCategory[] = [
     label: "Chat & completion",
     blurb: "Conversational LLM that answers prompts and uses tools.",
     searchHint: "Qwen",
-    iconPath:
-      "M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-6.4A8 8 0 1 1 21 12Z",
+    iconPath: "M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-6.4A8 8 0 1 1 21 12Z",
   },
   {
     kind: "embeddings",
     label: "Embeddings",
     blurb: "Vector encoder for semantic search and memory recall.",
     searchHint: "embedding",
-    iconPath:
-      "M4 7h16M4 12h10M4 17h7M18 14l3 3-3 3M21 17h-7",
+    iconPath: "M4 7h16M4 12h10M4 17h7M18 14l3 3-3 3M21 17h-7",
   },
   {
     kind: "rerank",
     label: "Rerank",
     blurb: "Cross-encoder that re-orders retrieved documents by relevance.",
     searchHint: "reranker",
-    iconPath:
-      "M3 6h13M3 12h9M3 18h5M17 4v16m0 0-3-3m3 3 3-3",
+    iconPath: "M3 6h13M3 12h9M3 18h5M17 4v16m0 0-3-3m3 3 3-3",
   },
   {
     kind: "image_generation",
@@ -70,19 +67,13 @@ export const TASK_CATEGORIES: readonly TaskCategory[] = [
     iconPath:
       "M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3ZM5 11a7 7 0 0 0 14 0M12 18v3M8 21h8",
   },
-  {
-    kind: "text2speech",
-    label: "Text → Speech",
-    blurb: "Voice synthesizer for read-aloud and assistant responses.",
-    searchHint: "text to speech",
-    iconPath:
-      "M3 10v4h3l5 4V6L6 10H3zM16 8a5 5 0 0 1 0 8M19 5a9 9 0 0 1 0 14",
-  },
 ];
 
-const CATEGORY_BY_KIND: Record<ModelTaskKind, TaskCategory> = Object.fromEntries(
-  TASK_CATEGORIES.map((c) => [c.kind, c]),
-) as Record<ModelTaskKind, TaskCategory>;
+const CATEGORY_BY_KIND: Record<ModelTaskKind, TaskCategory> =
+  Object.fromEntries(TASK_CATEGORIES.map((c) => [c.kind, c])) as Record<
+    ModelTaskKind,
+    TaskCategory
+  >;
 
 export function categoryFor(kind: ModelTaskKind): TaskCategory {
   return CATEGORY_BY_KIND[kind];

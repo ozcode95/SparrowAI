@@ -1,6 +1,8 @@
 //! Hardware / OS probe. Cached to `system.json` so we don't pay the WMI cost
 //! on every launch — re-probe is opt-in.
 
+pub mod recommend;
+
 use anyhow::Result;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -63,7 +65,10 @@ pub fn probe() -> Result<Specs> {
     sys.refresh_all();
 
     let cpus = sys.cpus();
-    let cpu_brand = cpus.first().map(|c| c.brand().to_string()).unwrap_or_default();
+    let cpu_brand = cpus
+        .first()
+        .map(|c| c.brand().to_string())
+        .unwrap_or_default();
     let cpu_vendor = cpus
         .first()
         .map(|c| c.vendor_id().to_string())
@@ -83,7 +88,10 @@ pub fn probe() -> Result<Specs> {
         cpu_physical_cores: physical_cores,
         cpu_logical_cores: logical_cores,
         ram_total_mb: sys.total_memory() / 1024 / 1024,
-        ram_usable_mb: sys.available_memory() / 1024 / 1024,
+        // `sys.available_memory()` is the *currently free* RAM — useless
+        // for hardware assessment. Use total physical RAM so the
+        // recommendation engine has a stable number to budget against.
+        ram_usable_mb: sys.total_memory() / 1024 / 1024,
         gpus,
         npus,
         probed_at: Utc::now().to_rfc3339(),
@@ -115,13 +123,16 @@ mod win {
     struct VideoController {
         name: Option<String>,
         adapter_compatibility: Option<String>,
-        adapter_ram: Option<u32>,
     }
 
     pub fn enumerate() -> anyhow::Result<(Vec<GpuInfo>, Vec<NpuInfo>)> {
         let com = COMLibrary::new()?;
         let wmi = WMIConnection::new(com)?;
         let rows: Vec<VideoController> = wmi.query()?;
+
+        // Fetch real VRAM via DXGI — WMI's `AdapterRAM` is a u32 that
+        // overflows for cards >4 GB (e.g. RTX 4070 12 GB truncates to 0).
+        let vram_map = dxgi_vram_map()?;
 
         let mut gpus = Vec::new();
         let mut npus = Vec::new();
@@ -146,13 +157,71 @@ mod win {
                 GpuKind::Unknown
             };
 
+            // Match WMI entry → DXGI adapter by name substring.
+            // DXGI names are typically longer (e.g. "NVIDIA GeForce RTX 4070")
+            // so we do a bidirectional contains check.
+            let vram_mb = vram_map
+                .iter()
+                .find(|(dxgi_name, _)| {
+                    name.len() > 3
+                        && dxgi_name.len() > 3
+                        && (dxgi_name.contains(&name) || name.contains(dxgi_name.as_str()))
+                })
+                .map(|(_, mb)| *mb);
+
+            // Integrated GPUs don't have meaningful *dedicated* VRAM —
+            // they share system RAM. DXGI reports ~0 for dedicated on
+            // iGPUs, which is correct. Keep the field as None so the
+            // recommendation engine falls back to system RAM budget.
+            let vram_mb = match kind {
+                GpuKind::Integrated => None,
+                _ => vram_mb.filter(|&mb| mb > 64), // sanity floor: 64 MB
+            };
+
             gpus.push(GpuInfo {
                 name,
                 vendor,
-                vram_mb: r.adapter_ram.map(|b| u64::from(b) / 1024 / 1024),
+                vram_mb,
                 kind,
             });
         }
         Ok((gpus, npus))
+    }
+
+    /// Enumerate GPUs via DXGI and return a `(adapter_name, dedicated_vram_mb)`
+    /// map. DXGI reports correct 64‑bit VRAM; WMI's `AdapterRAM` u32 overflows
+    /// for cards >4 GB.
+    fn dxgi_vram_map() -> anyhow::Result<Vec<(String, u64)>> {
+        use windows::Win32::Graphics::Dxgi::{
+            CreateDXGIFactory1, IDXGIFactory1, DXGI_ERROR_NOT_FOUND,
+        };
+
+        let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }
+            .map_err(|e| anyhow::anyhow!("CreateDXGIFactory1: {e}"))?;
+
+        let mut out = Vec::new();
+        for i in 0u32.. {
+            let adapter = unsafe { factory.EnumAdapters1(i) };
+            if let Err(ref e) = adapter {
+                if e.code() == DXGI_ERROR_NOT_FOUND {
+                    break;
+                }
+                // Skip adapters we can't query (e.g. software renderers).
+                continue;
+            }
+            let adapter = adapter.unwrap();
+
+            let desc = unsafe { adapter.GetDesc1() }.unwrap_or_default();
+            let name = String::from_utf16_lossy(&desc.Description)
+                .trim_end_matches('\0')
+                .to_string();
+            // `DedicatedVideoMemory` is a SIZE_T (usize on this target).
+            // DXGI reports the real value even for >4 GB cards unlike
+            // WMI's `AdapterRAM` u32.
+            let vram_mb = desc.DedicatedVideoMemory as u64 / (1024 * 1024);
+
+            out.push((name, vram_mb));
+        }
+        Ok(out)
     }
 }

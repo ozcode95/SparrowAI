@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@/lib/tauri";
+import type { RecommendationMap } from "@/lib/recommendedModels";
 
 export interface GpuInfo {
   name: string;
@@ -33,6 +34,12 @@ interface SystemState {
   loading: boolean;
   error: string | null;
   probe: (force?: boolean) => Promise<void>;
+  /**
+   * Fetch spec-ranked model recommendations for every task category.
+   * Returns a map of task‑kind → model list, sorted best‑fit‑first.
+   * Falls back to a static catalog when offline.
+   */
+  recommendModels: () => Promise<RecommendationMap>;
 }
 
 export const useSystemStore = create<SystemState>((set) => ({
@@ -46,6 +53,15 @@ export const useSystemStore = create<SystemState>((set) => ({
       set({ specs, loading: false });
     } catch (e) {
       set({ error: String(e), loading: false });
+    }
+  },
+  recommendModels: async () => {
+    try {
+      const map = await invoke<RecommendationMap>("system_recommend_models");
+      return map ?? {};
+    } catch (e) {
+      console.error("system_recommend_models failed", e);
+      return {};
     }
   },
 }));

@@ -7019,7 +7019,7 @@ dependencies = [
 
 [[package]]
 name = "zero"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -7058,6 +7058,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "walkdir",
+ "windows 0.61.3",
  "wmi",
  "zip",
 ]

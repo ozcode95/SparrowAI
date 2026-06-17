@@ -67,11 +67,7 @@ export function pipelineTagToTaskKind(
 
   // ── speech → text ───────────────────────────────────────────
   if (
-    [
-      "automatic-speech-recognition",
-      "audio-to-text",
-      "whisper",
-    ].includes(t)
+    ["automatic-speech-recognition", "audio-to-text", "whisper"].includes(t)
   ) {
     return "speech2text";
   }
@@ -134,5 +130,4 @@ export const CATEGORY_ORDER: ModelTaskKind[] = [
   "rerank",
   "image_generation",
   "speech2text",
-  "text2speech",
 ];

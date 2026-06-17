@@ -53,6 +53,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // ─── system ──────────────────────────────────────────────
             commands::system::system_probe,
+            commands::system::system_recommend_models,
             // ─── settings ─────────────────────────────────────────────
             commands::settings::settings_load,
             commands::settings::settings_save,

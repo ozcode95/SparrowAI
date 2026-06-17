@@ -14,6 +14,7 @@ import {
   type LoadedModel,
   type TfsModelStatus,
 } from "@/stores/server";
+import { useSystemStore } from "@/stores/system";
 import { bytes, relativeTime } from "@/lib/format";
 import type { ModelDeployParams, ModelTaskKind } from "@/lib/modelParams";
 import {
@@ -24,6 +25,7 @@ import {
 import {
   RECOMMENDED_BY_KIND,
   type RecommendedModel,
+  type RecommendationMap,
 } from "@/lib/recommendedModels";
 
 /** Pop-over only ever shows the top N HF hits. */
@@ -562,10 +564,27 @@ function RecommendedView({
   onConfigure: (hfId: string) => void;
   onCancel: (id: string) => Promise<void>;
 }) {
+  // Fetch spec-ranked recommendations for every task category.
+  const recommendModels = useSystemStore((s) => s.recommendModels);
+  const [specMap, setSpecMap] = useState<RecommendationMap | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    recommendModels().then((map) => {
+      if (!cancelled && Object.keys(map).length > 0) setSpecMap(map);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <>
       {CATEGORY_ORDER.map((kind) => {
-        const recs = RECOMMENDED_BY_KIND[kind];
+        // Prefer dynamic spec-ranked recs; fall back to static.
+        const recs: RecommendedModel[] =
+          specMap?.[kind] ?? RECOMMENDED_BY_KIND[kind];
         if (recs.length === 0) return null;
         const meta = CATEGORY_META[kind];
         const installedCount = recs.filter((r) =>
@@ -1487,7 +1506,10 @@ function RecommendedCard({
       {/* Row 1: name + status badges */}
       <div className="min-w-0">
         <div className="flex items-center gap-1.5">
-          <p className="text-[13px] font-medium text-tui-fg leading-tight">
+          <p
+            className="truncate text-[13px] font-medium text-tui-fg leading-tight"
+            title={rec.hfId}
+          >
             {rec.hfId}
           </p>
           <div className="flex shrink-0 items-center gap-1">
