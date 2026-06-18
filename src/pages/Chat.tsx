@@ -35,6 +35,7 @@ import {
   formatSamplingDefault,
   modelSamplingDefaults,
 } from "@/lib/modelProfile";
+import { taskKindFromPipelineTag } from "@/lib/modelTasks";
 import { invoke } from "@/lib/tauri";
 
 // Stable empty fallbacks so Zustand selectors return cached references
@@ -45,54 +46,6 @@ import { invoke } from "@/lib/tauri";
 const EMPTY_MESSAGES: Message[] = [];
 const EMPTY_ERRORS: Record<string, ChatErrorInfo> = {};
 
-/**
- * Built-in slash commands the user can prefix their message with.
- *
- * Kept in one place so the autocomplete popover above the chat input
- * and any future help surfaces stay in sync. The actual semantics live
- * elsewhere:
- *   * `/loop` is detected by the Rust runner (`is_loop_prefixed`) and
- *     flips that turn into autonomous agent mode.
- *   * `/no_think` can be used by the user to manually disable thinking
- *     for that turn (Qwen3, gpt-oss, Gemma 4 thinking variants). For
- *     Qwen3/Qwen3.5 models specifically, the backend automatically passes
- *     {"enable_thinking": false} via chat_template_kwargs when thinking
- *     is not enabled, so manual use of /no_think is rarely needed.
- *   * `/web` and `/research` are detected by the runner and unlock the
- *     built-in web tools for that turn — they're hidden from the model
- *     otherwise so unprompted browsing can't happen.
- *
- * All four also have a structured equivalent the composer's `+` menu
- * writes to `TurnOverrides`. New invocations should prefer the menu;
- * the slash forms remain a documented fallback for power users.
- */
-interface SlashCommand {
-  name: string;
-  hint: string;
-  desc: string;
-}
-const SLASH_COMMANDS: SlashCommand[] = [
-  {
-    name: "/loop",
-    hint: "agent mode",
-    desc: "Let the assistant chain multiple tool calls autonomously this turn.",
-  },
-  {
-    name: "/no_think",
-    hint: "skip thinking",
-    desc: "Disable model thinking for this turn (Qwen3, gpt-oss, Gemma 4…).",
-  },
-  {
-    name: "/web",
-    hint: "web search",
-    desc: "Allow the assistant to call web.search (and web.read_page) this turn.",
-  },
-  {
-    name: "/research",
-    hint: "deep research",
-    desc: "Allow web.deep_research (and web.read_page) for a multi-source research pass this turn.",
-  },
-];
 const EMPTY_SKILL_IDS: string[] = [];
 const EMPTY_TOOL_CONFIRMS: Record<string, ToolConfirmRequest> = {};
 const EMPTY_DISABLED_TOOLS: string[] = [];
@@ -100,24 +53,19 @@ const EMPTY_DISABLED_BUILTINS: string[] = [];
 
 // ─── Per-turn composer presets ( + menu toggles ) ──────────────
 //
-// User-friendly surface over the slash-command capability flags. Each
-// preset is a turn-scoped toggle the user can flip from the composer
-// `+` menu; when active, `onSend` prepends the matching slash command
-// to the outgoing message and then clears the set, so the unlock
-// applies exactly to that one turn (matches the runner's existing
-// single-turn slash semantics).
+// User-facing surface over the runner's per-turn capability flags.
+// Each preset is a turn-scoped toggle the user flips from the
+// composer `+` menu; when active, `onSend` writes the matching flag
+// into the structured `TurnOverrides` payload and then clears the
+// set so the unlock applies to exactly that one turn.
 //
 // `inverse: true` flips the semantics for presets whose *default*
-// state is the slash command being applied — the "Thinking" toggle
-// uses this so that all chats default to `/no_think` (no thinking
-// trace) and the user explicitly opts *into* thinking for a turn by
-// flipping the toggle on. In that mode "in the active set" means
-// "suppress the slash command" rather than "emit it".
-type TurnPreset = "web" | "research" | "think";
+// behaviour is the flag being **off** — the "Thinking" toggle uses
+// this so that all chats default to no-thinking and the user
+// explicitly opts *into* the reasoning trace for a turn.
+type TurnPreset = "web" | "research" | "think" | "loop";
 interface TurnPresetSpec {
   key: TurnPreset;
-  /** Canonical slash command the runner detects (`/web`, `/research`, `/no_think`). */
-  command: string;
   /** Menu / chip label, e.g. "Search". */
   label: string;
   /** One-liner shown under the label in the menu. */
@@ -125,10 +73,10 @@ interface TurnPresetSpec {
   /** Inline SVG glyph rendered next to the label. */
   icon: React.ReactNode;
   /**
-   * When `true`, the slash command is the *default* for every turn
-   * and toggling the preset *on* suppresses it. When `false`
-   * (default), the slash command is opt-in: toggling on prepends
-   * it, toggling off leaves the message untouched.
+   * When `true`, the underlying capability is the *default* for
+   * every turn and toggling the preset *on* suppresses it. When
+   * `false` (default), the capability is opt-in: toggling on emits
+   * the flag, toggling off leaves the message untouched.
    */
   inverse?: boolean;
 }
@@ -177,30 +125,48 @@ const THINKING_ICON = (
     <path d="M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.8 1-2.5A6 6 0 0 0 12 3z" />
   </svg>
 );
+const AGENT_ICON = (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.75"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M3 12a9 9 0 1 0 18 0 9 9 0 0 0-18 0z" />
+    <path d="M8 12h2l2-4 2 8 2-4h2" />
+  </svg>
+);
 const TURN_PRESETS: TurnPresetSpec[] = [
   {
     key: "web",
-    command: "/web",
     label: "Search",
     hint: "Search the web",
     icon: GLOBE_ICON,
   },
   {
     key: "research",
-    command: "/research",
     label: "Deep research",
     hint: "Multi-source web research pass",
     icon: RESEARCH_ICON,
   },
   {
     key: "think",
-    command: "/no_think",
     label: "Thinking",
     hint: "Let the model show its reasoning trace this turn",
     icon: THINKING_ICON,
-    // Default behaviour is `/no_think` for every turn — toggling this
-    // preset on lifts the suppression so the model can think out loud.
+    // Default is no thinking trace — toggling this preset on opts the
+    // model into reasoning out loud for the next turn.
     inverse: true,
+  },
+  {
+    key: "loop",
+    label: "Agent",
+    hint: "Let the assistant chain multiple tool calls autonomously this turn",
+    icon: AGENT_ICON,
   },
 ];
 
@@ -254,6 +220,7 @@ export function ChatView() {
   const ovmsLoadedModels = useServerStore((s) => s.info?.loaded_models);
   const ovmsStatus = useServerStore((s) => s.info?.status ?? null);
   const ovmsLastError = useServerStore((s) => s.info?.last_error ?? null);
+  const ovmsLoadingIds = useServerStore((s) => s.loadingModelIds);
   const activeProviderKind = useSettingsStore((s) => {
     const p = s.providers.find((x) => x.id === s.active_provider_id);
     return p?.kind ?? null;
@@ -312,12 +279,11 @@ export function ChatView() {
   const [pending, setPending] = useState<Attachment[]>([]);
   const [attaching, setAttaching] = useState(false);
   // Per-turn capability toggles surfaced through the composer `+`
-  // menu. Mirrors the `/web` / `/research` slash commands the runner
-  // already understands — we just prepend the appropriate prefix in
-  // `onSend` and clear the set so the unlock stays scoped to one turn
-  // (the same single-turn semantics typing the slash command by hand
-  // already gives). Stored as a `Set` so toggling is O(1) and the
-  // rendered chip order is deterministic via the `TURN_PRESETS` list.
+  // menu. Each preset maps to a flag in `TurnOverrides` that the Rust
+  // runner reads off the persisted user message; we clear the set
+  // after `onSend` so the unlock stays scoped to one turn. Stored as
+  // a `Set` so toggling is O(1) and the rendered chip order is
+  // deterministic via the `TURN_PRESETS` list.
   const [turnPresets, setTurnPresets] = useState<Set<TurnPreset>>(
     () => new Set(),
   );
@@ -329,14 +295,41 @@ export function ChatView() {
       return next;
     });
   }
-  // Slash-command popover state. `slashDismissed` lets Escape close the
-  // menu without us also having to wipe the leading "/" the user just
-  // typed — it auto-resets whenever the draft transitions away from
-  // starting with a slash.
-  const [slashIdx, setSlashIdx] = useState(0);
-  const [slashDismissed, setSlashDismissed] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // ─── Voice input (STT) ──────────────────────────────────────────
+  // When an OVMS-served speech2text model is loaded, the composer's
+  // send button morphs into a microphone toggle until the user types
+  // something. Recording uses the browser's MediaRecorder API — Tauri
+  // 2's webview exposes it transparently, and because tauri.conf.json
+  // leaves CSP unset (`null`) the OS-level mic prompt fires the first
+  // time we call `getUserMedia` instead of being blocked by the CSP.
+  // Captured chunks are concatenated into a single Blob, shipped to
+  // the backend as a `Vec<u8>`, and the transcribed text lands back
+  // in the textarea so the user can review/edit before sending.
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [micError, setMicError] = useState<string | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+
+  // Stop any active mic capture when the component unmounts — prevents
+  // a runaway track from keeping the OS recording indicator lit after
+  // the user navigates away mid-record.
+  useEffect(() => {
+    return () => {
+      try {
+        recorderRef.current?.stop();
+      } catch {
+        /* already stopped */
+      }
+      micStreamRef.current?.getTracks().forEach((t) => t.stop());
+      recorderRef.current = null;
+      micStreamRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({
@@ -460,18 +453,21 @@ export function ChatView() {
   async function onSend() {
     const txt = draft.trim();
     if (!txt && pending.length === 0) return;
+    // Block sends while the chosen OVMS model is mid-load — the
+    // composer is also visually disabled, but a stray Enter key (or a
+    // race with the loading state flipping back) would otherwise fire
+    // a request OVMS isn't ready to serve.
+    if (modelLoading) return;
     const atts = pending;
     // Build the structured overrides payload from the active preset
     // set. The Rust runner reads these directly off the persisted
-    // user message (replaces the old `/web` / `/research` /
-    // `/no_think` text-prefix scan). `inverse` presets like
-    // "Thinking" map to *not* including the slash command in the
-    // first place — here that means: `think: true` when the toggle
-    // is in the set, `think: false` (default) otherwise.
+    // user message. `inverse` presets like "Thinking" follow the
+    // "toggle on means flag set" convention defined by `TURN_PRESETS`.
     const overrides: TurnOverrides = {
       web: turnPresets.has("web"),
       research: turnPresets.has("research"),
       think: turnPresets.has("think"),
+      loop: turnPresets.has("loop"),
     };
     setDraft("");
     setPending([]);
@@ -479,83 +475,132 @@ export function ChatView() {
     await send(txt, atts, overrides);
   }
 
-  // ─── slash-command autocomplete ────────────────────────────────────
-  // We only consider the very first whitespace-delimited token. If that
-  // token starts with `/`, it's a candidate — we filter the registry by
-  // prefix and surface matches in a popover above the textarea.
-  const slashMatch = useMemo(() => {
-    if (!draft.startsWith("/")) return null;
-    const firstToken = draft.split(/\s/, 1)[0];
-    // Once the user has typed a space or newline after the command, the
-    // marker is "committed" and we get out of their way.
-    if (
-      firstToken.length !== draft.length &&
-      /\s/.test(draft[firstToken.length])
-    ) {
-      return null;
+  /**
+   * Begin a microphone capture. The first invocation triggers the
+   * OS-level mic permission prompt (Tauri 2 webview + null CSP →
+   * the OS handles consent, we don't need to declare a Tauri
+   * capability). Audio is collected as opaque chunks; we don't
+   * decode it here — OVMS / Whisper handle the container format
+   * directly via the multipart upload.
+   */
+  async function startRecording() {
+    if (recording || transcribing || !sttModel) return;
+    setMicError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+      });
+      // Pick a mime the browser will actually emit. WebKit/Chromium
+      // both reliably produce `audio/webm;codecs=opus`; we still
+      // fall back to whatever the platform chooses so the call
+      // doesn't throw on a Safari-flavored webview.
+      const candidates = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/ogg;codecs=opus",
+        "audio/mp4",
+      ];
+      const supported =
+        typeof MediaRecorder !== "undefined" && "isTypeSupported" in MediaRecorder
+          ? candidates.find((m) => MediaRecorder.isTypeSupported(m))
+          : undefined;
+      const recorder = supported
+        ? new MediaRecorder(stream, { mimeType: supported })
+        : new MediaRecorder(stream);
+      recordedChunksRef.current = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) recordedChunksRef.current.push(e.data);
+      };
+      recorder.onerror = (e) => {
+        console.error("MediaRecorder error", e);
+        setMicError("Recorder error");
+      };
+      recorder.onstop = () => {
+        void finalizeRecording(recorder.mimeType);
+      };
+      recorderRef.current = recorder;
+      micStreamRef.current = stream;
+      recorder.start();
+      setRecording(true);
+    } catch (e) {
+      console.error("getUserMedia failed", e);
+      setMicError(
+        e instanceof Error ? e.message : "Microphone unavailable",
+      );
+      // Make sure no half-acquired tracks linger if the API threw
+      // partway through (some browsers do).
+      micStreamRef.current?.getTracks().forEach((t) => t.stop());
+      micStreamRef.current = null;
+      recorderRef.current = null;
     }
-    const q = firstToken.slice(1).toLowerCase();
-    const matches = SLASH_COMMANDS.filter((c) =>
-      c.name.slice(1).toLowerCase().startsWith(q),
-    );
-    if (matches.length === 0) return null;
-    return { token: firstToken, matches };
-  }, [draft]);
+  }
 
-  // Reset the suppression flag whenever the leading slash is gone so
-  // typing "/" again re-opens the menu.
-  useEffect(() => {
-    if (!draft.startsWith("/")) setSlashDismissed(false);
-  }, [draft]);
+  /**
+   * Stop the active recording. The `onstop` handler installed in
+   * `startRecording` runs `finalizeRecording`, so this is just the
+   * UI-side bookkeeping.
+   */
+  function stopRecording() {
+    if (!recording) return;
+    try {
+      recorderRef.current?.stop();
+    } catch (e) {
+      console.error("recorder.stop failed", e);
+    }
+    setRecording(false);
+  }
 
-  // Clamp the highlighted index whenever the filtered list shrinks.
-  useEffect(() => {
-    if (!slashMatch) return;
-    if (slashIdx >= slashMatch.matches.length) setSlashIdx(0);
-  }, [slashMatch, slashIdx]);
-
-  const slashOpen = !!slashMatch && !slashDismissed;
-
-  function pickSlash(cmd: SlashCommand) {
-    // Replace the first token with the canonical command name and keep
-    // the rest of the draft untouched. Append a trailing space so the
-    // caret sits ready for the user's actual message.
-    const firstToken = draft.split(/\s/, 1)[0];
-    const rest = draft.slice(firstToken.length);
-    const sep = rest.length === 0 || /^\s/.test(rest) ? "" : " ";
-    setDraft(`${cmd.name} ${rest.replace(/^\s+/, "")}${sep}`);
-    setSlashDismissed(true);
-    // Keep focus on the textarea after picking via mouse so the user
-    // can keep typing without an extra click.
-    requestAnimationFrame(() => textareaRef.current?.focus());
+  /**
+   * Bundle the captured chunks, ship them to the Rust `audio_transcribe`
+   * command (which proxies to OVMS `POST /v3/audio/transcriptions`),
+   * and drop the resulting text into the composer for the user to
+   * review before sending. We do *not* auto-send — transcription is
+   * imperfect and the user almost always wants a chance to fix a
+   * mishear before pressing enter.
+   */
+  async function finalizeRecording(mimeType: string) {
+    const chunks = recordedChunksRef.current;
+    recordedChunksRef.current = [];
+    micStreamRef.current?.getTracks().forEach((t) => t.stop());
+    micStreamRef.current = null;
+    recorderRef.current = null;
+    if (!sttModel) return;
+    if (chunks.length === 0) {
+      setMicError("No audio captured");
+      return;
+    }
+    setTranscribing(true);
+    try {
+      const blob = new Blob(chunks, { type: mimeType || "audio/webm" });
+      const buf = await blob.arrayBuffer();
+      // Tauri serializes `Vec<u8>` from a JS number array. For a few
+      // seconds of opus the payload stays well under the IPC limit.
+      const audio = Array.from(new Uint8Array(buf));
+      const text = await invoke<string>("audio_transcribe", {
+        modelId: sttModel.id,
+        audio,
+        mimeType: blob.type || null,
+      });
+      const trimmed = (text ?? "").trim();
+      if (!trimmed) {
+        setMicError("Heard silence");
+        return;
+      }
+      // Append rather than overwrite — lets the user dictate in
+      // multiple takes, or follow a typed lead-in with spoken detail.
+      setDraft((cur) => (cur ? `${cur.trimEnd()} ${trimmed}` : trimmed));
+      // Drop focus back into the textarea so they can immediately
+      // edit or hit Enter.
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    } catch (e) {
+      console.error("audio_transcribe failed", e);
+      setMicError(e instanceof Error ? e.message : "Transcription failed");
+    } finally {
+      setTranscribing(false);
+    }
   }
 
   function onKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (slashOpen && slashMatch) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setSlashIdx((i) => (i + 1) % slashMatch.matches.length);
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setSlashIdx(
-          (i) =>
-            (i - 1 + slashMatch.matches.length) % slashMatch.matches.length,
-        );
-        return;
-      }
-      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
-        e.preventDefault();
-        pickSlash(slashMatch.matches[slashIdx] ?? slashMatch.matches[0]);
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setSlashDismissed(true);
-        return;
-      }
-    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       void onSend();
@@ -564,17 +609,46 @@ export function ChatView() {
 
   const effectiveModel =
     activeConv?.model ?? pendingModel ?? ovmsLoaded ?? null;
+  // Pick whichever speech2text model OVMS currently has loaded — the
+  // mic button below only renders when this is non-null. OVMS can
+  // serve one model per task slot, so the first match is the only
+  // match in practice.
+  const sttModel = useMemo(
+    () => ovmsLoadedModels?.find((m) => m.task === "speech2text") ?? null,
+    [ovmsLoadedModels],
+  );
+  // Chat only deals with text-generation models (chat / completion /
+  // VLM). Embeddings, rerank, image-gen, TTS, STT roles are also
+  // serveable through OVMS but have no business showing up in the
+  // conversation model picker — selecting one would just produce
+  // confusing 400s from the chat completions endpoint.
   const modelOptions = (() => {
     const seen = new Set<string>();
     const out: string[] = [];
     for (const m of localModels) {
+      if (taskKindFromPipelineTag(m.pipeline_tag) !== "text_generation") {
+        continue;
+      }
       const id = m.hf_id ?? m.id;
       if (id && !seen.has(id)) {
         seen.add(id);
         out.push(id);
       }
     }
-    if (ovmsLoaded && !seen.has(ovmsLoaded)) out.push(ovmsLoaded);
+    // Surface a currently-loaded model that isn't in `localModels` yet
+    // only when OVMS reports it as text-gen — the convenience
+    // `loaded_model` pointer is already biased toward text-gen
+    // (`stores/server.ts`), but a fresh remote / sideloaded LM might
+    // not yet appear in the local list.
+    if (
+      ovmsLoaded &&
+      !seen.has(ovmsLoaded) &&
+      ovmsLoadedModels?.some(
+        (m) => m.id === ovmsLoaded && m.task === "text_generation",
+      )
+    ) {
+      out.push(ovmsLoaded);
+    }
     return out;
   })();
 
@@ -630,23 +704,42 @@ export function ChatView() {
   // because vLLM / ollama / remote endpoints don't have a single-loaded-
   // model constraint, so a mismatch wouldn't mean anything to the user.
   //
-  // "Pending" is membership-based, not equality-based: OVMS can serve
-  // multiple models concurrently, so the chat runner will short-circuit
-  // the stage step when the target is already in `loaded_models` —
-  // even if it isn't the convenience `loaded_model` pointer. Comparing
-  // against the pointer (as the original code did) left the banner
-  // stuck on "will be loaded on next send (currently <other>)" after
-  // the user picked an already-staged model from the dropdown.
+  // The banner is shown whenever *any* OVMS load is in flight — the
+  // chat's pinned model, or some other model the user kicked off from
+  // the Models page. We treat both cases the same way (pause the chat,
+  // show a spinner) because OVMS can only serve so many models at once,
+  // a concurrent load can evict the chat's model under our feet, and
+  // either way the runtime is busy enough that firing a request now
+  // would queue behind the load.
+  //
+  // The transitional OVMS states (`starting` / `stopping`) cover the
+  // case where the server itself is bouncing — there's no in-flight
+  // `ovms_load_model` invoke yet, but the chat is still effectively
+  // paused.
+  //
+  // We deliberately *don't* surface a separate "will be loaded on next
+  // send" banner anymore — selecting a model now always triggers the
+  // load immediately, so the only thing the user needs to know is
+  // "it's loading; the chat is paused".
   const isOvmsProvider = activeProviderKind === "ovms";
-  const swapInFlight =
+  // Pick whichever loading id we want to display. Prefer the chat's
+  // pinned model when it's the one being loaded so the message lines
+  // up with the header dropdown; otherwise fall back to whatever else
+  // OVMS is staging.
+  const loadingTarget = (() => {
+    if (!isOvmsProvider) return null;
+    if (effectiveModel && ovmsLoadingIds.has(effectiveModel)) {
+      return effectiveModel;
+    }
+    const other = ovmsLoadingIds.values().next().value as string | undefined;
+    return other ?? null;
+  })();
+  const ovmsTransitional =
     isOvmsProvider &&
     !!effectiveModel &&
-    (ovmsStatus === "starting" || ovmsStatus === "stopping");
-  const swapPending =
-    isOvmsProvider &&
-    !!effectiveModel &&
-    ovmsStatus === "running" &&
+    (ovmsStatus === "starting" || ovmsStatus === "stopping") &&
     !ovmsLoadedModels?.some((m) => m.id === effectiveModel);
+  const modelLoading = !!loadingTarget || ovmsTransitional;
   const swapError = isOvmsProvider && ovmsStatus === "error" && !!ovmsLastError;
 
   return (
@@ -654,10 +747,24 @@ export function ChatView() {
       <Panel
         action={
           <ChatHeaderControls
-            modelValue={activeConv?.model ?? pendingModel ?? ""}
-            modelOptions={modelOptions}
+            modelValue={
+              // While a load is in flight, surface the target id in the
+              // dropdown so the picker matches the banner + bottom bar
+              // instead of looking stale. Falls back to the normal
+              // pinned-or-pending lookup once the load settles.
+              loadingTarget ?? activeConv?.model ?? pendingModel ?? ""
+            }
+            modelOptions={
+              // Make sure the loading id is always selectable visually —
+              // a model being loaded from the Models page may not be in
+              // the text-gen list, but the select still needs a matching
+              // <option> so it shows the right value while disabled.
+              loadingTarget && !modelOptions.includes(loadingTarget)
+                ? [...modelOptions, loadingTarget]
+                : modelOptions
+            }
             ovmsLoaded={ovmsLoaded}
-            disabled={!!streamingId}
+            disabled={!!streamingId || modelLoading}
             onModelChange={async (v) => {
               // No active conversation yet — stash the pick locally so
               // we don't materialize an empty chat row in the sidebar
@@ -692,10 +799,9 @@ export function ChatView() {
         flush
       >
         <ServerStatusBanner
-          inFlight={swapInFlight}
-          pending={swapPending}
+          loading={modelLoading}
           errored={swapError}
-          target={effectiveModel}
+          target={loadingTarget ?? effectiveModel}
           loaded={ovmsLoaded}
           lastError={ovmsLastError}
         />
@@ -738,6 +844,9 @@ export function ChatView() {
                     {m.content}
                   </div>
                 )}
+                {m.role === "user" && m.turn_overrides && (
+                  <MessagePresetChips overrides={m.turn_overrides} />
+                )}
                 {m.attachments && m.attachments.length > 0 && (
                   <AttachmentList atts={m.attachments} />
                 )}
@@ -776,11 +885,47 @@ export function ChatView() {
               ))}
             </div>
           )}
+          {(recording || transcribing || micError) && (
+            <div
+              className={
+                "mb-2 flex items-center gap-2 rounded-[6px] border px-2 py-1 text-xs " +
+                (micError
+                  ? "border-tui-err/40 bg-[rgba(255,153,164,0.10)] text-tui-err"
+                  : "border-tui-border bg-[var(--fluent-bg-subtle)] text-tui-fg-muted")
+              }
+            >
+              {recording && !micError && (
+                <>
+                  <span className="inline-block h-2 w-2 rounded-full bg-tui-err animate-pulse" />
+                  <span>Recording… click the mic again to stop</span>
+                </>
+              )}
+              {transcribing && !recording && !micError && (
+                <>
+                  <Spinner size="sm" />
+                  <span>Transcribing with {sttModel?.id ?? "STT model"}…</span>
+                </>
+              )}
+              {micError && (
+                <>
+                  <span>Mic: {micError}</span>
+                  <button
+                    type="button"
+                    onClick={() => setMicError(null)}
+                    className="ml-auto text-tui-fg-muted hover:text-tui-fg"
+                    aria-label="Dismiss"
+                  >
+                    ×
+                  </button>
+                </>
+              )}
+            </div>
+          )}
           <div className="flex items-center gap-2">
             <ChatComposerAddMenu
               onAttach={() => void attachFiles()}
               attaching={attaching}
-              disabled={!!streamingId}
+              disabled={!!streamingId || modelLoading}
               activePresets={turnPresets}
               onTogglePreset={toggleTurnPreset}
             />
@@ -791,21 +936,16 @@ export function ChatView() {
                   Math.min(8, Math.max(1, draft.split("\n").length)) * 20 + 12,
               }}
             >
-              {slashOpen && slashMatch && (
-                <SlashCommandMenu
-                  matches={slashMatch.matches}
-                  selected={Math.min(slashIdx, slashMatch.matches.length - 1)}
-                  onPick={pickSlash}
-                  onHover={setSlashIdx}
-                />
-              )}
               <TuiTextarea
                 ref={textareaRef}
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={onKey}
                 rows={Math.min(8, Math.max(1, draft.split("\n").length))}
-                placeholder="Ask anything…"
+                placeholder={
+                  modelLoading ? "Loading model…" : "Ask anything…"
+                }
+                disabled={modelLoading}
                 style={{
                   display: "block",
                   boxSizing: "border-box",
@@ -819,7 +959,7 @@ export function ChatView() {
               samplingOverride={samplingOverride}
               providerSampling={activeProviderSampling}
               modelId={effectiveModel || null}
-              disabled={!!streamingId}
+              disabled={!!streamingId || modelLoading}
               onChange={async (next) => {
                 // Same "create on demand" rule the header chips use —
                 // a user who tweaks sampling before sending anything
@@ -847,12 +987,81 @@ export function ChatView() {
               >
                 <Spinner size="sm" />
               </button>
+            ) : sttModel && !draft.trim() && pending.length === 0 ? (
+              // ─── Voice input ────────────────────────────────────
+              // No text staged + an OVMS STT model is serving → swap
+              // the Send button out for a mic toggle. Recording uses
+              // the platform MediaRecorder (Tauri webview exposes it
+              // transparently); the OS handles the mic permission
+              // prompt the first time we call `getUserMedia`.
+              <button
+                type="button"
+                onClick={() =>
+                  recording ? stopRecording() : void startRecording()
+                }
+                disabled={transcribing}
+                title={
+                  transcribing
+                    ? "Transcribing…"
+                    : recording
+                      ? "Stop recording"
+                      : `Record voice (${sttModel.id})`
+                }
+                aria-label={recording ? "Stop recording" : "Record voice"}
+                aria-pressed={recording}
+                className={
+                  "relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] " +
+                  "transition-[background-color,box-shadow,transform] duration-150 ease-out " +
+                  "disabled:opacity-50 disabled:cursor-not-allowed " +
+                  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-tui-accent " +
+                  (recording
+                    ? // Active recording: red pulse, matches the stop-stream styling
+                      "border border-tui-err/40 bg-[rgba(255,153,164,0.16)] text-tui-err " +
+                      "shadow-[0_0_0_3px_rgba(255,153,164,0.18)] animate-pulse " +
+                      "hover:bg-[rgba(255,153,164,0.24)]"
+                    : // Idle: neutral surface so it doesn't compete with the accent send button
+                      "border border-tui-border bg-[var(--fluent-bg-subtle)] text-tui-fg-muted " +
+                      "hover:bg-[var(--fluent-bg-subtle-hover)] hover:text-tui-fg " +
+                      "active:scale-[0.98]")
+                }
+              >
+                {transcribing ? (
+                  <Spinner size="sm" />
+                ) : recording ? (
+                  // Solid square = stop
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="currentColor"
+                  >
+                    <rect x="6" y="6" width="12" height="12" rx="1.5" />
+                  </svg>
+                ) : (
+                  // Microphone glyph
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <rect x="9" y="3" width="6" height="12" rx="3" />
+                    <path d="M5 11a7 7 0 0 0 14 0" />
+                    <line x1="12" y1="18" x2="12" y2="22" />
+                    <line x1="8" y1="22" x2="16" y2="22" />
+                  </svg>
+                )}
+              </button>
             ) : (
               <button
                 type="button"
                 onClick={() => void onSend()}
-                disabled={!draft.trim() && pending.length === 0}
-                title="Send"
+                disabled={(!draft.trim() && pending.length === 0) || modelLoading}
+                title={modelLoading ? "Loading model…" : "Send"}
                 aria-label="Send"
                 className={
                   "relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] " +
@@ -1052,10 +1261,11 @@ function ChatHeaderControls({
 // Win11-style "new actions" popover that opens above a `+` icon at
 // the left of the chat input. Exposes:
 //   * "Add photos & files" — calls the existing `attachFiles` flow.
-//   * Per-turn capability toggles (web search, deep research) —
-//     surfaced as togglable rows that mirror the runner's `/web` and
-//     `/research` slash commands. The slash prefix is auto-prepended
-//     in `onSend` so the user never has to type the command.
+//   * Per-turn capability toggles (web search, deep research,
+//     thinking opt-in, autonomous agent loop) — surfaced as
+//     togglable rows that flip the matching `TurnOverrides` flag for
+//     the next turn. The set is cleared on send so each unlock is
+//     scoped to one message.
 function ChatComposerAddMenu({
   onAttach,
   attaching,
@@ -1193,8 +1403,8 @@ function ChatComposerAddMenu({
                     onClick={() => onTogglePreset(p.key)}
                     title={
                       p.inverse
-                        ? `${p.hint} (default is ${p.command} — toggle on to suppress it)`
-                        : `${p.hint} — maps to ${p.command}`
+                        ? `${p.hint} (on by default — toggle to suppress)`
+                        : p.hint
                     }
                     className={
                       "flex w-full items-center gap-2.5 px-3 py-2 text-[12px] " +
@@ -1257,8 +1467,8 @@ function TurnPresetChip({
       }
       title={
         preset.inverse
-          ? `${preset.hint} — default ${preset.command} suppressed for next turn`
-          : `${preset.hint} — active for the next turn (${preset.command})`
+          ? `${preset.hint} — default suppressed for next turn`
+          : `${preset.hint} — active for the next turn`
       }
     >
       <span aria-hidden="true" className="text-tui-accent">
@@ -1911,81 +2121,6 @@ function ChatSamplingPopover({
   );
 }
 
-function SlashCommandMenu({
-  matches,
-  selected,
-  onPick,
-  onHover,
-}: {
-  matches: SlashCommand[];
-  selected: number;
-  onPick: (cmd: SlashCommand) => void;
-  onHover: (idx: number) => void;
-}) {
-  // Anchored to the relatively-positioned wrapper around the textarea
-  // so the menu floats just above the input. `mb-1.5` gives it a hair
-  // of breathing room above the field; `shadow-16` lifts it above the
-  // pending-attachments strip without needing a portal.
-  return (
-    <div
-      role="listbox"
-      aria-label="Slash commands"
-      className={
-        "fluent-mica absolute right-0 bottom-full left-0 z-30 mb-1.5 " +
-        "overflow-hidden rounded-[8px] border border-tui-border " +
-        "shadow-[var(--fluent-shadow-16)]"
-      }
-    >
-      <div className="flex items-center justify-between gap-2 border-b border-tui-border px-3 py-1.5 text-[10px] uppercase tracking-wide text-tui-fg-muted">
-        <span>Slash commands</span>
-        <span className="normal-case tracking-normal">
-          ↑↓ navigate · ⏎ / Tab select · Esc dismiss
-        </span>
-      </div>
-      <ul className="max-h-64 overflow-auto py-1">
-        {matches.map((cmd, i) => {
-          const active = i === selected;
-          return (
-            <li key={cmd.name} className="list-none">
-              <button
-                type="button"
-                role="option"
-                aria-selected={active}
-                onMouseDown={(e) => {
-                  // Stop the textarea from losing focus before our
-                  // click handler runs — a mousedown on a button
-                  // outside the textarea blurs the textarea by
-                  // default, which would close the menu before pick.
-                  e.preventDefault();
-                  onPick(cmd);
-                }}
-                onMouseEnter={() => onHover(i)}
-                className={
-                  "flex w-full items-center gap-3 px-3 py-1.5 text-left text-[12px] " +
-                  "transition-colors duration-100 ease-out " +
-                  (active
-                    ? "bg-[var(--fluent-bg-subtle-selected)] text-tui-fg"
-                    : "text-tui-fg-dim hover:bg-[var(--fluent-bg-subtle-hover)] hover:text-tui-fg")
-                }
-              >
-                <span className="font-mono text-[12px] font-semibold text-tui-fg">
-                  {cmd.name}
-                </span>
-                <span className="shrink-0 rounded-[3px] border border-tui-border bg-[var(--fluent-bg-subtle)] px-1.5 py-px text-[10px] text-tui-fg-muted">
-                  {cmd.hint}
-                </span>
-                <span className="truncate text-[11px] text-tui-fg-muted">
-                  {cmd.desc}
-                </span>
-              </button>
-            </li>
-          );
-        })}
-      </ul>
-    </div>
-  );
-}
-
 function ChatEmptyState() {
   return (
     <div className="mx-auto flex h-full max-w-md flex-col items-center justify-center text-center">
@@ -2009,6 +2144,52 @@ function ChatEmptyState() {
       >
         What’s on your mind today?
       </h2>
+    </div>
+  );
+}
+
+// Compact pill row that shows which `+`-menu presets the user had
+// active when this turn was sent. Sourced from the structured
+// `turn_overrides` column the runner reads off the user message —
+// keeps the UI honest about what capabilities the model was actually
+// granted for the request, even after the composer's per-turn set
+// was cleared on send. Skipped silently when no flag is set.
+function MessagePresetChips({ overrides }: { overrides: TurnOverrides }) {
+  // Mirror the active-set semantics in `onSend`: `think` is `inverse`,
+  // so the chip should appear iff the user *opted into* thinking. The
+  // other flags are direct: chip iff true.
+  const active = TURN_PRESETS.filter((p) => {
+    switch (p.key) {
+      case "web":
+        return overrides.web === true;
+      case "research":
+        return overrides.research === true;
+      case "think":
+        return overrides.think === true;
+      case "loop":
+        return overrides.loop === true;
+      default:
+        return false;
+    }
+  });
+  if (active.length === 0) return null;
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {active.map((p) => (
+        <span
+          key={p.key}
+          className={
+            "inline-flex items-center gap-1.5 rounded-full border px-2 py-[2px] text-[11px] font-medium " +
+            "border-tui-accent/40 bg-tui-selection text-tui-accent"
+          }
+          title={p.hint}
+        >
+          <span aria-hidden="true" className="text-tui-accent">
+            {p.icon}
+          </span>
+          {p.label}
+        </span>
+      ))}
     </div>
   );
 }
@@ -2367,11 +2548,9 @@ function ChatErrorBanner({
  * Inline banner shown above the message list whenever the local OVMS
  * server is doing something the user cares about for *this* conversation:
  *
- * - `inFlight`: OVMS is mid-swap (`starting` / `stopping`). Show the
- *   target model + a spinner so the user knows their next reply is going
- *   to be a bit slow rather than wondering why nothing is happening.
- * - `pending`: OVMS is running, but the loaded model isn't the one the
- *   chat header is pinned to. Sending will trigger an auto-swap.
+ * - `loading`: the chat's pinned model is mid-load. Render a spinner so
+ *   the user knows the chat is paused on purpose rather than wondering
+ *   why their composer is greyed out.
  * - `errored`: OVMS bailed out (`status === "error"`). Show the upstream
  *   message and point at the Server page.
  *
@@ -2379,15 +2558,13 @@ function ChatErrorBanner({
  * safe to mount unconditionally.
  */
 function ServerStatusBanner({
-  inFlight,
-  pending,
+  loading,
   errored,
   target,
   loaded,
   lastError,
 }: {
-  inFlight: boolean;
-  pending: boolean;
+  loading: boolean;
   errored: boolean;
   target: string | null;
   loaded: string | null;
@@ -2425,7 +2602,7 @@ function ServerStatusBanner({
       </div>
     );
   }
-  if (inFlight) {
+  if (loading) {
     return (
       <div
         className="flex items-center gap-2 border-b border-tui-border bg-[var(--fluent-bg-subtle)] px-3 py-2 text-[12px] text-tui-fg-dim"
@@ -2438,37 +2615,7 @@ function ServerStatusBanner({
           {loaded && loaded !== target ? (
             <span className="text-tui-fg-muted"> (was {loaded})</span>
           ) : null}
-          … first response may take a moment.
-        </span>
-      </div>
-    );
-  }
-  if (pending) {
-    return (
-      <div
-        className="flex items-center gap-2 border-b border-tui-border bg-[var(--fluent-bg-subtle)] px-3 py-2 text-[12px] text-tui-fg-dim"
-        role="status"
-      >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className="text-tui-accent"
-        >
-          <circle cx="12" cy="12" r="10" />
-          <path d="M12 16v-4M12 8h.01" />
-        </svg>
-        <span>
-          Model <span className="text-tui-accent">{target}</span> will be loaded
-          on next send
-          {loaded ? (
-            <span className="text-tui-fg-muted"> (currently {loaded})</span>
-          ) : null}
+          … chat is paused until the model is ready.
         </span>
       </div>
     );

@@ -2,6 +2,7 @@
 //! that adapts an IPC call into a backend function, returning `IpcResult<T>`.
 
 pub mod attachments;
+pub mod audio;
 pub mod chat;
 pub mod mcp;
 pub mod memory;

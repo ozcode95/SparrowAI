@@ -122,11 +122,13 @@ fn apply(params: &mut ModelDeployParams, d: &DetectionInputs<'_>) {
         TaskKind::TextGeneration { vlm } => {
             let mut p = TextGenParams::default();
             if vlm {
-                // VLM_CB is the default servable for CPU/GPU; OVMS will
-                // promote to plain `VLM` (stateful) automatically when
-                // the user pins the model to NPU. Setting this
-                // explicitly surfaces the VLM detection in the UI.
-                p.pipeline_type = Some("VLM_CB".into());
+                // Plain `VLM` (stateful, single-request) is the safe
+                // default — most OpenVINO VLM exports on the Hub don't
+                // ship the metadata required for the continuous-batching
+                // (`VLM_CB`) servable, and OVMS rejects them at load
+                // time. Users can opt into `VLM_CB` from the params
+                // modal once they confirm the export supports it.
+                p.pipeline_type = Some("VLM".into());
             }
             p.tool_parser = detect_tool_parser(d);
             p.reasoning_parser = detect_reasoning_parser(d);
@@ -349,7 +351,15 @@ fn detect_tool_parser(d: &DetectionInputs<'_>) -> Option<String> {
     if id.contains("gpt-oss") || id.contains("gptoss") {
         return Some("gptoss".into());
     }
-    if id.contains("qwen3-coder") || id.contains("qwen3coder") || id.contains("qwen2.5-coder") {
+    if id.contains("qwen3-coder")
+        || id.contains("qwen3coder")
+        || id.contains("qwen2.5-coder")
+        // Qwen 3.5 / 3.6 ship with the qwen3coder tool-call format.
+        || id.contains("qwen3.5")
+        || id.contains("qwen3-5")
+        || id.contains("qwen3.6")
+        || id.contains("qwen3-6")
+    {
         return Some("qwen3coder".into());
     }
     if id.contains("devstral") {
@@ -503,13 +513,20 @@ mod tests {
         let ModelTask::TextGeneration(tg) = &p.task else {
             panic!("expected text_generation for VLM");
         };
-        assert_eq!(tg.pipeline_type.as_deref(), Some("VLM_CB"));
+        // Detection now defaults VLM models to the stateful `VLM`
+        // pipeline rather than `VLM_CB` — most OpenVINO VLM exports
+        // on the Hub don't carry the metadata required by the
+        // continuous-batching servable. Users can promote to `VLM_CB`
+        // from the params modal when their export supports it.
+        assert_eq!(tg.pipeline_type.as_deref(), Some("VLM"));
     }
 
     #[test]
     fn vlm_detected_from_siblings_when_arch_is_generic() {
         // No config.json available but the file list contains a vision
-        // tower — we still flip to VLM_CB.
+        // tower — we still flip to the stateful `VLM` pipeline (see
+        // `vlm_architecture_sets_vlm_pipeline_type` for why we no
+        // longer default to `VLM_CB`).
         let sibs = vec![
             sib("openvino_language_model.xml"),
             sib("openvino_vision_embeddings_model.xml"),
@@ -519,7 +536,7 @@ mod tests {
         let ModelTask::TextGeneration(tg) = &p.task else {
             panic!();
         };
-        assert_eq!(tg.pipeline_type.as_deref(), Some("VLM_CB"));
+        assert_eq!(tg.pipeline_type.as_deref(), Some("VLM"));
     }
 
     #[test]

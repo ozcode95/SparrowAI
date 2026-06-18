@@ -153,7 +153,7 @@ struct HwBudget {
 
 impl HwBudget {
     fn from_specs(specs: &Specs) -> Self {
-        let system_ram_gb = specs.ram_usable_mb as f64 / 1024.0;
+        let system_ram_gb = specs.ram_total_mb as f64 / 1024.0;
         let intel_vram_gb = specs
             .gpus
             .iter()

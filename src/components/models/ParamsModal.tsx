@@ -235,7 +235,7 @@ export function ParamsModal({ modelId, load, save, onClose, subtitle }: Props) {
     }
   }
 
-  const meta = TASK_META[kind];
+  const meta = TASK_META[kind] ?? TASK_META.text_generation;
 
   return (
     <div

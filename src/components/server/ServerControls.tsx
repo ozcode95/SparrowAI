@@ -86,6 +86,8 @@ export function OvmsStatusCard() {
   const status = info?.status ?? "unknown";
   const running = status === "running";
   const installing = status === "installing";
+  const starting = status === "starting";
+  const stopping = status === "stopping";
   const installed = status !== "not_installed" && status !== "installing";
   const hasUpdate =
     info?.latest_version != null &&
@@ -124,28 +126,48 @@ export function OvmsStatusCard() {
               variant={hasUpdate ? "primary" : "default"}
               size="sm"
               onClick={() => void update()}
+              disabled={starting || stopping}
             >
               {hasUpdate ? "Update available" : "Check for updates"}
             </TuiButton>
           )}
-          {!running && installed && (
+          {!running && !stopping && installed && (
             <TuiButton
               variant="primary"
               size="sm"
-              disabled={!startModel}
+              disabled={!startModel || starting}
               onClick={() => void start(startModel)}
               title={
-                startModel
-                  ? `Start OVMS with ${startModel}`
-                  : "Pick a default model on the Models page first"
+                starting
+                  ? "OVMS is starting…"
+                  : startModel
+                    ? `Start OVMS with ${startModel}`
+                    : "Pick a default model on the Models page first"
               }
             >
-              Start
+              {starting ? (
+                <>
+                  <Spinner size="sm" /> Starting…
+                </>
+              ) : (
+                "Start"
+              )}
             </TuiButton>
           )}
-          {running && (
-            <TuiButton variant="danger" size="sm" onClick={() => void stop()}>
-              Stop
+          {(running || stopping) && (
+            <TuiButton
+              variant="danger"
+              size="sm"
+              disabled={stopping}
+              onClick={() => void stop()}
+            >
+              {stopping ? (
+                <>
+                  <Spinner size="sm" /> Stopping…
+                </>
+              ) : (
+                "Stop"
+              )}
             </TuiButton>
           )}
         </div>
@@ -273,25 +295,63 @@ export function SystemSpecsCard() {
     );
   }
 
+  // ISO-8601 → locale string. Falls back to the raw value if Date can't
+  // parse (sysinfo on exotic hosts has been known to emit odd formats).
+  const probedAt = (() => {
+    const t = Date.parse(specs.probed_at);
+    return Number.isNaN(t) ? specs.probed_at : new Date(t).toLocaleString();
+  })();
+
   return (
     <dl className="grid grid-cols-[7.5rem_1fr] gap-x-3 gap-y-1.5 text-[12px]">
       <Fact label="OS" value={`${specs.os} ${specs.os_version}`} />
       <Fact label="Architecture" value={specs.arch} />
-      <Fact label="CPU" value={specs.cpu_brand} />
+      <Fact label="CPU" value={specs.cpu_brand || "—"} />
+      <Fact label="CPU vendor" value={specs.cpu_vendor || "—"} />
       <Fact
         label="Cores"
         value={`${specs.cpu_physical_cores} physical · ${specs.cpu_logical_cores} logical`}
       />
-      <Fact label="RAM" value={bytes(specs.ram_total_mb * 1024 * 1024)} />
+      <Fact label="RAM total" value={bytes(specs.ram_total_mb * 1024 * 1024)} />
+      {specs.gpus.length === 0 && <Fact label="GPU" value="none detected" />}
       {specs.gpus.map((g, i) => (
         <Fact
           key={`gpu-${i}`}
           label={`GPU ${i}`}
-          value={`${g.name} (${g.kind})`}
+          value={
+            <span className="block min-w-0">
+              <span className="block truncate">{g.name || "—"}</span>
+              <span className="block truncate text-[11px] text-tui-fg-muted">
+                {[
+                  g.kind,
+                  g.vendor || null,
+                  g.vram_mb != null
+                    ? `${bytes(g.vram_mb * 1024 * 1024)} VRAM`
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            </span>
+          }
         />
       ))}
+      {specs.npus.length === 0 && <Fact label="NPU" value="none detected" />}
       {specs.npus.map((n, i) => (
-        <Fact key={`npu-${i}`} label={`NPU ${i}`} value={n.name} />
+        <Fact
+          key={`npu-${i}`}
+          label={`NPU ${i}`}
+          value={
+            <span className="block min-w-0">
+              <span className="block truncate">{n.name || "—"}</span>
+              {n.vendor && (
+                <span className="block truncate text-[11px] text-tui-fg-muted">
+                  {n.vendor}
+                </span>
+              )}
+            </span>
+          }
+        />
       ))}
     </dl>
   );

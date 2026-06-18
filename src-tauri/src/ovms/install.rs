@@ -281,6 +281,13 @@ fn extract_zip(zip_path: &Path, out_dir: &Path) -> Result<()> {
 /// previous install (including the old `v<version>/` subdirs from the
 /// pre-flat layout) can't survive an update. The directory itself is
 /// preserved — we only remove its contents.
+///
+/// The `.cache/` subdirectory is preserved across reinstalls. It holds
+/// OpenVINO's compiled-model cache (see
+/// <https://docs.openvino.ai/2026/model-server/ovms_docs_model_cache.html>);
+/// blobs are keyed by device + OpenVINO version so leftovers from an
+/// older runtime are silently ignored, but on a same-version reinstall
+/// the user gets the warm-cache startup speedup for free.
 fn wipe_install_dir(dir: &Path) -> Result<()> {
     if !dir.exists() {
         std::fs::create_dir_all(dir).with_context(|| format!("create {dir:?}"))?;
@@ -289,6 +296,9 @@ fn wipe_install_dir(dir: &Path) -> Result<()> {
     for entry in std::fs::read_dir(dir).with_context(|| format!("read {dir:?}"))? {
         let entry = entry?;
         let path = entry.path();
+        if entry.file_name() == ".cache" {
+            continue;
+        }
         let ft = entry.file_type()?;
         let res = if ft.is_dir() {
             std::fs::remove_dir_all(&path)
@@ -458,6 +468,21 @@ mod tests {
         assert!(d.is_dir(), "root preserved");
         let remaining: Vec<_> = std::fs::read_dir(&d).unwrap().collect();
         assert!(remaining.is_empty(), "contents wiped");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn wipe_install_dir_preserves_cache_subdir() {
+        let d = tmpdir("wipe-cache");
+        std::fs::create_dir_all(d.join(".cache")).unwrap();
+        std::fs::write(d.join(".cache/blob.cl_cache"), b"warm").unwrap();
+        std::fs::write(d.join("ovms.exe"), b"stale").unwrap();
+        wipe_install_dir(&d).unwrap();
+        assert!(
+            d.join(".cache/blob.cl_cache").is_file(),
+            "compiled-model cache survives reinstall"
+        );
+        assert!(!d.join("ovms.exe").exists(), "non-cache contents wiped");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

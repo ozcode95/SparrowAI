@@ -80,6 +80,14 @@ pub struct LoadedModel {
     /// automatically appended for models like qwen3/qwen3.5.
     #[serde(default)]
     pub reasoning_parser: Option<String>,
+    /// `LM` | `LM_CB` | `VLM` | `VLM_CB` | `AUTO`. Only meaningful for
+    /// text-generation models — `None` everywhere else. Surfaced to
+    /// the UI for diagnostics; the chat runner no longer gates the
+    /// OpenAI `tools` array on this field, since OVMS v2025+ accepts
+    /// tool-bearing requests on every LLM graph (including VLM/VLM_CB)
+    /// per the chat-completions reference.
+    #[serde(default)]
+    pub pipeline_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -438,6 +446,16 @@ impl OvmsController {
         // `/v1/config/reload` endpoint so changes land deterministically;
         // letting OVMS *also* poll would race with our explicit reload
         // and double-load on every config rewrite.
+        //
+        // `--cache_dir` points at a persistent OpenVINO compiled-model
+        // cache (see
+        // <https://docs.openvino.ai/2026/model-server/ovms_docs_model_cache.html>).
+        // First start of a given (model, device, OpenVINO version) tuple
+        // pays the full compile cost; later starts reuse the blob and
+        // get to `Running` in a fraction of the time. We only inject the
+        // default when the user hasn't already specified one (either via
+        // the typed `OvmsSettings.cache_dir` field, which `cli_args()`
+        // already pushed, or through `extra_args`).
         let args = {
             let mut a = ovms_cfg.cli_args();
             a.push("--config_path".into());
@@ -445,6 +463,11 @@ impl OvmsController {
             if !a.iter().any(|s| s == "--file_system_poll_wait_seconds") {
                 a.push("--file_system_poll_wait_seconds".into());
                 a.push("0".into());
+            }
+            if !a.iter().any(|s| s == "--cache_dir") {
+                let cache_dir = paths::ovms_cache_dir()?;
+                a.push("--cache_dir".into());
+                a.push(cache_dir.to_string_lossy().into_owned());
             }
             a
         };
@@ -478,6 +501,28 @@ impl OvmsController {
             let msg = match excerpt {
                 Some(detail) => format!("waiting for ovms readiness: {e:#} — {detail}"),
                 None => format!("waiting for ovms readiness: {e:#}"),
+            };
+            return Err(anyhow!(msg));
+        }
+
+        // HTTP is up, but the MediaPipe graphs for each model still need
+        // to compile + load weights before chat requests will succeed —
+        // until then OVMS replies `404 Mediapipe graph definition with
+        // requested name is not found`. Block flipping to `Running`
+        // until TFS reports every served model as `AVAILABLE` so the
+        // composer doesn't unlock too early.
+        let expected_names: Vec<String> = set.iter().map(|(id, _)| id.clone()).collect();
+        if let Err(e) =
+            health::wait_models_available(&self.http, &base_url, &expected_names, READY_TIMEOUT)
+                .await
+        {
+            let excerpt = match self.proc.lock().await.as_ref() {
+                Some(p) => p.error_excerpt().await,
+                None => None,
+            };
+            let msg = match excerpt {
+                Some(detail) => format!("waiting for ovms model load: {e:#} — {detail}"),
+                None => format!("waiting for ovms model load: {e:#}"),
             };
             return Err(anyhow!(msg));
         }
@@ -988,21 +1033,25 @@ fn render_config(set: &[(String, PathBuf)], runtime_device: &str) -> Result<Vec<
     let mut out = Vec::with_capacity(set.len());
     for (id, dir) in set {
         let params = model_params::read_or_default(dir);
-        let (task, tool_parser, reasoning_parser) = match params.task {
-            ModelTask::TextGeneration(tg) => {
-                ("text_generation", tg.tool_parser, tg.reasoning_parser)
-            }
-            ModelTask::Embeddings(_) => ("embeddings", None, None),
-            ModelTask::Rerank(_) => ("rerank", None, None),
-            ModelTask::ImageGeneration(_) => ("image_generation", None, None),
-            ModelTask::Text2Speech(_) => ("text2speech", None, None),
-            ModelTask::Speech2Text(_) => ("speech2text", None, None),
+        let (task, tool_parser, reasoning_parser, pipeline_type) = match params.task {
+            ModelTask::TextGeneration(tg) => (
+                "text_generation",
+                tg.tool_parser,
+                tg.reasoning_parser,
+                tg.pipeline_type,
+            ),
+            ModelTask::Embeddings(_) => ("embeddings", None, None, None),
+            ModelTask::Rerank(_) => ("rerank", None, None, None),
+            ModelTask::ImageGeneration(_) => ("image_generation", None, None, None),
+            ModelTask::Text2Speech(_) => ("text2speech", None, None, None),
+            ModelTask::Speech2Text(_) => ("speech2text", None, None, None),
         };
         out.push(LoadedModel {
             id: id.clone(),
             task: task.to_string(),
             tool_parser,
             reasoning_parser,
+            pipeline_type,
         });
     }
     Ok(out)

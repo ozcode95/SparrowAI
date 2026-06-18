@@ -202,11 +202,13 @@ pub fn render_prompt_section(tools: &[EnabledTool]) -> String {
     let mut out = String::new();
     out.push_str("\n\n# Available tools\n");
     out.push_str(
-        "You may call any of the tools below to fulfil the user's request. \
-         Use the native function-calling protocol (the server forwards the \
-         tool catalogue via the OpenAI `tools` field); do not paste raw \
-         JSON into your reply. Wait for the tool result before continuing. \
-         If no tool fits, answer the user directly.\n",
+        "Below is the live tool catalogue. Each entry shows a \
+         human-readable name followed by a single backticked token \
+         labelled `function name:`. To call that tool, put exactly \
+         that token in `tool_calls[].function.name` and put the \
+         arguments in `tool_calls[].function.arguments` as a JSON \
+         string. The token is opaque — use it as-is, character for \
+         character.\n",
     );
     for (id, name, list) in by_server {
         out.push_str(&format!("\n## server `{id}` — {name}\n"));
@@ -216,7 +218,11 @@ pub fn render_prompt_section(tools: &[EnabledTool]) -> String {
             } else {
                 t.schema.description.as_str()
             };
-            out.push_str(&format!("- **{}** — {desc}\n", t.schema.name));
+            let wire = wire_function_name(&t.server_id, &t.schema.name, tools);
+            out.push_str(&format!(
+                "- **{}** — function name: `{wire}` — {desc}\n",
+                t.schema.name
+            ));
             if t.schema.destructive {
                 out.push_str("  - ⚠ destructive\n");
             }
@@ -247,18 +253,24 @@ pub fn render_lazy_prompt_section(tools: &[EnabledTool]) -> String {
         return String::new();
     }
     let total = tools.len();
+    let discovery_wire = wire_function_name(BUILTIN_SERVER_ID, TOOLS_LIST_NAME, tools);
     let mut out = String::new();
     out.push_str("\n\n# Available tools\n");
     out.push_str(&format!(
-        "To save context, the full tool catalogue is NOT inlined here. \
-         {total} tool(s) are currently enabled. Call the `tools.list` \
-         built-in to fetch the live catalogue, then call the discovered \
-         tool(s) as normal via the native function-calling protocol. \
-         `tools.list` accepts an optional `name` (or `server_id/tool_name`) \
-         argument that returns the full JSON-Schema for a single tool's \
-         arguments — use it before dispatching a tool you haven't seen \
-         the schema for. If, after listing, no tool fits the request, \
-         answer the user directly.\n",
+        "The full catalogue is fetched on demand. {total} tool(s) are \
+         currently enabled.\n\n\
+         To discover them, emit a tool call whose `function.name` is \
+         exactly this token:\n\n\
+         ```\n{discovery_wire}\n```\n\n\
+         Use that token verbatim, character for character. It is \
+         opaque — treat it as a single identifier, not as two parts \
+         joined by `__`. The arguments are a JSON object; pass `{{}}` \
+         for the full listing, or `{{\"name\": \"<tool>\"}}` to fetch \
+         the input schema (and exact call token) for one specific \
+         tool before invoking it. The reply from the discovery call \
+         shows the exact `function name:` token for every other tool \
+         — reuse those tokens the same way when you call them. If \
+         after listing nothing fits, just answer the user directly.\n",
     ));
     out
 }
@@ -310,6 +322,14 @@ pub fn render_tools_list_result(
             Some(n) => t.schema.name == n,
             None => true,
         })
+        // Hide the discovery built-in from its own output. Listing
+        // `tools.list` in the catalogue (or letting the model fetch
+        // its own schema by name) is pure noise — the model already
+        // knows how to call it because it was given the definition
+        // up front.
+        .filter(|t| {
+            !(t.server_id == BUILTIN_SERVER_ID && t.schema.name == TOOLS_LIST_NAME)
+        })
         .collect();
 
     if filtered.is_empty() {
@@ -327,6 +347,11 @@ pub fn render_tools_list_result(
         let t = filtered[0];
         let payload = serde_json::json!({
             "name": t.schema.name,
+            // Exact token to put in `tool_calls[].function.name`. We
+            // surface it explicitly so the model never has to derive
+            // it from `server_id` + `name` (small models routinely
+            // double-prefix when asked to reconstruct).
+            "function_name": wire_function_name(&t.server_id, &t.schema.name, tools),
             "server_id": t.server_id,
             "server_name": t.server_name,
             "description": t.schema.description,
@@ -362,19 +387,28 @@ pub fn render_tools_list_result(
             } else {
                 t.schema.description.as_str()
             };
-            out.push_str(&format!("- **{}** — {desc}\n", t.schema.name));
+            let wire = wire_function_name(&t.server_id, &t.schema.name, tools);
+            out.push_str(&format!(
+                "- **{}** — function name: `{wire}` — {desc}\n",
+                t.schema.name
+            ));
             if t.schema.destructive {
                 out.push_str("  - ⚠ destructive\n");
             }
         }
         out.push('\n');
     }
-    out.push_str(
-        "Call any of the above using the native function-calling \
-         protocol. To see the full input_schema for a single tool, call \
-         `tools.list` again with `{\"name\": \"<tool_name>\"}` (or \
-         `\"server_id/tool_name\"` to disambiguate).",
-    );
+    let discovery_wire = wire_function_name(BUILTIN_SERVER_ID, TOOLS_LIST_NAME, tools);
+    out.push_str(&format!(
+        "Each tool above lists a `function name:` token. To invoke a \
+         tool, put that token in `tool_calls[].function.name` exactly \
+         as written — use the token as a single opaque identifier. To \
+         fetch the full `input_schema` for a single tool, call \
+         `{discovery_wire}` again with `{{\"name\": \"<tool_name>\"}}` \
+         (or `\"server_id/tool_name\"` to disambiguate). The reply \
+         includes a `function_name` field with the exact token to \
+         pass on the next call."
+    ));
     out
 }
 
@@ -397,22 +431,62 @@ pub fn collapse_to_discovery(tools: &[EnabledTool]) -> Vec<EnabledTool> {
 }
 
 /// Convert the enabled catalog into the OpenAI `tools` array shape that
-/// rides on `ChatRequest::tools`. Function names are flattened to a
-/// single token of the form `<server_id>__<tool_name>` and sanitised to
-/// `[a-zA-Z0-9_-]` so even strict OpenAI clones (and the OVMS LLM
-/// calculator) accept them; the runner reverses the encoding to route
-/// the dispatched call back to the right server.
+/// rides on `ChatRequest::tools`. Function names are produced by
+/// [`wire_function_name`]: tools whose sanitised name is globally
+/// unique across every enabled server get the bare sanitised form
+/// (e.g. `tools_list`, `fs_list`); only colliding names get the
+/// full `<server>__<tool>` encoding for disambiguation. This
+/// sidesteps a Gemma 4 pathology where the model, shown a function
+/// named `builtin__tools_list`, re-prepends `builtin__` when emitting
+/// the call and produces `builtin__builtin__tools_list`. The resolver
+/// accepts both shapes either way.
 pub fn to_tool_defs(tools: &[EnabledTool]) -> Vec<ToolDef> {
     tools
         .iter()
         .map(|t| {
             ToolDef::function(
-                function_name_for(&t.server_id, &t.schema.name),
+                wire_function_name(&t.server_id, &t.schema.name, tools),
                 t.schema.description.clone(),
                 tool_parameters_schema(&t.schema),
             )
         })
         .collect()
+}
+
+/// Pick the wire-format function name shown to the model for a
+/// catalogue entry. Returns the bare sanitised tool name when no
+/// other enabled tool would sanitise to the same identifier; falls
+/// back to the fully-qualified `<server>__<tool>` encoding from
+/// [`function_name_for`] only when disambiguation is actually needed.
+///
+/// Centralising the decision here keeps three call sites (`to_tool_defs`,
+/// `render_prompt_section`, `render_tools_list_result`) presenting the
+/// model a single consistent token for each tool. The resolver in
+/// [`resolve_function_name`] handles both shapes transparently, so
+/// changing the strategy is safe end-to-end.
+pub fn wire_function_name(server_id: &str, tool_name: &str, all_tools: &[EnabledTool]) -> String {
+    let bare = sanitize_segment(tool_name);
+    let collisions = all_tools
+        .iter()
+        .filter(|t| sanitize_segment(&t.schema.name) == bare)
+        .count();
+    if collisions <= 1 {
+        // Globally unique — ship the bare name and let the resolver's
+        // bare-name fallback route the call back. Truncate to the
+        // 64-char OpenAI cap defensively even though most tool names
+        // are short.
+        let mut name = bare;
+        if name.len() > 64 {
+            name.truncate(64);
+        }
+        name
+    } else {
+        // Two or more enabled tools share this sanitised name (e.g.
+        // `search` on a built-in plus a third-party MCP server). Use
+        // the fully-qualified form so the resolver's strict path can
+        // pick the right one.
+        function_name_for(server_id, tool_name)
+    }
 }
 
 /// Strict OpenAI function names must match `^[a-zA-Z0-9_-]{1,64}$`, but
@@ -458,8 +532,10 @@ pub fn split_function_name(name: &str) -> Option<(&str, &str)> {
 /// Resolve a model-emitted function name back to the live catalog entry.
 /// Tries the deterministic `server__tool` split first; if that fails
 /// (small models occasionally ignore the prefix and emit just the tool
-/// name), falls back to the first sanitised tool-name match across all
-/// enabled servers.
+/// name, or invent a plausible-looking server like `local__` /
+/// `mcp__` / `system__`), falls back to matching the right-hand
+/// `tool` segment alone, then finally the bare function name across
+/// all enabled servers.
 ///
 /// Each segment is matched against both the **sanitised** form (e.g.
 /// `fs_list`) and the **original** form (e.g. `fs.list`) because small
@@ -467,17 +543,58 @@ pub fn split_function_name(name: &str) -> Option<(&str, &str)> {
 /// `tool_calls.function.name` instead of the wire-encoded one we shipped
 /// in the OpenAI `tools` array. Accepting both keeps dispatch working
 /// when a model emits `builtin__fs.list` for what we advertised as
-/// `builtin__fs_list`.
+/// `builtin__fs_list`, or `local__tools_list` for `builtin__tools_list`.
 pub fn resolve_function_name<'a>(
     tools: &'a [EnabledTool],
     func_name: &str,
 ) -> Option<&'a EnabledTool> {
     if let Some((srv_seg, tool_seg)) = split_function_name(func_name) {
+        // Strict path: both the server prefix and the tool segment
+        // resolve. This is what well-behaved models emit verbatim from
+        // the wire-encoded `to_tool_defs` output.
         if let Some(t) = tools.iter().find(|t| {
             (sanitize_segment(&t.server_id) == srv_seg || t.server_id == srv_seg)
                 && (sanitize_segment(&t.schema.name) == tool_seg || t.schema.name == tool_seg)
         }) {
             return Some(t);
+        }
+        // Forgiving path: the tool segment alone is enough to pick a
+        // unique tool. Triggered when the model invents a server
+        // prefix (e.g. `local__tools_list`, `mcp__fs_list`) that
+        // doesn't correspond to any enabled server. We log so the
+        // mismatch is visible in diagnostics, then dispatch through
+        // the right tool anyway so the user's turn isn't wasted.
+        if let Some(t) = tools
+            .iter()
+            .find(|t| sanitize_segment(&t.schema.name) == tool_seg || t.schema.name == tool_seg)
+        {
+            tracing::debug!(
+                "tool resolver: model emitted unknown server prefix `{srv_seg}__` \
+                 for tool `{tool_seg}` — routing to `{}/{}`",
+                t.server_id,
+                t.schema.name
+            );
+            return Some(t);
+        }
+        // Duplicated-prefix recovery. Small models (Gemma 4 in
+        // particular) routinely re-encode the already-wire-encoded
+        // function name a second time, emitting things like
+        // `builtin__builtin__tools_list` or even three-deep nestings.
+        // Once the strict + forgiving paths above have failed, recurse
+        // on `tool_seg` so each round peels one duplicated prefix off
+        // the front. The recursion terminates naturally because
+        // `split_function_name` only fires while a `__` separator is
+        // present, and the bare-name fallback below handles the leaf.
+        if tool_seg.contains("__") {
+            if let Some(t) = resolve_function_name(tools, tool_seg) {
+                tracing::debug!(
+                    "tool resolver: model emitted duplicated prefix in `{func_name}` \
+                     — recovered via `{tool_seg}` → `{}/{}`",
+                    t.server_id,
+                    t.schema.name
+                );
+                return Some(t);
+            }
         }
     }
     tools
@@ -614,6 +731,76 @@ mod tests {
     }
 
     #[test]
+    fn resolve_function_name_recovers_from_hallucinated_server_prefix() {
+        // Failure mode observed with smaller text-gen models on lazy
+        // tool discovery: the model invents a plausible-looking server
+        // prefix (`local__`, `mcp__`, `system__`) that doesn't match
+        // any enabled server. The resolver should still route the call
+        // by the unambiguous tool segment instead of returning None
+        // and stalling the agent loop with `[no enabled tool matches …]`.
+        let tools = vec![
+            tool("builtin", "tools.list", "", false),
+            tool("builtin", "fs.list", "", false),
+            tool("alpha", "search", "", false),
+        ];
+
+        let got = resolve_function_name(&tools, "local__tools_list").unwrap();
+        assert_eq!(got.server_id, "builtin");
+        assert_eq!(got.schema.name, "tools.list");
+
+        let got = resolve_function_name(&tools, "mcp__search").unwrap();
+        assert_eq!(got.server_id, "alpha");
+        assert_eq!(got.schema.name, "search");
+
+        // A wrong server prefix paired with a tool name that doesn't
+        // exist anywhere must still fail loudly — the recovery path is
+        // strictly a fallback for the prefix, not the tool segment.
+        assert!(resolve_function_name(&tools, "local__does_not_exist").is_none());
+    }
+
+    #[test]
+    fn resolve_function_name_recovers_from_duplicated_server_prefix() {
+        // Failure mode observed with Gemma 4 (E4B-it-int8) on lazy
+        // tool discovery: the model reads the already-wire-encoded
+        // function name `builtin__tools_list` out of the OpenAI
+        // `tools` array, then *re-encodes* it a second time before
+        // emitting the call, producing `builtin__builtin__tools_list`.
+        // Three-deep variants (`builtin__builtin__builtin__tools_list`)
+        // surface too. The resolver must peel the duplicates off
+        // recursively and still route to the real tool, otherwise the
+        // model just retries the same broken call until the iteration
+        // cap runs out.
+        let tools = vec![
+            tool("builtin", "tools.list", "", false),
+            tool("builtin", "fs.list", "", false),
+            tool("alpha", "search", "", false),
+        ];
+
+        // Two-deep duplicated prefix on a built-in tool.
+        let got = resolve_function_name(&tools, "builtin__builtin__tools_list").unwrap();
+        assert_eq!(got.server_id, "builtin");
+        assert_eq!(got.schema.name, "tools.list");
+
+        // Three-deep nesting still recovers.
+        let got =
+            resolve_function_name(&tools, "builtin__builtin__builtin__tools_list").unwrap();
+        assert_eq!(got.schema.name, "tools.list");
+
+        // Duplicated prefix on a non-built-in MCP server resolves the
+        // same way (the recovery path is server-agnostic).
+        let got = resolve_function_name(&tools, "alpha__alpha__search").unwrap();
+        assert_eq!(got.server_id, "alpha");
+        assert_eq!(got.schema.name, "search");
+
+        // Mixed hallucinated + duplicated prefix: the model invents
+        // a fake outer prefix on top of an already-encoded name. The
+        // hallucinated-prefix path runs first, so the inner encoded
+        // name resolves cleanly.
+        let got = resolve_function_name(&tools, "local__builtin__tools_list").unwrap();
+        assert_eq!(got.schema.name, "tools.list");
+    }
+
+    #[test]
     fn to_tool_defs_emits_openai_function_shape_with_object_parameters() {
         let mut t = tool("builtin", "fs.list", "List a directory.", false);
         t.schema.input_schema = json!({
@@ -624,10 +811,30 @@ mod tests {
         let defs = to_tool_defs(&[t]);
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].kind, "function");
-        assert_eq!(defs[0].function.name, "builtin__fs_list");
+        // Single tool in the catalogue → globally unique sanitised
+        // name → ships without the `builtin__` server prefix so small
+        // models can't double-prefix it.
+        assert_eq!(defs[0].function.name, "fs_list");
         assert_eq!(defs[0].function.description, "List a directory.");
         assert_eq!(defs[0].function.parameters["type"], "object");
         assert_eq!(defs[0].function.parameters["required"], json!(["path"]));
+    }
+
+    #[test]
+    fn to_tool_defs_prefixes_only_colliding_tool_names() {
+        // Two enabled servers happen to expose a tool that sanitises
+        // to the same name (`search`) — both entries get the full
+        // `<server>__<tool>` encoding so the resolver's strict path
+        // can disambiguate. A unique sibling (`fs.list`) still ships
+        // bare.
+        let tools = vec![
+            tool("builtin", "fs.list", "", false),
+            tool("builtin", "search", "", false),
+            tool("alpha", "search", "", false),
+        ];
+        let defs = to_tool_defs(&tools);
+        let names: Vec<&str> = defs.iter().map(|d| d.function.name.as_str()).collect();
+        assert_eq!(names, vec!["fs_list", "builtin__search", "alpha__search"]);
     }
 
     #[test]
@@ -672,7 +879,14 @@ mod tests {
         ];
         let out = render_lazy_prompt_section(&tools);
         assert!(out.contains("# Available tools"));
-        assert!(out.contains("tools.list"));
+        // Prompt advertises the discovery tool's wire name verbatim.
+        // Now that names ship bare when globally unique, the discovery
+        // token is `tools_list` (no `builtin__` prefix) so small
+        // models have nothing to re-prepend and accidentally
+        // double-prefix.
+        assert!(out.contains("tools_list"));
+        assert!(!out.contains("builtin__tools_list"));
+        assert!(!out.contains("tools.list"));
         assert!(out.contains("3 tool(s)"));
         // The full per-tool names must NOT leak — the whole point of
         // lazy mode is to keep them out of turn-1 context.

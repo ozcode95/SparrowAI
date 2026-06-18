@@ -87,6 +87,19 @@ export function ModelsView() {
   );
   const loadModel = useServerStore((s) => s.loadModel);
   const removeModel = useServerStore((s) => s.removeModel);
+  // True while OVMS is mid-lifecycle (cold-start, shutdown, or
+  // install). Per-card Load / Unload actions need to disable in this
+  // window because OVMS rejects reload calls during it — and on the
+  // app's very first launch the auto-provision starting state is the
+  // *only* signal we have that the server isn't ready to accept a
+  // model load yet (`loadingModelIds` only tracks `loadModel`
+  // invocations originated from the UI, not the backend's own
+  // auto-start).
+  const ovmsStatus = useServerStore((s) => s.info?.status ?? null);
+  const ovmsBusy =
+    ovmsStatus === "starting" ||
+    ovmsStatus === "stopping" ||
+    ovmsStatus === "installing";
 
   // ── remove errors (per‑card) ─────────────────────────────────────
   const [removeErrors, setRemoveErrors] = useState<Record<string, string>>({});
@@ -110,8 +123,19 @@ export function ModelsView() {
   }
 
   // ── load / unload state (per‑card) ───────────────────────────────
+  //
+  // Load progress lives in `useServerStore.loadingModelIds` so the same
+  // spinner shows up on the card no matter which surface (this page or
+  // the chat header) triggered the OVMS load. Unload still uses a local
+  // set because it's a fire-and-forget action with no cross-page UX.
   const [loadErrors, setLoadErrors] = useState<Record<string, string>>({});
-  const [pendingLoads, setPendingLoads] = useState<Set<string>>(new Set());
+  const [pendingUnloads, setPendingUnloads] = useState<Set<string>>(new Set());
+  const loadingFromStore = useServerStore((s) => s.loadingModelIds);
+  const pendingLoads = useMemo(() => {
+    const merged = new Set(loadingFromStore);
+    for (const id of pendingUnloads) merged.add(id);
+    return merged;
+  }, [loadingFromStore, pendingUnloads]);
   function dismissLoadError(id: string) {
     setLoadErrors((prev) => {
       if (!(id in prev)) return prev;
@@ -121,11 +145,6 @@ export function ModelsView() {
   }
   async function handleLoad(id: string) {
     dismissLoadError(id);
-    setPendingLoads((prev) => {
-      const next = new Set(prev);
-      next.add(id);
-      return next;
-    });
     try {
       await loadModel(id);
     } catch (e) {
@@ -133,18 +152,11 @@ export function ModelsView() {
         ...prev,
         [id]: e instanceof Error ? e.message : String(e),
       }));
-    } finally {
-      setPendingLoads((prev) => {
-        if (!prev.has(id)) return prev;
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
     }
   }
   async function handleUnload(id: string) {
     dismissLoadError(id);
-    setPendingLoads((prev) => {
+    setPendingUnloads((prev) => {
       const next = new Set(prev);
       next.add(id);
       return next;
@@ -157,7 +169,7 @@ export function ModelsView() {
         [id]: e instanceof Error ? e.message : String(e),
       }));
     } finally {
-      setPendingLoads((prev) => {
+      setPendingUnloads((prev) => {
         if (!prev.has(id)) return prev;
         const next = new Set(prev);
         next.delete(id);
@@ -343,6 +355,7 @@ export function ModelsView() {
             localHfIds={localHfIds}
             activeDownloads={activeDownloads}
             pendingLoads={pendingLoads}
+            ovmsBusy={ovmsBusy}
             removeErrors={removeErrors}
             loadErrors={loadErrors}
             onLoad={(id) => void handleLoad(id)}
@@ -440,6 +453,7 @@ function LibraryView({
   localHfIds,
   activeDownloads,
   pendingLoads,
+  ovmsBusy,
   removeErrors,
   loadErrors,
   onLoad,
@@ -457,6 +471,7 @@ function LibraryView({
   localHfIds: Set<string>;
   activeDownloads: DownloadProgress[];
   pendingLoads: Set<string>;
+  ovmsBusy: boolean;
   removeErrors: Record<string, string>;
   loadErrors: Record<string, string>;
   onLoad: (id: string) => void;
@@ -523,12 +538,27 @@ function LibraryView({
               const isLoaded =
                 loadedModelIds.has(m.id) ||
                 (m.hf_id != null && loadedModelIds.has(m.hf_id));
+              const cardLoading = pendingLoads.has(m.hf_id ?? m.id);
+              // OVMS serializes load / remove calls on the model
+              // manager, and surfacing two spinners at once would imply
+              // we can interleave them. Gate every other card's load /
+              // unload action behind a single in-flight op so the user
+              // can't queue contradictory state on top of the one
+              // they're already watching. The OVMS lifecycle itself
+              // (`starting` / `stopping` / `installing`) is folded in
+              // here too so cards stay disabled while the server isn't
+              // ready to accept a reload — most importantly during the
+              // auto-provision cold start when `pendingLoads` is empty
+              // but OVMS is still mid-boot.
+              const otherBusy =
+                (pendingLoads.size > 0 && !cardLoading) || ovmsBusy;
               return (
                 <LocalCard
                   key={m.id}
                   m={m}
                   loaded={isLoaded}
-                  loading={pendingLoads.has(m.hf_id ?? m.id)}
+                  loading={cardLoading}
+                  otherBusy={otherBusy}
                   removeError={removeErrors[m.id] ?? null}
                   loadError={loadErrors[m.hf_id ?? m.id] ?? null}
                   onDismissError={() => onDismissRemoveError(m.id)}
@@ -1084,6 +1114,7 @@ function LocalCard({
   m,
   loaded,
   loading,
+  otherBusy,
   removeError,
   loadError,
   onParams,
@@ -1096,6 +1127,9 @@ function LocalCard({
   m: LocalModel;
   loaded: boolean;
   loading: boolean;
+  /** Some *other* card's load / unload is in flight — gate this card's
+   * load / unload action so OVMS doesn't get a contradictory queue. */
+  otherBusy: boolean;
   removeError: string | null;
   loadError: string | null;
   onParams: () => void;
@@ -1170,8 +1204,12 @@ function LocalCard({
           <button
             type="button"
             onClick={onUnload}
-            disabled={loading}
-            title="Remove this model from the OVMS serving set"
+            disabled={loading || otherBusy}
+            title={
+              otherBusy
+                ? "Another model is loading — please wait"
+                : "Remove this model from the OVMS serving set"
+            }
             className={
               "group/unload inline-flex flex-1 items-center justify-center gap-1.5 rounded-[4px] " +
               "border border-tui-accent/40 bg-[rgba(96,205,255,0.10)] " +
@@ -1179,7 +1217,9 @@ function LocalCard({
               "text-tui-accent transition-colors " +
               (loading
                 ? "cursor-progress opacity-70"
-                : "hover:border-tui-err/40 hover:bg-[rgba(255,153,164,0.10)] hover:text-tui-err")
+                : otherBusy
+                  ? "cursor-not-allowed opacity-50"
+                  : "hover:border-tui-err/40 hover:bg-[rgba(255,153,164,0.10)] hover:text-tui-err")
             }
           >
             {loading ? (
@@ -1205,8 +1245,12 @@ function LocalCard({
             size="sm"
             variant="primary"
             onClick={onLoad}
-            disabled={loading}
-            title="Load model in OVMS"
+            disabled={loading || otherBusy}
+            title={
+              otherBusy
+                ? "Another model is loading — please wait"
+                : "Load model in OVMS"
+            }
             className="flex-1"
           >
             {loading ? (

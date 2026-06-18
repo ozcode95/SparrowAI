@@ -42,7 +42,6 @@ pub struct Specs {
     pub cpu_physical_cores: usize,
     pub cpu_logical_cores: usize,
     pub ram_total_mb: u64,
-    pub ram_usable_mb: u64,
     pub gpus: Vec<GpuInfo>,
     pub npus: Vec<NpuInfo>,
     pub probed_at: String,
@@ -88,10 +87,6 @@ pub fn probe() -> Result<Specs> {
         cpu_physical_cores: physical_cores,
         cpu_logical_cores: logical_cores,
         ram_total_mb: sys.total_memory() / 1024 / 1024,
-        // `sys.available_memory()` is the *currently free* RAM — useless
-        // for hardware assessment. Use total physical RAM so the
-        // recommendation engine has a stable number to budget against.
-        ram_usable_mb: sys.total_memory() / 1024 / 1024,
         gpus,
         npus,
         probed_at: Utc::now().to_rfc3339(),

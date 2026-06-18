@@ -162,7 +162,22 @@ pub fn ensure_in_model_graph(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or(device);
-    let body = render_graph(effective_device, &params.task);
+
+    // Per-model OpenVINO compiled-model cache. Lives next to the
+    // weights at `<model_dir>/.ov_cache/`. Plumbed into the graph as a
+    // `CACHE_DIR` plugin_config entry so the OpenVINO plugin caches
+    // compiled blobs there on first start and reuses them on every
+    // subsequent start (see
+    // <https://docs.openvino.ai/2026/model-server/ovms_docs_model_cache.html>
+    // and the underlying OpenVINO Model Caching guide). Per-model
+    // `CACHE_DIR` takes precedence over the global `--cache_dir`, which
+    // is fine — colocating cache + weights means deleting a model also
+    // drops its stale cache automatically.
+    let cache_dir = model_dir.join(".ov_cache");
+    std::fs::create_dir_all(&cache_dir)
+        .with_context(|| format!("create {}", cache_dir.display()))?;
+
+    let body = render_graph(effective_device, &params.task, &cache_dir);
     std::fs::write(&path, body).with_context(|| format!("write {path:?}"))?;
     Ok(path)
 }
@@ -195,20 +210,20 @@ fn header() -> String {
 
 /// Dispatch to the per-task template. Mirrors the six families exposed by
 /// upstream `export_model.py`.
-fn render_graph(device: &str, task: &ModelTask) -> String {
+fn render_graph(device: &str, task: &ModelTask, cache_dir: &Path) -> String {
     match task {
-        ModelTask::TextGeneration(p) => render_text_generation(device, p),
-        ModelTask::Embeddings(p) => render_embeddings(device, p),
-        ModelTask::Rerank(p) => render_rerank(device, p),
-        ModelTask::ImageGeneration(p) => render_image_generation(device, p),
-        ModelTask::Text2Speech(p) => render_text2speech(device, p),
-        ModelTask::Speech2Text(p) => render_speech2text(device, p),
+        ModelTask::TextGeneration(p) => render_text_generation(device, p, cache_dir),
+        ModelTask::Embeddings(p) => render_embeddings(device, p, cache_dir),
+        ModelTask::Rerank(p) => render_rerank(device, p, cache_dir),
+        ModelTask::ImageGeneration(p) => render_image_generation(device, p, cache_dir),
+        ModelTask::Text2Speech(p) => render_text2speech(device, p, cache_dir),
+        ModelTask::Speech2Text(p) => render_speech2text(device, p, cache_dir),
     }
 }
 
 // ─── Text generation ───────────────────────────────────────────────────────
 
-fn render_text_generation(device: &str, p: &TextGenParams) -> String {
+fn render_text_generation(device: &str, p: &TextGenParams, cache_dir: &Path) -> String {
     // Build the inner `LLMCalculatorOptions` body so we can include only
     // the optional fields the user actually set — matches what the jinja
     // template does in `export_model.py`.
@@ -219,7 +234,7 @@ fn render_text_generation(device: &str, p: &TextGenParams) -> String {
         push(&format!("          pipeline_type: {t},\n"));
     }
     push("          models_path: \"./\",\n");
-    let plugin_config = build_text_gen_plugin_config(device, p);
+    let plugin_config = build_text_gen_plugin_config(device, p, cache_dir);
     push(&format!("          plugin_config: '{plugin_config}',\n"));
     push(&format!(
         "          enable_prefix_caching: {},\n",
@@ -283,12 +298,18 @@ node: {{
 /// Construct the inner JSON `plugin_config` value consumed by the
 /// LLMCalculator. Matches the construction logic in `export_model.py`:
 ///
+/// - `CACHE_DIR` points at the per-model OpenVINO blob cache so warm
+///   starts skip recompilation.
 /// - `KV_CACHE_PRECISION` is forwarded as-is.
 /// - `prompt_lookup` is forwarded when enabled.
 /// - For HETERO devices, model distribution policy is pinned.
 /// - For NPU, prefix-caching + max-prompt-len flow through `DEVICE_PROPERTIES`.
-fn build_text_gen_plugin_config(device: &str, p: &TextGenParams) -> String {
+fn build_text_gen_plugin_config(device: &str, p: &TextGenParams, cache_dir: &Path) -> String {
     let mut map = serde_json::Map::new();
+    map.insert(
+        "CACHE_DIR".into(),
+        serde_json::json!(cache_dir_for_plugin_config(cache_dir)),
+    );
     if let Some(v) = &p.kv_cache_precision {
         map.insert("KV_CACHE_PRECISION".into(), serde_json::json!(v));
     }
@@ -329,12 +350,13 @@ fn build_text_gen_plugin_config(device: &str, p: &TextGenParams) -> String {
 
 // ─── Embeddings ────────────────────────────────────────────────────────────
 
-fn render_embeddings(device: &str, p: &EmbeddingsParams) -> String {
+fn render_embeddings(device: &str, p: &EmbeddingsParams, cache_dir: &Path) -> String {
     let truncate_line = if p.truncate {
         "          truncate: true,\n"
     } else {
         ""
     };
+    let plugin_config = streams_plus_cache_plugin_config(p.num_streams, cache_dir);
     format!(
         r#"{header}input_stream: "REQUEST_PAYLOAD:input"
 output_stream: "RESPONSE_PAYLOAD:output"
@@ -347,7 +369,7 @@ node {{
   node_options: {{
       [type.googleapis.com / mediapipe.EmbeddingsCalculatorOVOptions]: {{
           models_path: "./",
-          plugin_config: '{{"NUM_STREAMS": "{streams}" }}',
+          plugin_config: '{plugin_config}',
           normalize_embeddings: {normalize},
           pooling: {pooling},
 {truncate}          target_device: "{device}"
@@ -356,7 +378,6 @@ node {{
 }}
 "#,
         header = header(),
-        streams = p.num_streams,
         normalize = bool_str(p.normalize),
         pooling = p.pooling,
         truncate = truncate_line,
@@ -365,7 +386,7 @@ node {{
 
 // ─── Rerank ────────────────────────────────────────────────────────────────
 
-fn render_rerank(device: &str, p: &RerankParams) -> String {
+fn render_rerank(device: &str, p: &RerankParams, cache_dir: &Path) -> String {
     // `max_doc_length` is used at tokenizer-conversion time (a Python step
     // we don't run); we still surface it so users can inspect / hand-edit.
     let mut tail = String::new();
@@ -374,6 +395,7 @@ fn render_rerank(device: &str, p: &RerankParams) -> String {
         "# max_doc_length (informational): {}",
         p.max_doc_length
     );
+    let plugin_config = streams_plus_cache_plugin_config(p.num_streams, cache_dir);
     format!(
         r#"{header}input_stream: "REQUEST_PAYLOAD:input"
 output_stream: "RESPONSE_PAYLOAD:output"
@@ -386,40 +408,37 @@ node {{
   node_options: {{
       [type.googleapis.com / mediapipe.RerankCalculatorOVOptions]: {{
           models_path: "./",
-          plugin_config: '{{"NUM_STREAMS": "{streams}" }}',
+          plugin_config: '{plugin_config}',
           target_device: "{device}"
       }}
   }}
 }}
 {tail}"#,
         header = header(),
-        streams = p.num_streams,
     )
 }
 
 // ─── Image generation ──────────────────────────────────────────────────────
 
-fn render_image_generation(device: &str, p: &ImageGenParams) -> String {
+fn render_image_generation(device: &str, p: &ImageGenParams, cache_dir: &Path) -> String {
     let mut plugin_map = serde_json::Map::new();
+    plugin_map.insert(
+        "CACHE_DIR".into(),
+        serde_json::json!(cache_dir_for_plugin_config(cache_dir)),
+    );
     if p.num_streams > 0 {
         plugin_map.insert("NUM_STREAMS".into(), serde_json::json!(p.num_streams));
     }
-    let plugin_config_line = if plugin_map.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "          plugin_config: '{}',\n",
-            serde_json::to_string(&serde_json::Value::Object(plugin_map))
-                .unwrap_or_else(|_| "{}".into())
-        )
-    };
+    let plugin_config_line = format!(
+        "          plugin_config: '{}',\n",
+        serde_json::to_string(&serde_json::Value::Object(plugin_map))
+            .unwrap_or_else(|_| "{}".into())
+    );
 
     let mut opt = String::new();
     let mut push = |s: &str| opt.push_str(s);
     push("          models_path: \"./\",\n");
-    if !plugin_config_line.is_empty() {
-        push(&plugin_config_line);
-    }
+    push(&plugin_config_line);
     push(&format!("          device: \"{device}\",\n"));
     if let Some(r) = &p.resolution {
         push(&format!("          resolution: \"{r}\",\n"));
@@ -474,8 +493,9 @@ node: {{
 
 // ─── Text-to-speech ────────────────────────────────────────────────────────
 
-fn render_text2speech(device: &str, p: &T2sParams) -> String {
+fn render_text2speech(device: &str, p: &T2sParams, cache_dir: &Path) -> String {
     let streams = p.num_streams.max(1);
+    let plugin_config = streams_plus_cache_plugin_config(streams, cache_dir);
     let voices_block = match (&p.speaker_name, &p.speaker_path) {
         (Some(name), Some(path)) => format!(
             "          voices: [\n            {{\n                name: \"{name}\",\n                path: \"{path}\"\n            }}\n          ]\n",
@@ -494,7 +514,7 @@ node {{
   node_options: {{
       [type.googleapis.com / mediapipe.T2sCalculatorOptions]: {{
           models_path: "./",
-          plugin_config: '{{ "NUM_STREAMS": "{streams}" }}',
+          plugin_config: '{plugin_config}',
           target_device: "{device}",
 {voices}      }}
   }}
@@ -507,8 +527,9 @@ node {{
 
 // ─── Speech-to-text ────────────────────────────────────────────────────────
 
-fn render_speech2text(device: &str, p: &S2tParams) -> String {
+fn render_speech2text(device: &str, p: &S2tParams, cache_dir: &Path) -> String {
     let streams = p.num_streams.max(1);
+    let plugin_config = streams_plus_cache_plugin_config(streams, cache_dir);
     format!(
         r#"{header}input_stream: "HTTP_REQUEST_PAYLOAD:input"
 output_stream: "HTTP_RESPONSE_PAYLOAD:output"
@@ -527,7 +548,7 @@ node {{
   node_options: {{
       [type.googleapis.com / mediapipe.S2tCalculatorOptions]: {{
           models_path: "./",
-          plugin_config: '{{ "NUM_STREAMS": "{streams}" }}',
+          plugin_config: '{plugin_config}',
           target_device: "{device}",
           enable_word_timestamps: {timestamps}
       }}
@@ -555,6 +576,47 @@ fn bool_str(b: bool) -> &'static str {
     } else {
         "false"
     }
+}
+
+/// Normalise a filesystem path for embedding inside a textproto-wrapped
+/// JSON `plugin_config` value.
+///
+/// The `plugin_config` string travels through two parsers before
+/// OpenVINO sees it:
+///
+/// 1. protobuf textproto parses the single-quoted literal and decodes
+///    `\\` → `\`.
+/// 2. OVMS then feeds the decoded string to a JSON parser.
+///
+/// Any single backslash that survives step 1 lands in JSON as an
+/// invalid escape (`\U`, `\u` followed by non-hex, ...). On Windows
+/// `to_string_lossy()` produces backslash-separated paths, which after
+/// `serde_json::to_string` come out as `\\` in the file, which then
+/// collapse to `\` after textproto decoding and break JSON parsing.
+/// The visible symptom is OVMS getting stuck in `Starting` while the
+/// graph silently fails to load (the s2t/Whisper graph is the most
+/// common trigger because it loads several sub-models on a slow path).
+///
+/// OpenVINO and the Windows runtime both accept `/` as a path
+/// separator, so the safe fix is to swap backslashes for forward
+/// slashes before serialising.
+fn cache_dir_for_plugin_config(cache_dir: &Path) -> String {
+    cache_dir.to_string_lossy().replace('\\', "/")
+}
+
+/// Build the JSON `plugin_config` blob shared by the simpler calculators
+/// (embeddings / rerank / t2s / s2t): a `NUM_STREAMS` knob plus the
+/// per-model `CACHE_DIR` so warm starts skip recompilation. Returned as
+/// a single-line JSON string ready to be wrapped in textproto single
+/// quotes.
+fn streams_plus_cache_plugin_config(num_streams: u32, cache_dir: &Path) -> String {
+    let mut map = serde_json::Map::new();
+    map.insert("NUM_STREAMS".into(), serde_json::json!(num_streams.to_string()));
+    map.insert(
+        "CACHE_DIR".into(),
+        serde_json::json!(cache_dir_for_plugin_config(cache_dir)),
+    );
+    serde_json::to_string(&serde_json::Value::Object(map)).unwrap_or_else(|_| "{}".into())
 }
 
 #[cfg(test)]
@@ -640,11 +702,70 @@ mod tests {
             max_prompt_len: Some(1024),
             ..Default::default()
         };
-        let plug = build_text_gen_plugin_config("NPU", &p);
+        let plug = build_text_gen_plugin_config("NPU", &p, Path::new("C:/tmp/.ov_cache"));
         assert!(plug.contains("DEVICE_PROPERTIES"));
         assert!(plug.contains("NPUW_LLM_ENABLE_PREFIX_CACHING"));
         assert!(plug.contains("MAX_PROMPT_LEN"));
         assert!(plug.contains("1024"));
+        assert!(plug.contains("CACHE_DIR"));
+    }
+
+    #[test]
+    fn graph_writes_cache_dir_and_creates_directory() {
+        let d = tmpdir();
+        let p = ensure_in_model_graph(&d, "GPU", &text_gen()).unwrap();
+        let body = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            body.contains("CACHE_DIR"),
+            "graph plugin_config must include per-model CACHE_DIR for warm-start"
+        );
+        assert!(
+            body.contains(".ov_cache"),
+            "CACHE_DIR must point at the per-model .ov_cache dir"
+        );
+        assert!(
+            d.join(".ov_cache").is_dir(),
+            "CACHE_DIR target must be created on disk so OpenVINO can write blobs"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn cache_dir_uses_forward_slashes_for_textproto_safety() {
+        // Plugin_config strings are textproto-decoded (which collapses
+        // `\\` → `\`) before OVMS hands them to a JSON parser. Backslash
+        // path separators would survive as invalid JSON escapes and
+        // wedge the model in `Starting` forever — Whisper / s2t graphs
+        // are the most visible regression case. Forward slashes work
+        // on Windows for OpenVINO, so we always emit them.
+        for task in [
+            ModelTask::TextGeneration(TextGenParams::default()),
+            ModelTask::Embeddings(EmbeddingsParams::default()),
+            ModelTask::Rerank(RerankParams::default()),
+            ModelTask::ImageGeneration(ImageGenParams::default()),
+            ModelTask::Text2Speech(T2sParams::default()),
+            ModelTask::Speech2Text(S2tParams::default()),
+        ] {
+            let body = render_graph(
+                "GPU",
+                &task,
+                Path::new(r"C:\Users\me\models\repo\.ov_cache"),
+            );
+            // The relevant substring must contain forward-slashes and
+            // no backslash-escape sequences inside the plugin_config
+            // value. JSON-encoded paths with backslashes show up as
+            // `\\\\` (two escaped backslashes) in the file body.
+            assert!(
+                body.contains("C:/Users/me/models/repo/.ov_cache"),
+                "task {} did not normalise cache_dir to forward slashes:\n{body}",
+                task.kind_str()
+            );
+            assert!(
+                !body.contains(r"C:\\Users"),
+                "task {} leaked Windows backslash separators into plugin_config:\n{body}",
+                task.kind_str()
+            );
+        }
     }
 
     #[test]
@@ -699,7 +820,7 @@ mod tests {
             ),
         ];
         for (task, needle) in cases {
-            let body = render_graph("CPU", &task);
+            let body = render_graph("CPU", &task, Path::new("C:/tmp/.ov_cache"));
             assert!(
                 body.contains(needle),
                 "task `{}` did not produce `{needle}`:\n{body}",

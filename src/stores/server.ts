@@ -22,6 +22,13 @@ export interface LoadedModel {
   task: string;
   /** `tool_parser` declared in the model's sidecar, if any. */
   tool_parser: string | null;
+  /**
+   * `LM` | `LM_CB` | `VLM` | `VLM_CB` | `AUTO`. Only set for
+   * text-generation models. Surfaced so the UI / chat runner can tell
+   * a VLM-served model apart from a plain text LM without re-reading
+   * the on-disk sidecar.
+   */
+  pipeline_type?: string | null;
 }
 
 // ─── TFS inspection types ────────────────────────────────────────────
@@ -110,6 +117,13 @@ interface ServerState {
   info: OvmsInfo | null;
   logs: OvmsLogLine[];
   installProgress: InstallProgress | null;
+  /**
+   * Model IDs whose `ovms_load_model` invocation is currently
+   * in-flight. Shared so the chat header banner, the Models page
+   * cards, and the bottom bar can all reflect the same staging state
+   * regardless of which page kicked off the load.
+   */
+  loadingModelIds: Set<string>;
   refresh: () => Promise<void>;
   install: () => Promise<void>;
   update: () => Promise<void>;
@@ -141,6 +155,7 @@ export const useServerStore = create<ServerState>((set, get) => ({
   info: null,
   logs: [],
   installProgress: null,
+  loadingModelIds: new Set<string>(),
 
   refresh: async () => {
     try {
@@ -183,8 +198,25 @@ export const useServerStore = create<ServerState>((set, get) => ({
   },
 
   loadModel: async (id) => {
-    await invoke("ovms_load_model", { modelId: id });
-    await get().refresh();
+    // Track the in-flight load so every surface (chat header banner,
+    // Models page card, bottom bar) can render the same "loading"
+    // affordance regardless of which page started it.
+    set((s) => {
+      const next = new Set(s.loadingModelIds);
+      next.add(id);
+      return { loadingModelIds: next };
+    });
+    try {
+      await invoke("ovms_load_model", { modelId: id });
+      await get().refresh();
+    } finally {
+      set((s) => {
+        if (!s.loadingModelIds.has(id)) return s;
+        const next = new Set(s.loadingModelIds);
+        next.delete(id);
+        return { loadingModelIds: next };
+      });
+    }
   },
 
   removeModel: async (id) => {

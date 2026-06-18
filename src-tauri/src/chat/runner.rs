@@ -506,11 +506,18 @@ async fn run_inner(
         // Re-read info after the staging step above so a freshly
         // added model is visible here.
         let info = ovms.info().await;
-        info.loaded_models
-            .iter()
-            .find(|m| m.id == model)
-            .and_then(|m| m.tool_parser.as_deref())
-            .is_some()
+        let loaded = info.loaded_models.iter().find(|m| m.id == model);
+        // The OpenAI `tools` array is shipped whenever the loaded
+        // text-gen model has a `tool_parser` configured — OVMS uses
+        // it both to render the catalogue into the chat template and
+        // to extract structured `delta.tool_calls` from the response.
+        // VLM pipelines are no longer gated out: earlier OVMS releases
+        // had the VLM stateful calculator reject tool-bearing
+        // requests, but that's been fixed upstream and per the
+        // v2025/2026 chat-completions docs `tools` is a documented
+        // request field for every LLM graph. Without `tools` the
+        // model never gets to see its own tool catalogue at all.
+        loaded.and_then(|m| m.tool_parser.as_deref()).is_some()
     } else {
         true
     };
@@ -875,18 +882,12 @@ async fn run_inner(
             full_content.push_str(&banner);
 
             let result_text = if last_round {
-                if loop_mode {
-                    format!(
-                        "[tool budget exhausted after {tool_calls_made} call(s) — \
-                         increase `agent_max_iterations` in Settings to allow more]"
-                    )
-                } else {
-                    format!(
-                        "[further tool calls suppressed after {tool_calls_made} call(s) — \
-                         prefix your message with `/loop` to let the assistant chain \
-                         multiple tool calls autonomously]"
-                    )
-                }
+                format!(
+                    "[tool budget exhausted after {tool_calls_made} call(s) — \
+                     enable the Agent preset in the composer to let the \
+                     assistant chain more calls, or raise \
+                     `agent_max_iterations` in Settings]"
+                )
             } else {
                 let (text, was_cancelled) = run_tool_call(
                     app,
@@ -2217,7 +2218,11 @@ async fn build_request_messages(
 async fn build_system_prompt(
     settings: &Settings,
     tools: &[EnabledTool],
-    loop_mode: bool,
+    // Agent-preset flag (formerly the `/loop` slash command). Retained
+    // on the signature because callers still pass it and the runtime
+    // uses it for the iteration cap, but the system prompt no longer
+    // branches on it — see [`TOOL_USE_POLICY_HINT`] for the rationale.
+    _loop_mode: bool,
     // Per-turn thinking opt-in. Default for every chat is **off**
     // regardless of any global setting — the composer's `+` menu
     // toggle is the only place this gets flipped on, and it scopes to
@@ -2246,13 +2251,15 @@ async fn build_system_prompt(
     }
     out.push_str(SYSTEM_PROMPT);
     out.push_str("\n\n");
-    out.push_str(if loop_mode {
-        AGENT_LOOP_MODE_HINT
-    } else if lazy_tool_discovery {
-        LAZY_SINGLE_SHOT_MODE_HINT
-    } else {
-        SINGLE_SHOT_MODE_HINT
-    });
+    // Single neutral tool-use policy. We deliberately do NOT branch on
+    // `loop_mode` (formerly the `/loop` slash-command, now the
+    // composer's Agent preset): the earlier per-mode hints framed an
+    // iteration safety net as a hard semantic limit ("you may call at
+    // most one tool"), which routinely caused well-tooled models to
+    // refuse follow-up calls they actually needed. The runtime cap
+    // still lives in `max_iters` below; the prompt no longer pretends
+    // the model is forbidden from chaining.
+    out.push_str(TOOL_USE_POLICY_HINT);
     // When the runtime can't parse OpenAI-native `tool_calls` (no
     // `tool_parser` configured on the loaded OVMS model) we have to
     // teach the model a text-only protocol the runner can scrape on
@@ -2403,40 +2410,25 @@ overlapping entries with `replace` or drop low-value ones with \
 turn won't appear in your frozen snapshot until the next turn, but the \
 tool's success result shows the updated state.";
 
-/// Appended to the system prompt when the user has *not* prefixed their
-/// message with `/loop`. Tells the model that it gets one tool-call cycle
-/// and then must give a final answer — the runner enforces this with a
-/// hard 2-iteration cap so a misbehaving model can't grind on the same
-/// tool forever, but the prompt nudge keeps well-behaved models on track.
-const SINGLE_SHOT_MODE_HINT: &str = "# Tool-use policy\n\
-This turn is in single-shot mode. You may call at most one tool. As soon as \
-the tool result comes back, write your final reply to the user using that \
-result — do NOT call the same tool again or chain into another tool call. \
-If the user wants you to chain multiple tool calls autonomously, they will \
-prefix their message with `/loop`.";
-
-/// Single-shot policy as it applies when lazy tool discovery is on.
-/// Mirrors [`SINGLE_SHOT_MODE_HINT`] but explicitly carves out the
-/// `tools.list` discovery call as a free first step — otherwise a
-/// strictly-obedient model would refuse to call `tools.list` *and* the
-/// real tool in the same turn, leaving lazy mode useless.
-const LAZY_SINGLE_SHOT_MODE_HINT: &str = "# Tool-use policy\n\
-This turn is in single-shot mode with lazy tool discovery. You may call \
-`tools.list` once to discover what's available, then call at most one of \
-the discovered tools. As soon as that tool's result comes back, write \
-your final reply to the user using it — do NOT call the same tool again \
-or chain into a third tool call. If you don't need any tool, just answer \
-the user directly without calling `tools.list`. If the user wants you to \
-chain multiple tool calls autonomously, they will prefix their message \
-with `/loop`.";
-
-/// Appended when the user *did* prefix with `/loop`. Permits autonomous
-/// chaining, bounded by `agent_max_iterations` in settings.
-const AGENT_LOOP_MODE_HINT: &str = "# Tool-use policy\n\
-This turn is in `/loop` mode — you may chain multiple tool calls to fulfil \
-the user's goal. Stop as soon as the goal is reached and reply to the user; \
-never repeat the same tool call with the same arguments after it already \
-succeeded.";
+/// Single, neutral tool-use policy. Replaces the older trio of
+/// `SINGLE_SHOT_MODE_HINT` / `LAZY_SINGLE_SHOT_MODE_HINT` /
+/// `AGENT_LOOP_MODE_HINT` that branched on the `/loop` slash command
+/// (now the composer's Agent preset). Those hints framed an iteration
+/// cap — a runtime safety net enforced silently in `max_iters` — as a
+/// hard semantic limit on the model ("you may call at most one tool"),
+/// which routinely caused well-tooled models to refuse a follow-up
+/// call they actually needed. The Agent preset is about *who drives
+/// the orchestration* and how generous the iteration budget is, not
+/// about whether tool chaining is allowed at all; the prompt now
+/// reflects that.
+const TOOL_USE_POLICY_HINT: &str = "# Tool-use policy\n\
+Call a tool whenever it helps you fulfil the user's request, and chain \
+multiple calls when a task genuinely requires it. Wait for each tool's \
+result before deciding the next step, and stop calling tools the \
+moment you have enough information to answer the user. Never repeat \
+the same tool call with the same arguments after it already succeeded. \
+If no enabled tool fits the request, answer the user directly instead \
+of calling one anyway.";
 
 /// Appended when the loaded model has no OVMS `tool_parser` configured
 /// (Granite, generic Llama-2 chat, custom fine-tunes, etc. — note Gemma

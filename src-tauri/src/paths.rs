@@ -179,6 +179,22 @@ pub fn ovms_state_dir() -> Result<PathBuf> {
     ovms_dir()
 }
 
+/// OpenVINO model-compilation cache directory. Passed to `ovms.exe` via
+/// `--cache_dir` so subsequent starts skip recompiling the same graph
+/// for the same hardware. See
+/// <https://docs.openvino.ai/2026/model-server/ovms_docs_model_cache.html>.
+///
+/// Lives at `<root>/runtimes/ovms/.cache/`. The dot-prefix and explicit
+/// preservation in `wipe_install_dir` keep the cache across reinstalls
+/// of the OVMS binary — OpenVINO already keys cache blobs by device +
+/// runtime version, so stale entries are simply ignored, never reused
+/// against an incompatible toolchain.
+pub fn ovms_cache_dir() -> Result<PathBuf> {
+    let p = ovms_dir()?.join(".cache");
+    std::fs::create_dir_all(&p)?;
+    Ok(p)
+}
+
 pub fn models_dir() -> Result<PathBuf> {
     let p = root()?.join("models");
     std::fs::create_dir_all(&p)?;

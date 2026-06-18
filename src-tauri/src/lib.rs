@@ -78,6 +78,8 @@ pub fn run() {
             commands::attachments::attachments_save,
             commands::attachments::attachments_delete,
             commands::attachments::attachments_purge_conversation,
+            // ─── audio ──────────────────────────────────────────
+            commands::audio::audio_transcribe,
             // ─── skills ───────────────────────────────────────
             commands::skills::skills_list,
             commands::skills::skills_create,

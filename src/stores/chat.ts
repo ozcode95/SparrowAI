@@ -213,7 +213,7 @@ interface ChatState {
   remove: (id: string) => Promise<void>;
   rename: (id: string, title: string) => Promise<void>;
   setModel: (model: string | null) => Promise<void>;
-  setPendingModel: (model: string | null) => void;
+  setPendingModel: (model: string | null) => Promise<void>;
   send: (
     text: string,
     attachments?: Attachment[],
@@ -236,6 +236,71 @@ interface ChatState {
   ) => Promise<void>;
 
   bindEvents: () => Promise<() => void>;
+}
+
+/// Stage `model` on the local OVMS instance and evict the prior
+/// text-generation lineup. Shared by `setModel` (per-conversation pin)
+/// and `setPendingModel` (header pick before a conversation exists) so
+/// both code paths give the user the same "loading…" banner behaviour
+/// as the Models page's explicit Load button.
+///
+/// Best-effort — the chat runner has the same fallback at send-time, so
+/// failures here just log and let the runner surface the real error on
+/// the next request.
+async function swapOvmsTextGen(model: string): Promise<void> {
+  const settings = useSettingsStore.getState();
+  const provider = settings.providers.find(
+    (p) => p.id === settings.active_provider_id,
+  );
+  if (!provider || provider.kind !== "ovms") return;
+  const server = useServerStore.getState();
+  const info = server.info;
+  // Nothing to do when OVMS isn't ready (not installed, mid-install) —
+  // the Server page is the right place for the user to react.
+  if (!info) return;
+  if (info.status === "not_installed" || info.status === "installing") return;
+
+  // Snapshot which text-generation models OVMS is already serving so
+  // we can evict them *after* the new one is up. Non-text-gen models
+  // (embeddings, rerank, image, …) are left alone — they serve
+  // different chat roles and the user may rely on them concurrently.
+  //
+  // We capture this *before* the load so the swap stays deterministic
+  // even if the live `loaded_models` array shifts mid-flight (a
+  // background `ovms://status` event could otherwise race the eviction).
+  const previousTextGen = (info.loaded_models ?? [])
+    .filter((m) => m.task === "text_generation" && m.id !== model)
+    .map((m) => m.id);
+
+  // If the target is already the only text-gen model loaded, there's
+  // nothing to swap.
+  if (
+    previousTextGen.length === 0 &&
+    info.loaded_models?.some((m) => m.id === model)
+  ) {
+    return;
+  }
+
+  try {
+    // Load the new model first so there's no window where the chat
+    // runner sees zero text-gen models available.
+    if (!info.loaded_models?.some((m) => m.id === model)) {
+      await server.loadModel(model);
+    }
+    // Evict the prior text-gen lineup. Failures here are best-effort
+    // — the new model is already serving, so the chat works either
+    // way and a leftover loaded model just wastes VRAM until the user
+    // restarts OVMS.
+    for (const oldId of previousTextGen) {
+      try {
+        await server.removeModel(oldId);
+      } catch (e) {
+        console.warn(`ovms_remove_model(${oldId}) failed`, e);
+      }
+    }
+  } catch (e) {
+    console.warn("eager ovms model swap failed (will retry on send)", e);
+  }
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -389,8 +454,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  setPendingModel: (model) => {
+  setPendingModel: async (model) => {
     set({ pendingModel: model });
+    // Trigger the same OVMS swap that `setModel` runs once a
+    // conversation exists. The user picked a model from the chat
+    // header — they expect it to start loading immediately, the same
+    // way the Models page "Load" button behaves. Without this, a fresh
+    // "+ New chat" would silently defer the load until the first
+    // `send()`, leaving the bottom-bar pill blank in the meantime.
+    if (model) await swapOvmsTextGen(model);
   },
 
   setModel: async (model) => {
@@ -403,67 +475,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         c.id === convId ? { ...c, model } : c,
       ),
     }));
-
-    // If the active provider is the local OVMS instance, eagerly swap the
-    // running model so the user gets the "loading…" banner immediately
-    // instead of waiting until their next send to discover the mismatch.
-    // The chat runner has the same fallback path, so failures here are
-    // non-fatal — we just log and let the runner surface the real error
-    // on the next request.
-    if (!model) return;
-    const settings = useSettingsStore.getState();
-    const provider = settings.providers.find(
-      (p) => p.id === settings.active_provider_id,
-    );
-    if (!provider || provider.kind !== "ovms") return;
-    const server = useServerStore.getState();
-    const info = server.info;
-    // Nothing to do when OVMS isn't ready (not installed, mid-install) —
-    // the Server page is the right place for the user to react.
-    if (!info) return;
-    if (info.status === "not_installed" || info.status === "installing") return;
-
-    // Snapshot which text-generation models OVMS is already serving so
-    // we can evict them *after* the new one is up. Non-text-gen models
-    // (embeddings, rerank, image, …) are left alone — they serve
-    // different chat roles and the user may rely on them concurrently.
-    //
-    // We capture this *before* the load so the swap stays deterministic
-    // even if the live `loaded_models` array shifts mid-flight (a
-    // background `ovms://status` event could otherwise race the eviction).
-    const previousTextGen = (info.loaded_models ?? [])
-      .filter((m) => m.task === "text_generation" && m.id !== model)
-      .map((m) => m.id);
-
-    // If the target is already the only text-gen model loaded, there's
-    // nothing to do beyond bumping the chat's pin (which we already did).
-    if (
-      previousTextGen.length === 0 &&
-      info.loaded_models?.some((m) => m.id === model)
-    ) {
-      return;
-    }
-
-    try {
-      // Load the new model first so there's no window where the chat
-      // runner sees zero text-gen models available.
-      if (!info.loaded_models?.some((m) => m.id === model)) {
-        await server.loadModel(model);
-      }
-      // Evict the prior text-gen lineup. Failures here are best-effort
-      // — the new model is already serving, so the chat works either
-      // way and a leftover loaded model just wastes VRAM until the user
-      // restarts OVMS.
-      for (const oldId of previousTextGen) {
-        try {
-          await server.removeModel(oldId);
-        } catch (e) {
-          console.warn(`ovms_remove_model(${oldId}) failed`, e);
-        }
-      }
-    } catch (e) {
-      console.warn("eager ovms model swap failed (will retry on send)", e);
-    }
+    if (model) await swapOvmsTextGen(model);
   },
 
   send: async (text, attachments, overrides) => {

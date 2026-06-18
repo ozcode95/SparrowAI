@@ -23,7 +23,6 @@ export interface SystemSpecs {
   cpu_physical_cores: number;
   cpu_logical_cores: number;
   ram_total_mb: number;
-  ram_usable_mb: number;
   gpus: GpuInfo[];
   npus: NpuInfo[];
   probed_at: string;

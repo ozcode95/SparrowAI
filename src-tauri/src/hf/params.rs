@@ -185,6 +185,13 @@ pub struct S2tParams {
 /// Tagged union over the OVMS task families. The discriminator field is
 /// `kind` to align with the convention used in the rest of the codebase
 /// (chat error kinds, install stages, etc.).
+///
+/// Variant tags are pinned with explicit `#[serde(rename = …)]` because
+/// the default `rename_all = "snake_case"` rule injects an underscore
+/// between digits and capitals (`Text2Speech` → `text2_speech`), which
+/// would diverge from the short tags we use everywhere else in the
+/// codebase (`text2speech`, `speech2text`) and from the TypeScript
+/// `ModelTaskKind` union the renderer reads from.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ModelTask {
@@ -192,7 +199,9 @@ pub enum ModelTask {
     Embeddings(EmbeddingsParams),
     Rerank(RerankParams),
     ImageGeneration(ImageGenParams),
+    #[serde(rename = "text2speech", alias = "text2_speech")]
     Text2Speech(T2sParams),
+    #[serde(rename = "speech2text", alias = "speech2_text")]
     Speech2Text(S2tParams),
 }
 

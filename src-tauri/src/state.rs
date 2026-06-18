@@ -61,9 +61,29 @@ impl AppState {
             tracing::warn!("hf backfill_verified failed: {e:#}");
         }
 
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("zero/", env!("CARGO_PKG_VERSION")))
-            .build()?;
+        let mut builder = reqwest::Client::builder()
+            .user_agent(concat!("zero/", env!("CARGO_PKG_VERSION")));
+
+        // Load extra CA(s) — corporate MITM root.
+        // Path comes from env var so we don't bake site-specific config into the binary.
+        if let Ok(path) = std::env::var("ZERO_EXTRA_CA_BUNDLE")
+            .or_else(|_| std::env::var("SSL_CERT_FILE"))
+        {
+            match std::fs::read(&path) {
+                Ok(pem) => {
+                    // A bundle file may contain multiple PEM blocks; add them all.
+                    for cert in reqwest::Certificate::from_pem_bundle(&pem)
+                        .unwrap_or_default()
+                    {
+                        builder = builder.add_root_certificate(cert);
+                    }
+                    tracing::info!("loaded extra CA bundle from {path}");
+                }
+                Err(e) => tracing::warn!("failed reading CA bundle {path}: {e}"),
+            }
+        }
+
+        let http = builder.build()?;
 
         let ovms = Arc::new(OvmsController::new(app.clone(), db.clone(), http.clone()));
         if let Err(e) = ovms.hydrate_from_db().await {
