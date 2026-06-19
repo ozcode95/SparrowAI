@@ -107,7 +107,7 @@ pub struct NewTask {
 
 pub async fn list(pool: &SqlitePool) -> Result<Vec<Task>> {
     let rows = sqlx::query(
-        "SELECT id, name, description, prompt, action_json, trigger_json, enabled,
+        "SELECT id, name, description, action_json, trigger_json, enabled,
                 last_run_at, last_status, created_at
          FROM tasks ORDER BY created_at DESC",
     )
@@ -117,10 +117,8 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<Task>> {
     for r in rows {
         let trigger_json: String = r.get("trigger_json");
         let trigger: TaskTrigger = serde_json::from_str(&trigger_json)?;
-        let action = decode_action(
-            r.try_get::<Option<String>, _>("action_json").ok().flatten(),
-            r.try_get::<Option<String>, _>("prompt").ok().flatten(),
-        )?;
+        let action_json: String = r.get("action_json");
+        let action: TaskAction = serde_json::from_str(&action_json)?;
         let enabled: i64 = r.get("enabled");
         out.push(Task {
             id: r.get("id"),
@@ -139,7 +137,7 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<Task>> {
 
 pub async fn get(pool: &SqlitePool, id: &str) -> Result<Task> {
     let r = sqlx::query(
-        "SELECT id, name, description, prompt, action_json, trigger_json, enabled,
+        "SELECT id, name, description, action_json, trigger_json, enabled,
                 last_run_at, last_status, created_at
          FROM tasks WHERE id = ?",
     )
@@ -150,10 +148,8 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<Task> {
 
     let trigger_json: String = r.get("trigger_json");
     let trigger: TaskTrigger = serde_json::from_str(&trigger_json)?;
-    let action = decode_action(
-        r.try_get::<Option<String>, _>("action_json").ok().flatten(),
-        r.try_get::<Option<String>, _>("prompt").ok().flatten(),
-    )?;
+    let action_json: String = r.get("action_json");
+    let action: TaskAction = serde_json::from_str(&action_json)?;
     let enabled: i64 = r.get("enabled");
     Ok(Task {
         id: r.get("id"),
@@ -173,12 +169,10 @@ pub async fn create(pool: &SqlitePool, t: NewTask) -> Result<String> {
     let now = Utc::now().to_rfc3339();
     let trigger_json = serde_json::to_string(&t.trigger)?;
     let action_json = serde_json::to_string(&t.action)?;
-    // `prompt` is retained as a legacy column (NOT NULL DEFAULT '') so older
-    // installs keep working; new rows leave it blank and rely on action_json.
     sqlx::query(
         "INSERT INTO tasks
-            (id, name, description, prompt, action_json, trigger_json, enabled, created_at)
-         VALUES (?, ?, ?, '', ?, ?, ?, ?)",
+            (id, name, description, action_json, trigger_json, enabled, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&t.name)
@@ -319,19 +313,6 @@ pub async fn run_action(app: &AppHandle, action: &TaskAction) -> Result<String> 
             ))
         }
     }
-}
-
-/// Decode the action column with a fallback for rows that pre-date the
-/// `action_json` migration — those carry their payload in `prompt` instead,
-/// which we wrap as a [`TaskAction::Prompt`] on the fly.
-fn decode_action(action_json: Option<String>, prompt: Option<String>) -> Result<TaskAction> {
-    if let Some(json) = action_json.as_deref().filter(|s| !s.trim().is_empty()) {
-        return Ok(serde_json::from_str(json)?);
-    }
-    Ok(TaskAction::Prompt {
-        prompt: prompt.unwrap_or_default(),
-        notify: false,
-    })
 }
 
 /// Read a nullable TEXT column, normalising both NULL and the empty

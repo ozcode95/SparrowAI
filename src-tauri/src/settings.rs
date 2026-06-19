@@ -17,6 +17,13 @@ use serde::{Deserialize, Serialize};
 pub struct ProviderConfig {
     pub id: String,
     pub kind: String,
+    /// Where the provider lives: `local` (a runtime on this machine) vs.
+    /// `cloud` (a remote hosted endpoint). Free-form string so additional
+    /// classifications can be added later without breaking older settings
+    /// files. Defaults to `local` for entries written before this field
+    /// existed.
+    #[serde(default = "default_provider_location")]
+    pub location: String,
     pub name: String,
     pub base_url: String,
     pub enabled: bool,
@@ -28,6 +35,10 @@ pub struct ProviderConfig {
     /// diverge from the provider-wide value.
     #[serde(default)]
     pub sampling: SamplingConfig,
+}
+
+fn default_provider_location() -> String {
+    "local".into()
 }
 
 /// Optional sampling overrides. Every field is independently optional:
@@ -260,11 +271,12 @@ fn default_true() -> bool {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            active_provider_id: Some("ovms-local".into()),
+            active_provider_id: Some("local".into()),
             providers: vec![ProviderConfig {
-                id: "ovms-local".into(),
+                id: "local".into(),
                 kind: "ovms".into(),
-                name: "OVMS (local)".into(),
+                location: "local".into(),
+                name: "Local".into(),
                 base_url: "http://127.0.0.1:8000/v3".into(),
                 enabled: true,
                 api_key_ref: None,

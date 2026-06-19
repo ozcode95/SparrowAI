@@ -3,16 +3,16 @@ use crate::llm::{ChatChunk, ChatRequest, LlmProvider};
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-pub struct VllmProvider {
+pub struct LlamaCppProvider {
     pub base_url: String,
     pub api_key: Option<String>,
     pub http: reqwest::Client,
 }
 
 #[async_trait]
-impl LlmProvider for VllmProvider {
+impl LlmProvider for LlamaCppProvider {
     fn id(&self) -> &str {
-        "vllm"
+        "llama.cpp"
     }
     async fn chat_stream(
         &self,

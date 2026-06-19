@@ -34,8 +34,8 @@ pub async fn models_list_local(app: AppHandle) -> IpcResult<Vec<LocalModel>> {
             let path: String = r.get("path");
             // Same nullable-column pattern as `hf_id` above: `.ok()`
             // collapses both SQL NULL and "column not present in the
-            // row" to `None`, so older databases that haven't picked up
-            // the 0008 migration yet still deserialise cleanly.
+            // row" to `None`, which keeps the read path resilient if the
+            // baseline schema ever lags a deployed db.
             let stored: Option<String> = r.try_get("pipeline_tag").ok();
             // Backfill: pre-`pipeline_tag` rows store NULL, and the HF
             // upstream sometimes leaves the field unset too. Derive a

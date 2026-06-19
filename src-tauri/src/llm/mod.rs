@@ -1,13 +1,13 @@
 //! Provider-agnostic LLM interface.
 //!
-//! Every backend (OVMS, ollama, vLLM) speaks an OpenAI-compatible
+//! Every backend (OVMS, ollama, llama.cpp) speaks an OpenAI-compatible
 //! `/chat/completions` API, so the trait stays thin and the concrete clients
 //! just point at a different base URL.
 
+pub mod llamacpp;
 pub mod ollama;
 pub mod openai_compat;
 pub mod ovms;
-pub mod vllm;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -19,7 +19,7 @@ pub struct ChatMessage {
     /// Either a plain string (the common case) or an array of typed parts
     /// (the OpenAI Vision shape we use when the user attached images). Wire
     /// format follows the [OVMS chat/completions spec][1] verbatim so the
-    /// same request body reaches OVMS, vLLM and ollama unchanged.
+    /// same request body reaches OVMS, llama.cpp and ollama unchanged.
     ///
     /// Made optional so assistant messages whose sole purpose is to carry
     /// `tool_calls` (e.g. "the model asked for a tool, it produced no
@@ -157,11 +157,11 @@ pub struct ChatRequest {
     pub max_tokens: Option<u32>,
     /// Nucleus-sampling cutoff. Forwarded verbatim to the upstream
     /// when set; omitted when `None`. OpenAI-compat servers (OVMS,
-    /// vLLM, ollama) all accept this field.
+    /// llama.cpp, ollama) all accept this field.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
     /// Top-k sampling cutoff. Not part of the original OpenAI spec but
-    /// supported as an extension by OVMS / vLLM / ollama, and required
+    /// supported as an extension by OVMS / llama.cpp / ollama, and required
     /// for Gemma 4 to hit its documented sampling profile. Skipped on
     /// the wire when `None` so providers that ignore it aren't tripped
     /// up by a stray field.

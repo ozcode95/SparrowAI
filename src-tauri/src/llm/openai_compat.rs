@@ -1,4 +1,4 @@
-//! Generic OpenAI-compatible streaming client used by OVMS / ollama / vLLM.
+//! Generic OpenAI-compatible streaming client used by OVMS / ollama / llama.cpp.
 
 use crate::llm::{ChatChunk, ChatRequest, ContentPart, FunctionCall, MessageContent, ToolCall};
 use anyhow::Context;
@@ -28,7 +28,7 @@ pub enum UpstreamError {
     Unreachable { attempts: u32, last: String },
 
     /// Initial POST returned a non-retryable HTTP status (e.g. 4xx other
-    /// than 408/429). The body is included verbatim because OVMS / vLLM
+    /// than 408/429). The body is included verbatim because OVMS / llama.cpp
     /// often pack the actionable detail in there.
     #[error("upstream {status}: {body}")]
     Http { status: StatusCode, body: String },

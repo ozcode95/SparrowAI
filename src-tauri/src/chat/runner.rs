@@ -171,7 +171,7 @@ struct ErrorPayload<'a> {
     /// One-line, user-actionable hint. `None` when we can't guess.
     #[serde(skip_serializing_if = "Option::is_none")]
     hint: Option<String>,
-    /// Provider kind we tried to reach (`ovms`, `vllm`, `ollama`, ...).
+    /// Provider kind we tried to reach (`ovms`, `llama.cpp`, `ollama`, ...).
     #[serde(skip_serializing_if = "Option::is_none")]
     provider_kind: Option<String>,
     /// Base URL we attempted (without auth headers).
@@ -494,9 +494,9 @@ async fn run_inner(
     //   * Inject the legacy ```tool_use``` fenced-JSON instructions
     //     into the system prompt so the model has a clean text protocol
     //     to follow that we can parse on our side.
-    // For non-OVMS providers (vLLM, ollama) we assume tool-call parsing
-    // is supported, since both expose the OpenAI-style `tool_calls`
-    // field on the response.
+    // For non-OVMS providers (llama.cpp, ollama) we assume tool-call
+    // parsing is supported, since both expose the OpenAI-style
+    // `tool_calls` field on the response.
     let native_tools_supported = if provider_cfg.kind == "ovms" {
         // Look up the tool_parser for the *specific* model this
         // conversation is using, not just whichever text-gen model the
@@ -569,13 +569,13 @@ async fn run_inner(
         .unwrap_or_default();
     let sampling = resolve_sampling(&conv_sampling, &provider_cfg.sampling, profile);
 
-    // ─── 3. Validate the provider kind once ─────────────────────────────
-    if !matches!(provider_cfg.kind.as_str(), "ovms" | "vllm" | "ollama") {
+    // ─── 3. Validate the provider kind once ─────────────────────
+    if !matches!(provider_cfg.kind.as_str(), "ovms" | "llama.cpp" | "ollama") {
         return Err(ChatErrorReport {
             kind: ChatErrorKind::UnsupportedProvider,
             message: format!("unsupported provider kind: {}", provider_cfg.kind),
             hint: Some(
-                "only `ovms`, `vllm`, `ollama` are supported right now — change the provider kind in Settings".into(),
+                "only `ovms`, `llama.cpp`, `ollama` are supported right now — change the provider kind in Settings".into(),
             ),
             provider_kind: Some(provider_cfg.kind.clone()),
             base_url: Some(base_url.clone()),
@@ -2028,7 +2028,7 @@ struct ResolvedSampling {
 /// because the profile's default acts as the floor.
 ///
 /// Out-of-range values are accepted as-is and forwarded to the
-/// upstream — OVMS / vLLM / ollama all have their own clamps, and
+/// upstream — OVMS / llama.cpp / ollama all have their own clamps, and
 /// we'd rather surface a 4xx from the server than silently rewrite
 /// what the user typed.
 fn resolve_sampling(
@@ -2549,7 +2549,7 @@ mod tests {
             body: "missing token".into(),
         }
         .into();
-        let report = classify(&err, "vllm", "http://example/v1");
+        let report = classify(&err, "llama.cpp", "http://example/v1");
         assert!(matches!(report.kind, ChatErrorKind::UpstreamHttp));
         let hint = report.hint.expect("hint");
         assert!(hint.to_ascii_lowercase().contains("api key"));

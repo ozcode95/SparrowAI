@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Fast, simple local agentic AI for Intel hardware (OpenVINO Model Server + future ollama/vllm).",
+  "description": "Fast, simple local agentic AI for Intel hardware (OpenVINO Model Server + future ollama/llama.cpp).",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

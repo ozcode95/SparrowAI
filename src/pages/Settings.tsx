@@ -10,6 +10,7 @@ import {
   type OvmsSettings,
   type ProviderConfig,
   type ProviderKind,
+  type ProviderLocation,
   type SamplingConfig,
 } from "@/stores/settings";
 import {
@@ -28,7 +29,8 @@ import {
   SystemSpecsCard,
 } from "@/components/server/ServerControls";
 
-const PROVIDER_KINDS: ProviderKind[] = ["ovms", "ollama", "vllm"];
+const PROVIDER_KINDS: ProviderKind[] = ["ovms", "ollama", "llama.cpp"];
+const PROVIDER_LOCATIONS: ProviderLocation[] = ["local", "cloud"];
 
 /** Sensible default `base_url` for a freshly added provider of `kind`. */
 function defaultBaseUrl(kind: ProviderKind): string {
@@ -37,8 +39,8 @@ function defaultBaseUrl(kind: ProviderKind): string {
       return "http://127.0.0.1:8000/v3";
     case "ollama":
       return "http://127.0.0.1:11434/v1";
-    case "vllm":
-      return "http://127.0.0.1:8000/v1";
+    case "llama.cpp":
+      return "http://127.0.0.1:8080/v1";
   }
 }
 
@@ -340,7 +342,8 @@ function ProvidersSection() {
         {
           id,
           kind,
-          name: `${kind} (local)`,
+          location: "local",
+          name: "",
           base_url: defaultBaseUrl(kind),
           enabled: true,
           sampling: { ...EMPTY_SAMPLING },
@@ -375,7 +378,7 @@ function ProvidersSection() {
         {s.providers.length === 0 ? (
           <div className="py-6 text-center text-[11px] text-tui-fg-muted">
             No providers configured. Click <b>Add provider</b> to point zero at
-            a local OVMS, Ollama, or vLLM endpoint.
+            an OpenAI-compatible endpoint (local or cloud).
           </div>
         ) : (
           <ul className="-mx-1 divide-y divide-tui-border">
@@ -395,9 +398,10 @@ function ProvidersSection() {
 
       <Callout>
         Base URL must point at an OpenAI-compatible endpoint (
-        <code className="font-mono">/chat/completions</code>). OVMS, Ollama, and
-        vLLM all expose one — the three kinds share the same provider
-        implementation today; the field is mostly for documentation.
+        <code className="font-mono">/chat/completions</code>). Every supported
+        provider — local runtimes and hosted services alike — share the same
+        implementation today; the kind and location fields are mostly for
+        documentation.
       </Callout>
     </>
   );
@@ -440,7 +444,6 @@ function ProviderCard({
         >
           {active && <span className="h-2 w-2 rounded-full bg-tui-accent" />}
         </button>
-        <KindBadge kind={provider.kind} />
         <TuiInput
           value={provider.name}
           onChange={(e) => onChange({ name: e.target.value })}
@@ -481,10 +484,25 @@ function ProviderCard({
           value={provider.kind}
           onChange={(e) => onChange({ kind: e.target.value as ProviderKind })}
           className="!w-24"
+          title="Provider kind"
         >
           {PROVIDER_KINDS.map((k) => (
             <option key={k} value={k}>
               {k}
+            </option>
+          ))}
+        </TuiSelect>
+        <TuiSelect
+          value={provider.location}
+          onChange={(e) =>
+            onChange({ location: e.target.value as ProviderLocation })
+          }
+          className="!w-24"
+          title="Where the provider runs"
+        >
+          {PROVIDER_LOCATIONS.map((loc) => (
+            <option key={loc} value={loc}>
+              {loc}
             </option>
           ))}
         </TuiSelect>
@@ -581,19 +599,6 @@ function ProviderSampling({
         </div>
       )}
     </div>
-  );
-}
-
-function KindBadge({ kind }: { kind: ProviderKind }) {
-  return (
-    <span
-      className={
-        "rounded-[4px] border border-tui-border bg-[var(--fluent-bg-subtle)] " +
-        "px-1.5 py-px text-[10px] font-mono uppercase tracking-wide text-tui-fg-dim"
-      }
-    >
-      {kind}
-    </span>
   );
 }
 

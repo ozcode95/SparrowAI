@@ -1,7 +1,14 @@
 import { create } from "zustand";
 import { invoke } from "@/lib/tauri";
 
-export type ProviderKind = "ovms" | "ollama" | "vllm";
+export type ProviderKind = "ovms" | "ollama" | "llama.cpp";
+
+/**
+ * Where the provider lives. Purely informational today — used by the UI
+ * to badge the row and to seed sensible defaults (a `cloud` provider
+ * starts with no `base_url`, since each vendor has its own).
+ */
+export type ProviderLocation = "local" | "cloud";
 
 /**
  * Optional per-layer sampling overrides. Every field is independently
@@ -30,6 +37,8 @@ export const EMPTY_SAMPLING: SamplingConfig = {
 export interface ProviderConfig {
   id: string;
   kind: ProviderKind;
+  /** Local runtime on this machine vs. a remote cloud endpoint. */
+  location: ProviderLocation;
   name: string;
   base_url: string;
   enabled: boolean;
@@ -131,12 +140,13 @@ interface SettingsState extends Settings {
 }
 
 const DEFAULTS: Settings = {
-  active_provider_id: "ovms-local",
+  active_provider_id: "local",
   providers: [
     {
-      id: "ovms-local",
+      id: "local",
       kind: "ovms",
-      name: "OVMS (local)",
+      location: "local",
+      name: "Local",
       base_url: "http://127.0.0.1:8000/v3",
       enabled: true,
       sampling: { ...EMPTY_SAMPLING },

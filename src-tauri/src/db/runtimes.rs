@@ -1,6 +1,6 @@
 //! CRUD for the `runtime_versions` table.
 //!
-//! Generic over runtime name (`ovms`, future `ollama` / `vllm`), so all
+//! Generic over runtime name (`ovms`, future `ollama` / `llama.cpp`), so all
 //! runtime lifecycle bookkeeping lives in one place.
 
 use anyhow::Result;

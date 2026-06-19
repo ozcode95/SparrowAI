@@ -3,7 +3,7 @@
 A fast, simple **local** agentic AI desktop app. Built for low-end Intel laptops first, scales up to higher-end machines.
 
 - **Runtime:** [OpenVINO Model Server](https://docs.openvino.ai/2026/index.html) (python-free `ovms.exe`)
-- **Future runtimes:** ollama, vLLM (same OpenAI-compatible interface)
+- **Future runtimes:** ollama, llama.cpp (same OpenAI-compatible interface)
 - **UI:** Tauri 2 + React + Tailwind v4 (TUI-style)
 - **State:** Zustand on the front, SQLite (`sqlx` + `sqlite-vec`) on the back
 - **Storage root:** `~/.zero/` (same path on Windows, macOS, and Linux)

@@ -501,7 +501,8 @@ export function ChatView() {
         "audio/mp4",
       ];
       const supported =
-        typeof MediaRecorder !== "undefined" && "isTypeSupported" in MediaRecorder
+        typeof MediaRecorder !== "undefined" &&
+        "isTypeSupported" in MediaRecorder
           ? candidates.find((m) => MediaRecorder.isTypeSupported(m))
           : undefined;
       const recorder = supported
@@ -524,9 +525,7 @@ export function ChatView() {
       setRecording(true);
     } catch (e) {
       console.error("getUserMedia failed", e);
-      setMicError(
-        e instanceof Error ? e.message : "Microphone unavailable",
-      );
+      setMicError(e instanceof Error ? e.message : "Microphone unavailable");
       // Make sure no half-acquired tracks linger if the API threw
       // partway through (some browsers do).
       micStreamRef.current?.getTracks().forEach((t) => t.stop());
@@ -701,8 +700,9 @@ export function ChatView() {
   );
 
   // Banner state. We only ever surface this for the local OVMS provider
-  // because vLLM / ollama / remote endpoints don't have a single-loaded-
-  // model constraint, so a mismatch wouldn't mean anything to the user.
+  // because llama.cpp / ollama / remote endpoints don't have a
+  // single-loaded-model constraint, so a mismatch wouldn't mean anything
+  // to the user.
   //
   // The banner is shown whenever *any* OVMS load is in flight — the
   // chat's pinned model, or some other model the user kicked off from
@@ -942,9 +942,7 @@ export function ChatView() {
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={onKey}
                 rows={Math.min(8, Math.max(1, draft.split("\n").length))}
-                placeholder={
-                  modelLoading ? "Loading model…" : "Ask anything…"
-                }
+                placeholder={modelLoading ? "Loading model…" : "Ask anything…"}
                 disabled={modelLoading}
                 style={{
                   display: "block",
@@ -1060,7 +1058,9 @@ export function ChatView() {
               <button
                 type="button"
                 onClick={() => void onSend()}
-                disabled={(!draft.trim() && pending.length === 0) || modelLoading}
+                disabled={
+                  (!draft.trim() && pending.length === 0) || modelLoading
+                }
                 title={modelLoading ? "Loading model…" : "Send"}
                 aria-label="Send"
                 className={
